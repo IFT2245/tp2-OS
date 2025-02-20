@@ -1,0 +1,27 @@
+# ninja log v6
+147	200	1740036421056495440	src/CMakeFiles/main.dir/__/test/modes-test.c.o	371be783ac5288c5
+2	49	1740036629257233431	src/CMakeFiles/scheduler.dir/ready.c.o	dba589b9f275bbf3
+162	200	1740036421071495500	src/CMakeFiles/main.dir/scheduler.c.o	84644013e0757940
+52	73	1740036629307233575	src/CMakeFiles/scheduler.dir/safe_calls_library.c.o	6aff254e24760060
+108	147	1740036421017495284	src/CMakeFiles/main.dir/__/test/normal-test.c.o	63b73197dc175179
+85	129	1740036629340233669	src/CMakeFiles/scheduler.dir/__/test/edge-test.c.o	a081432a409259f0
+2	40	1739956248015632389	src/CMakeFiles/scheduler.dir/__/test/tests.c.o	c5ac39c1e5426f54
+54	85	1740036629309233580	src/CMakeFiles/scheduler.dir/__/test/basic-test.c.o	d33c40ab4aaec9b1
+0	54	1740036629255233426	src/CMakeFiles/scheduler.dir/os.c.o	c3791d5996c1ba47
+126	165	1740036421035495356	src/CMakeFiles/main.dir/__/test/hidden-test.c.o	2a7e59c366a1db0f
+86	126	1740036420995495195	src/CMakeFiles/main.dir/worker.c.o	bba9dbd206a9074b
+1	52	1740036629256233428	src/CMakeFiles/scheduler.dir/process.c.o	fa5e7c7135c2d2ac
+73	115	1740036629328233635	src/CMakeFiles/scheduler.dir/__/test/normal-test.c.o	3d5723e1557e3dfa
+116	149	1740036629371233758	src/CMakeFiles/scheduler.dir/scheduler.c.o	deb93a12a07e0e72
+49	86	1740036629304233566	src/CMakeFiles/scheduler.dir/worker.c.o	cf48b1a0c983a484
+1	86	1740036420910494850	src/CMakeFiles/main.dir/process.c.o	b7a16be4e3a067f8
+1	87	1740036420910494850	src/CMakeFiles/main.dir/os.c.o	919e53792666298
+87	108	1740036420996495199	src/CMakeFiles/main.dir/safe_calls_library.c.o	c7d45b59af46805f
+165	195	1740036421074495512	src/CMakeFiles/main.dir/main.c.o	e1e5d26809bd8f23
+89	126	1740036420998495208	src/CMakeFiles/main.dir/__/test/basic-test.c.o	e2ed45772049cc0b
+2	89	1740036420911494854	src/CMakeFiles/main.dir/ready.c.o	665e436aa5e887ce
+116	158	1740036629371233758	src/CMakeFiles/scheduler.dir/__/test/modes-test.c.o	8d798f411998edc8
+86	116	1740036629341233672	src/CMakeFiles/scheduler.dir/__/test/hidden-test.c.o	d0063d088fad688b
+2	72	1739872269504204942	src/CMakeFiles/scheduler.dir/ready_queue.c.o	2b52b55027917d06
+126	162	1740036421035495356	src/CMakeFiles/main.dir/__/test/edge-test.c.o	fd5d8661a9de6e2f
+158	171	1740036629413233878	src/scheduler	b62a0ea819ea1ba4
