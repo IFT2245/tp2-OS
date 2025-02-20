@@ -1,184 +1,94 @@
-Below is an **updated** set of **CMakeLists.txt** files for a **two-level** CMake project:
+# **TP2-OS**
+## Ordonnanceur & Simulation de Système d’Exploitation
 
-1. **Top-level `CMakeLists.txt`** in the project root directory.
-2. **`src/CMakeLists.txt`** where you compile `scheduler` and link optional OpenGL libraries.
+| Mots clefs                                | Description                                                        |
+|-------------------------------------------|--------------------------------------------------------------------|
+| **Système d’exploitation**                | Simulation d'un OS avec divers modes de concurrence                |
+| **Synergie par pipeline**                 | Coordination optimisée des processus                               |
+| **Concurrence distribuée**                | Gestion de tâches sur plusieurs machines                           |
+| **Multi-thread**                          | Exécution parallèle dans un même processus                         |
+| **Multi-processus**                       | Exécution parallèle avec plusieurs processus                       |
+| **Interface**                             | Textuelle ou OpenGL (optionnelle)                                  |
+| **Threads HPC overshadow**                | Gestion de threads haute performance                               |
+| **Conteneurs éphémères**                  | Création et gestion temporaire de conteneurs                       |
+| **Synergie de pipeline**                  | Optimisation et enchaînement des tâches                            |
+| **Processus distribués**                  | Répartition des tâches sur plusieurs machines                      |
+| **Démos multi-processus & multi-threads** | Illustrations des différentes stratégies de concurrence            |
+| **Journaux (logs) de debug**              | Suivi et analyse des événements du système                         |
+| **Ordonnancement ReadyQueue**             | FIFO, RR, BFS, Priority, SJF                                       |
+| **HPC Overshadow**                        | Intégration de logique HPC overshadow                              |
+| **Conteneurs éphémères**                  | Création et gestion de conteneurs temporaires                      |
+| **Approche de concurrence**               | Gestion via un seul Worker                                         |
+| **Progression en 5 niveaux de test**      | BASIC → NORMAL → MODES → EDGE → HIDDEN (≥ 60% requis pour avancer) |
 
-This structure:
+## Fonctionnalités
 
-- **Prevents** in-source builds.
-- **Defines** an option `USE_OPENGL_UI` (default ON or OFF as you prefer).
-- **Finds** OpenGL and GLUT if `USE_OPENGL_UI=ON`.
-- **Builds** an executable **`scheduler`** that includes your OS sources, Worker, ReadyQueue, `safe_calls_library`, plus your test sources (`basic-test`, etc.).
-- **Links** pthreads and, optionally, OpenGL + GLUT.
-- **Does not** list `.h` files in `add_executable` (typical best practice to list only `.c` or `.cpp`).
+| **Fonction**              | **Description**                                                                        |
+|---------------------------|----------------------------------------------------------------------------------------|
+| HPC Overshadow            | Lance plusieurs threads pour des sommes partielles HPC ou concurrence overshadow       |
+| Conteneur Éphémère        | Crée un répertoire `/tmp/os_container_XXXXXX`, simulant l’utilisation d’un conteneur   |
+| Pipeline                  | Exécute sleep ou HPC partielle sur plusieurs étapes de pipeline                        |
+| Distribué                 | `fork()` de processus enfants si activé                                                |
+| Multi-Processus           | Démonstration simple d’un `fork()`                                                     |
+| Multi-Threads             | Si HPC overshadow n’est pas actif, lance un thread de base                             |
+| Logs de Debug             | Affiche les détails de concurrence (somme HPC, conteneur éphémère, étapes de pipeline) |
+| Ordonnancement ReadyQueue | FIFO, Round Robin, BFS, Priority, SJF                                                  |
+| Difficulté de Jeu         | 0=none,1=easy,2=story,3=challenge,5=survival. Les flags déterminent le mode...         |
+| 5 Niveaux de Tests        | BASIC, NORMAL, MODES, EDGE, HIDDEN. 60% min requis pour débloquer le suivant.          |
 
----
+## Méthodes de Compilation
 
-## **Project Layout**
+### Sans OpenGL
 
-```
-ProjectRoot/
-├─ CMakeLists.txt               # Top-level
-├─ cmake/
-│   └─ dependencies.cmake       # Optional or can be empty
-├─ src/
-│   ├─ CMakeLists.txt           # Where we define the target "scheduler"
-│   ├─ os.c, os.h
-│   ├─ process.c, process.h
-│   ├─ ready.c, ready.h
-│   ├─ worker.c, worker.h
-│   ├─ safe_calls_library.c, safe_calls_library.h
-│   ├─ scheduler.c, scheduler.h
-├─ test/
-│   ├─ basic-test.c, basic-test.h
-│   ├─ normal-test.c, normal-test.h
-│   ├─ edge-test.c, edge-test.h
-│   ├─ hidden-test.c, hidden-test.h
-│   ├─ modes-test.c, modes-test.h
-└─ ...
-```
+```bash
+gcc -o scheduler \
+    src/scheduler.c src/os.c src/process.c src/ready.c src/worker.c src/safe_calls_library.c \
+    test/basic-test.c test/normal-test.c test/modes-test.c test/edge-test.c test/hidden-test.c \
+    -I./include -I./src -I./test -lpthread
 
-### **1) Top-Level `CMakeLists.txt`**
-
-```cmake
-cmake_minimum_required(VERSION 3.20)
-
-if("${CMAKE_SOURCE_DIR}" STREQUAL "${CMAKE_BINARY_DIR}")
-    message(FATAL_ERROR
-        "In-source builds are not allowed. Please create a separate build directory, e.g.:\n"
-        "  mkdir build && cd build && cmake ..")
-endif()
-
-project(TP2
-    VERSION 24
-    DESCRIPTION "Real-Time Process Scheduler"
-    LANGUAGES C
-)
-
-set(CMAKE_C_STANDARD 17)
-
-# If you have extra dependencies logic:
-include(cmake/dependencies.cmake)  # This can remain empty or contain custom checks.
-
-# Let user enable or disable the OpenGL-based UI
-option(USE_OPENGL_UI "Enable OpenGL-based UI code" ON)
-
-# Add subdirectory "src" where the main logic is
-add_subdirectory(src)
+./scheduler
 ```
 
-- **Note**: By default, we set `USE_OPENGL_UI=ON`. You can change to OFF if you like.
+### Compilation avec **OpenGL**
 
-### **2) `src/CMakeLists.txt`**
+| Mode de Compilation        | **Avec OpenGL, Interface Graphique**                  |
+|----------------------------|-------------------------------------------------------|
+| **Bibliothèques requises** | FreeGLUT ou GLUT classique, `libGL`, `libGLU`         |
+| **Option de compilation**  | Inclure `-DUSE_OPENGL_UI` et lier `-lGL -lGLU -lglut` |
 
-```cmake
-# Inside src/ directory
-
-if(USE_OPENGL_UI)
-    # If user wants OpenGL UI, find the libraries
-    find_package(OpenGL REQUIRED)
-    find_package(GLUT REQUIRED)
-    # Add -DUSE_OPENGL_UI to compiler flags
-    add_compile_definitions(USE_OPENGL_UI)
-endif()
-
-# Always find Threads for pthread
-find_package(Threads REQUIRED)
-
-add_executable(scheduler
-    # Core OS sources
-    os.c
-    process.c
-    ready.c
-    worker.c
-    safe_calls_library.c
-    scheduler.c
-
-    # The five test sources
-    ../test/basic-test.c
-    ../test/normal-test.c
-    ../test/edge-test.c
-    ../test/hidden-test.c
-    ../test/modes-test.c
-
-    # (We do NOT list .h headers here. It's recommended to omit them from add_executable.)
-)
-
-# Tweak include dirs if needed
-target_include_directories(scheduler PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}       # for local .h
-    ${CMAKE_CURRENT_SOURCE_DIR}/..    # maybe to see "test" or "include"
-)
-
-# Link pthread
-target_link_libraries(scheduler PRIVATE Threads::Threads)
-
-# If using the OpenGL-based UI, link to OpenGL + GLUT
-if(USE_OPENGL_UI)
-    target_link_libraries(scheduler PRIVATE OpenGL::GL GLUT::GLUT)
-    # If your code also needs -lGLU, do:
-    # find_package(OpenGL REQUIRED GLU)
-    # target_link_libraries(scheduler PRIVATE OpenGL::GLU)
-endif()
+```bash
+sudo apt-get update
+sudo apt-get install freeglut3-dev mesa-common-dev
+gcc -o scheduler \
+    -DUSE_OPENGL_UI \
+    src/scheduler.c src/os.c src/process.c src/ready.c src/worker.c src/safe_calls_library.c \
+    test/basic-test.c test/normal-test.c test/modes-test.c test/edge-test.c test/hidden-test.c \
+    -I./include -I./src -I./test \
+    -lpthread -lGL -lGLU -lglut
+    
+./scheduler
 ```
 
----
+### Procédure de Build avec CMake
 
-## **Building**
+```bash
+mkdir build
+cd build
+```
+| Mode de Compilation     | Commande CMake                                                      | Remarque                                                                   |
+|-------------------------|---------------------------------------------------------------------|----------------------------------------------------------------------------| 
+| **Sans OpenGL**         | ```bash cmake -DUSE_OPENGL_UI=OFF -DCMAKE_BUILD_TYPE=Release .. ``` | Mode texte uniquement                                                      |
+| **Avec OpenGL**         | ```bash cmake -DUSE_OPENGL_UI=ON -DCMAKE_BUILD_TYPE=Debug .. ```    | Pas besoin de lier manuellement OpenGL/GLUT, CMake le gère automatiquement |
 
-1. **Create Build Directory**:
-   ```bash
-   cd /path/to/ProjectRoot
-   mkdir build
-   cd build
-   ```
-2. **Configure**:
-    - **Without** OpenGL UI:
-      ```bash
-      cmake -DUSE_OPENGL_UI=OFF -DCMAKE_BUILD_TYPE=Release ..
-      ```
-    - **With** OpenGL UI (if you installed dev packages):
-      ```bash
-      cmake -DUSE_OPENGL_UI=ON -DCMAKE_BUILD_TYPE=Debug ..
-      ```
-3. **Compile**:
-   ```bash
-   cmake --build . --target scheduler
-   ```
-4. **Run**:
-   ```bash
-   ./scheduler
-   ```
-   You’ll see a menu with concurrency options, test progression, HPC overshadow toggles, ephemeral containers, etc.
 
-### **Single-Line GCC Approach (Optional)**
+```bash
+cmake --build . --target scheduler
+./scheduler
+```
 
-If you **cannot** or **do not** want to use CMake, you can run a one-liner:
+## Utilisation
 
-- **Without** OpenGL:
-  ```bash
-  gcc -o scheduler \
-      src/scheduler.c src/os.c src/process.c src/ready.c src/worker.c src/safe_calls_library.c \
-      test/basic-test.c test/normal-test.c test/modes-test.c test/edge-test.c test/hidden-test.c \
-      -I./src -I./test -I./include \
-      -lpthread
-  ```
-
-- **With** OpenGL** (assuming you have `libGL`, `libGLU`, `libglut`):
-  ```bash
-  gcc -o scheduler \
-      -DUSE_OPENGL_UI \
-      src/scheduler.c src/os.c src/process.c src/ready.c src/worker.c src/safe_calls_library.c \
-      test/basic-test.c test/normal-test.c test/modes-test.c test/edge-test.c test/hidden-test.c \
-      -I./src -I./test -I./include \
-      -lpthread -lGL -lGLU -lglut
-  ```
-
----
-
-## **Usage**
-
-Once compiled, run `./scheduler`. You’ll get a text-based menu:
+Après `./scheduler`, vous verrez un menu :
 
 ```
 ================= SCHEDULER MENU =================
@@ -191,65 +101,40 @@ Test progression level: 0/5 => ...
 [6] Re-run a previously passed test suite
 [7] Direct OpenGL-based OS UI (only if compiled with USE_OPENGL_UI)
 [0] Exit
+Your choice:
 ```
 
-**Choose**:
+| Fonctionnalité       | Description                                                                                                  |
+|----------------------|--------------------------------------------------------------------------------------------------------------|
+| **Test Progression** | Débloquez les niveaux de jeu avec des scores de (≥ 60% par niveau). Score final sur 500 pts après validation |
+| **UI OS**            | Activez/désactivez HPC, conteneur, pipeline, etc. `[R]` pour lancer, `[0]` pour quitter                      |
+| **ReadyQueue**       | Choisissez une politique, enfilez et exécutez des processus, observez HPC/pipeline                           |
+| **Single Worker**    | Concurrence avec un seul bloc : threads HPC, conteneur, pipeline, logs                                       |
+| **Scoreboard**       | Affiche la réussite (0..4) et statut (verrouillé/débloqué)                                                   |
+| **Re-run**           | Rejouez une suite pour améliorer votre score (meilleure retenue), `g_current_level==5`, tout est complété    |
 
-- **[1]**: Triggers the next test aggregator in the chain (BASIC → NORMAL → MODES → EDGE → HIDDEN). Each needs ≥60% success to unlock the next.
-- **[2]**: OS-based concurrency UI: toggles HPC overshadow, ephemeral containers, pipeline, distribution, HPC threads, pipeline stages, etc. Then `[R]` to run concurrency.
-- **[3]**: ReadyQueue concurrency UI: pick scheduling policy (FIFO, RR, BFS, Priority, SJF), HPC overshadow, pipeline, container flags, enqueue processes, run them.
-- **[4]**: Single Worker concurrency approach in one shot. HPC overshadow, ephemeral container, pipeline synergy, distributed concurrency, debug logs.
-- **[5]**: Show scoreboard for the 5 test suites, partial success in each.
-- **[6]**: Re-run an old suite if you want a better success rate.
-- **[7]** (only if `USE_OPENGL_UI`=ON): Launch a simple **OpenGL** UI that displays HPC threads, ephemeral container path, HPC result, pipeline stages, etc.
 
----
-
-## **Directory Structure**
+## Structure du Répertoire (exemple)
 
 ```
-ProjectRoot/
-├── CMakeLists.txt        # Top-level
-├── cmake/
-│   └── dependencies.cmake (optional)
-├── build/                # Out-of-source build folder
+.
+├── CMakeLists.txt
+├── build/               # Dossier de build cmake
 ├── src/
-│   ├── CMakeLists.txt    # Builds "scheduler" target
+│   ├── scheduler.c, scheduler.h
 │   ├── os.c, os.h
 │   ├── process.c, process.h
 │   ├── ready.c, ready.h
 │   ├── worker.c, worker.h
 │   ├── safe_calls_library.c, safe_calls_library.h
-│   ├── scheduler.c, scheduler.h
+│   ...
 ├── test/
-│   ├── basic-test.c, basic-test.h
-│   ├── normal-test.c, normal-test.h
-│   ├── modes-test.c, modes-test.h
-│   ├── edge-test.c, edge-test.h
-│   ├── hidden-test.c, hidden-test.h
-└── ...
+│   ├── basic-test.c,   basic-test.h
+│   ├── normal-test.c,  normal-test.h
+│   ├── modes-test.c,   modes-test.h
+│   ├── edge-test.c,    edge-test.h
+│   ├── hidden-test.c,  hidden-test.h
+├── include/
+│   └── ...
+└── README.md
 ```
-
----
-
-## **Game Progression**
-
-- **Level 0**: BASIC tests (≥60% => unlock next)
-- **Level 1**: NORMAL tests
-- **Level 2**: MODES tests
-- **Level 3**: EDGE tests
-- **Level 4**: HIDDEN tests
-- **Level 5**: All done => final scoreboard “GAME OVER” out of 500 synergy points.
-
-You can re-run an old suite to improve that partial success. The aggregator only moves forward automatically if you pass the next suite in sequence.
-
----
-
-## **References & Theory**
-
-- [POSIX Threads Programming](https://computing.llnl.gov/tutorials/pthreads/)
-- [Linux Syscalls: fork(), wait()](https://man7.org/linux/man-pages/man2/fork.2.html)
-- [OpenGL / GLUT basics](https://www.khronos.org/opengl/wiki/)
-- [FreeGLUT vs classic GLUT difference](http://freeglut.sourceforge.net/docs.html)
-
-Happy concurrency explorations and game-like test progression!
