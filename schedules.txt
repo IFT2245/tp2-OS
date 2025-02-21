@@ -1,0 +1,1778 @@
+#include "ready_queue.h"
+
+#include <limits.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#include "os.h"
+
+void ready_queue_init(ready_queue_t *queue) {
+    queue->sentinel.next = NULL;
+    queue->size = 0;
+
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->cond, NULL);
+}
+
+void ready_queue_destroy(ready_queue_t *queue) {
+    pthread_cond_destroy(&queue->cond);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+
+// FIFO
+
+//void ready_queue_push(ready_queue_t *queue, process_t *process) {
+//    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+//    new_node->process = process;
+//    new_node->next = NULL;
+//
+//    pthread_mutex_lock(&queue->mutex);
+//
+//    ready_queue_node_t *current = &queue->sentinel;
+//
+//    while(current->next != NULL) {
+//        current = current->next;
+//    }
+//
+//    current->next = new_node;
+//
+//    queue->size++;
+//
+//    pthread_cond_signal(&queue->cond);
+//    pthread_mutex_unlock(&queue->mutex);
+//}
+
+// LIFO
+
+//void ready_queue_push(ready_queue_t *queue, process_t *process) {
+//    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+//    new_node->process = process;
+//    new_node->next = NULL;
+//
+//    pthread_mutex_lock(&queue->mutex);
+//
+//    ready_queue_node_t *current = &queue->sentinel;
+//
+//    new_node->next = current->next;
+//    current->next = new_node;
+//
+//    queue->size++;
+//
+//    pthread_cond_signal(&queue->cond);
+//    pthread_mutex_unlock(&queue->mutex);
+//}
+
+
+// SJF
+
+//void ready_queue_push(ready_queue_t *queue, process_t *process) {
+//    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+//    new_node->process = process;
+//    new_node->next = NULL;
+//
+//    pthread_mutex_lock(&queue->mutex);
+//
+//    ready_queue_node_t *current = &queue->sentinel;
+//
+//    if(process != NULL)
+//    {
+//        while (current->next != NULL && process->remaining_burst > current->next->process->remaining_burst) {
+//            current = current->next;
+//        }
+//    }
+//
+//    new_node->next = current->next;
+//    current->next = new_node;
+//
+//    queue->size++;
+//
+//    pthread_cond_signal(&queue->cond);
+//    pthread_mutex_unlock(&queue->mutex);
+//}
+
+// HRRN
+
+//uint64_t hrrn(process_t *process, uint64_t now) {
+//    if(process->last_burst == 0) return ULONG_MAX; // Avoid division by zero (first burst)
+//    uint64_t waiting_time = now - process->last_response;
+//    return waiting_time / process->last_burst;
+//}
+//
+//void ready_queue_push(ready_queue_t *queue, process_t *process) {
+//    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+//    new_node->process = process;
+//    new_node->next = NULL;
+//
+//    uint64_t now = os_time();
+//
+//    pthread_mutex_lock(&queue->mutex);
+//
+//    ready_queue_node_t *current = &queue->sentinel;
+//
+//    if(process != NULL)
+//    {
+//        uint64_t process_hrrn = hrrn(process, now);
+//
+//        while (current->next != NULL && process_hrrn < hrrn(current->next->process, now)) {
+//            current = current->next;
+//        }
+//    }
+//
+//    new_node->next = current->next;
+//    current->next = new_node;
+//
+//    queue->size++;
+//
+//    pthread_cond_signal(&queue->cond);
+//    pthread_mutex_unlock(&queue->mutex);
+//}
+
+
+// CFS
+
+void ready_queue_push(ready_queue_t *queue, process_t *process) {
+    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+    new_node->process = process;
+    new_node->next = NULL;
+
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *current = &queue->sentinel;
+
+    if(process != NULL)
+    {
+        while (current->next != NULL && process->vruntime > current->next->process->vruntime) {
+            current = current->next;
+        }
+
+        if(current == &queue->sentinel && current->next != NULL)
+        {
+            process->vruntime = current->next->process->vruntime;
+        }
+    }
+
+    new_node->next = current->next;
+    current->next = new_node;
+
+    queue->size++;
+
+    pthread_cond_signal(&queue->cond);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+
+process_t *ready_queue_pop(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    while (queue->sentinel.next == NULL) {
+        pthread_cond_wait(&queue->cond, &queue->mutex);
+    }
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    queue->sentinel.next = node->next;
+
+    queue->size--;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    free(node);
+
+    return process;
+}
+
+process_t *ready_queue_peek(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    return process;
+}
+
+size_t ready_queue_size(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+    size_t size = queue->size;
+    pthread_mutex_unlock(&queue->mutex);
+    return size;
+}
+
+#include "ready_queue.h"
+
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#include "os.h"
+
+void ready_queue_init(ready_queue_t *queue) {
+    queue->sentinel.next = NULL;
+    queue->size = 0;
+
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->cond, NULL);
+}
+
+void ready_queue_destroy(ready_queue_t *queue) {
+    pthread_cond_destroy(&queue->cond);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+uint64_t remaining_time(process_t *process) {
+    if(process->burst_time == 0)
+    {
+        return 0;
+    }
+
+    return process->burst_time - (process->vruntime - process->last_vruntime);
+}
+
+void ready_queue_push(ready_queue_t *queue, process_t *process) {
+    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+    new_node->process = process;
+    new_node->next = NULL;
+
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *current = &queue->sentinel;
+
+    if (process != NULL) {
+        while (current->next != NULL
+               && remaining_time(process) >= remaining_time(current->next->process)) {
+            current = current->next;
+        }
+    }
+
+    new_node->next = current->next;
+    current->next = new_node;
+
+    queue->size++;
+
+    pthread_cond_signal(&queue->cond);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+process_t *ready_queue_pop(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    while (queue->sentinel.next == NULL) {
+        pthread_cond_wait(&queue->cond, &queue->mutex);
+    }
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    queue->sentinel.next = node->next;
+
+    queue->size--;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    free(node);
+
+    return process;
+}
+
+size_t ready_queue_size(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    size_t size = queue->size;
+
+    pthread_mutex_unlock(&queue->mutex);
+    return size;
+}
+
+#include "ready_queue.h"
+
+#include <limits.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#include "os.h"
+
+void ready_queue_init(ready_queue_t *queue) {
+    queue->sentinel.next = NULL;
+    queue->size = 0;
+
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->cond, NULL);
+}
+
+void ready_queue_destroy(ready_queue_t *queue) {
+    pthread_cond_destroy(&queue->cond);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+void ready_queue_push(ready_queue_t *queue, process_t *process) {
+    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+    new_node->process = process;
+    new_node->next = NULL;
+
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *current = &queue->sentinel;
+
+    if (process != NULL) {
+        while (current->next != NULL
+               && process->last_burst >= current->next->process->last_burst) {
+            current = current->next;
+        }
+    }
+
+    new_node->next = current->next;
+    current->next = new_node;
+
+    queue->size++;
+
+    pthread_cond_signal(&queue->cond);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+process_t *ready_queue_pop(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    while (queue->sentinel.next == NULL) {
+        pthread_cond_wait(&queue->cond, &queue->mutex);
+    }
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    queue->sentinel.next = node->next;
+
+    queue->size--;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    free(node);
+
+    return process;
+}
+
+size_t ready_queue_size(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    size_t size = queue->size;
+
+    pthread_mutex_unlock(&queue->mutex);
+    return size;
+}
+
+#include "ready_queue.h"
+
+#include <limits.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#include "os.h"
+
+void ready_queue_init(ready_queue_t *queue) {
+    queue->sentinel.next = NULL;
+    queue->size = 0;
+
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->cond, NULL);
+}
+
+void ready_queue_destroy(ready_queue_t *queue) {
+    pthread_cond_destroy(&queue->cond);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+void ready_queue_push(ready_queue_t *queue, process_t *process) {
+    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+    new_node->process = process;
+    new_node->next = NULL;
+
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *current = &queue->sentinel;
+
+    while(current->next != NULL) {
+        current = current->next;
+    }
+
+    current->next = new_node;
+
+    queue->size++;
+
+    pthread_cond_signal(&queue->cond);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+process_t *ready_queue_pop(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    while (queue->sentinel.next == NULL) {
+        pthread_cond_wait(&queue->cond, &queue->mutex);
+    }
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    queue->sentinel.next = node->next;
+
+    queue->size--;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    free(node);
+
+    return process;
+}
+
+size_t ready_queue_size(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    size_t size = queue->size;
+
+    pthread_mutex_unlock(&queue->mutex);
+    return size;
+}
+
+#include "ready_queue.h"
+
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#include "os.h"
+
+void ready_queue_init(ready_queue_t *queue) {
+    queue->sentinel.next = NULL;
+    queue->size = 0;
+
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->cond, NULL);
+}
+
+void ready_queue_destroy(ready_queue_t *queue) {
+    pthread_cond_destroy(&queue->cond);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+uint64_t response_ratio(process_t *process, uint64_t now) {
+    uint64_t waiting_time = now - process->last_response;
+
+    uint64_t remaining_time = process->burst_time - (process->vruntime - process->last_vruntime);
+
+    if (process->burst_time == 0 || remaining_time == 0)
+    {
+        uint64_t approx_burst_time = process->vruntime + OS_CONTEXT_SWITCH_DURATION;
+        return waiting_time / approx_burst_time;
+    }
+
+    return waiting_time / remaining_time;
+}
+
+void ready_queue_push(ready_queue_t *queue, process_t *process) {
+    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+    new_node->process = process;
+    new_node->next = NULL;
+
+    uint64_t now = os_time();
+
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *current = &queue->sentinel;
+
+    if (process != NULL) {
+
+        uint64_t process_rr = response_ratio(process, now);
+
+        while (current->next != NULL
+               && process_rr <= response_ratio(current->next->process, now)) {
+            current = current->next;
+        }
+    }
+
+    new_node->next = current->next;
+    current->next = new_node;
+
+    queue->size++;
+
+    pthread_cond_signal(&queue->cond);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+process_t *ready_queue_pop(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    while (queue->sentinel.next == NULL) {
+        pthread_cond_wait(&queue->cond, &queue->mutex);
+    }
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    queue->sentinel.next = node->next;
+
+    queue->size--;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    free(node);
+
+    return process;
+}
+
+size_t ready_queue_size(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    size_t size = queue->size;
+
+    pthread_mutex_unlock(&queue->mutex);
+    return size;
+}
+
+#include "ready_queue.h"
+
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#include "os.h"
+
+void ready_queue_init(ready_queue_t *queue) {
+    queue->sentinel.next = NULL;
+    queue->size = 0;
+
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->cond, NULL);
+}
+
+void ready_queue_destroy(ready_queue_t *queue) {
+    pthread_cond_destroy(&queue->cond);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+uint64_t response_ratio(process_t *process, uint64_t now) {
+    uint64_t waiting_time = now - process->last_response;
+
+    if (process->burst_time == 0)
+    {
+        uint64_t approx_burst_time = process->vruntime + OS_CONTEXT_SWITCH_DURATION;
+        return waiting_time / approx_burst_time;
+    }
+
+    return waiting_time / process->burst_time;
+}
+
+void ready_queue_push(ready_queue_t *queue, process_t *process) {
+    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+    new_node->process = process;
+    new_node->next = NULL;
+
+    uint64_t now = os_time();
+
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *current = &queue->sentinel;
+
+    if (process != NULL) {
+
+        uint64_t process_rr = response_ratio(process, now);
+
+        while (current->next != NULL
+               && process_rr <= response_ratio(current->next->process, now)) {
+            current = current->next;
+        }
+    }
+
+    new_node->next = current->next;
+    current->next = new_node;
+
+    queue->size++;
+
+    pthread_cond_signal(&queue->cond);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+process_t *ready_queue_pop(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    while (queue->sentinel.next == NULL) {
+        pthread_cond_wait(&queue->cond, &queue->mutex);
+    }
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    queue->sentinel.next = node->next;
+
+    queue->size--;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    free(node);
+
+    return process;
+}
+
+size_t ready_queue_size(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    size_t size = queue->size;
+
+    pthread_mutex_unlock(&queue->mutex);
+    return size;
+}
+
+#include "ready_queue.h"
+
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#include "os.h"
+
+void ready_queue_init(ready_queue_t *queue) {
+    queue->sentinel.next = NULL;
+    queue->size = 0;
+
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->cond, NULL);
+}
+
+void ready_queue_destroy(ready_queue_t *queue) {
+    pthread_cond_destroy(&queue->cond);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+void ready_queue_push(ready_queue_t *queue, process_t *process) {
+    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+    new_node->process = process;
+    new_node->next = NULL;
+
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *current = &queue->sentinel;
+
+    while(current->next != NULL) {
+        current = current->next;
+    }
+
+    current->next = new_node;
+
+    queue->size++;
+
+    pthread_cond_signal(&queue->cond);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+process_t *ready_queue_pop(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    while (queue->sentinel.next == NULL) {
+        pthread_cond_wait(&queue->cond, &queue->mutex);
+    }
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    queue->sentinel.next = node->next;
+
+    queue->size--;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    free(node);
+
+    return process;
+}
+
+size_t ready_queue_size(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    size_t size = queue->size;
+
+    pthread_mutex_unlock(&queue->mutex);
+    return size;
+}
+
+#include "ready_queue.h"
+
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#include "os.h"
+
+void ready_queue_init(ready_queue_t *queue) {
+    queue->sentinel.next = NULL;
+    queue->size = 0;
+
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->cond, NULL);
+}
+
+void ready_queue_destroy(ready_queue_t *queue) {
+    pthread_cond_destroy(&queue->cond);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+uint64_t remaining_time(process_t *process) {
+    if(process->burst_time == 0)
+    {
+        return process->vruntime;
+    }
+
+    return process->burst_time - (process->vruntime - process->last_vruntime);
+}
+
+void ready_queue_push(ready_queue_t *queue, process_t *process) {
+    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+    new_node->process = process;
+    new_node->next = NULL;
+
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *current = &queue->sentinel;
+
+    if (process != NULL) {
+        while (current->next != NULL
+               && remaining_time(process) >= remaining_time(current->next->process)) {
+            current = current->next;
+        }
+    }
+
+    new_node->next = current->next;
+    current->next = new_node;
+
+    queue->size++;
+
+    pthread_cond_signal(&queue->cond);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+process_t *ready_queue_pop(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    while (queue->sentinel.next == NULL) {
+        pthread_cond_wait(&queue->cond, &queue->mutex);
+    }
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    queue->sentinel.next = node->next;
+
+    queue->size--;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    free(node);
+
+    return process;
+}
+
+size_t ready_queue_size(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    size_t size = queue->size;
+
+    pthread_mutex_unlock(&queue->mutex);
+    return size;
+}
+
+#include "ready_queue.h"
+
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#include "os.h"
+
+void ready_queue_init(ready_queue_t *queue) {
+    queue->sentinel.next = NULL;
+    queue->size = 0;
+
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->cond, NULL);
+}
+
+void ready_queue_destroy(ready_queue_t *queue) {
+    pthread_cond_destroy(&queue->cond);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+void ready_queue_push(ready_queue_t *queue, process_t *process) {
+    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+    new_node->process = process;
+    new_node->next = NULL;
+
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *current = &queue->sentinel;
+
+    if(process != NULL)
+    {
+        while (current->next != NULL && process->vruntime > current->next->process->vruntime) {
+            current = current->next;
+        }
+
+        if(current == &queue->sentinel && current->next != NULL)
+        {
+            process->vruntime = current->next->process->vruntime;
+        }
+    }
+
+    new_node->next = current->next;
+    current->next = new_node;
+
+    queue->size++;
+
+    pthread_cond_signal(&queue->cond);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+process_t *ready_queue_pop(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    while (queue->sentinel.next == NULL) {
+        pthread_cond_wait(&queue->cond, &queue->mutex);
+    }
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    queue->sentinel.next = node->next;
+
+    queue->size--;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    free(node);
+
+    return process;
+}
+
+size_t ready_queue_size(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    size_t size = queue->size;
+
+    pthread_mutex_unlock(&queue->mutex);
+    return size;
+}
+
+uint64_t ready_queue_min_vruntime(ready_queue_t *queue) {
+    uint64_t min_vruntime = 0;
+
+    pthread_mutex_lock(&queue->mutex);
+
+    if(queue->sentinel.next != NULL)
+    {
+        min_vruntime = queue->sentinel.next->process->vruntime;
+    }
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    return min_vruntime;
+}
+
+
+#include "ready_queue.h"
+
+#include <limits.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#include "os.h"
+
+void ready_queue_init(ready_queue_t *queue) {
+    queue->sentinel.next = NULL;
+    queue->size = 0;
+
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->cond, NULL);
+}
+
+void ready_queue_destroy(ready_queue_t *queue) {
+    pthread_cond_destroy(&queue->cond);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+
+// FIFO
+
+//void ready_queue_push(ready_queue_t *queue, process_t *process) {
+//    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+//    new_node->process = process;
+//    new_node->next = NULL;
+//
+//    pthread_mutex_lock(&queue->mutex);
+//
+//    ready_queue_node_t *current = &queue->sentinel;
+//
+//    while(current->next != NULL) {
+//        current = current->next;
+//    }
+//
+//    current->next = new_node;
+//
+//    queue->size++;
+//
+//    pthread_cond_signal(&queue->cond);
+//    pthread_mutex_unlock(&queue->mutex);
+//}
+
+// LIFO
+
+//void ready_queue_push(ready_queue_t *queue, process_t *process) {
+//    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+//    new_node->process = process;
+//    new_node->next = NULL;
+//
+//    pthread_mutex_lock(&queue->mutex);
+//
+//    ready_queue_node_t *current = &queue->sentinel;
+//
+//    new_node->next = current->next;
+//    current->next = new_node;
+//
+//    queue->size++;
+//
+//    pthread_cond_signal(&queue->cond);
+//    pthread_mutex_unlock(&queue->mutex);
+//}
+
+
+// SJF
+
+//void ready_queue_push(ready_queue_t *queue, process_t *process) {
+//    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+//    new_node->process = process;
+//    new_node->next = NULL;
+//
+//    pthread_mutex_lock(&queue->mutex);
+//
+//    ready_queue_node_t *current = &queue->sentinel;
+//
+//    if(process != NULL)
+//    {
+//        while (current->next != NULL && process->remaining_burst > current->next->process->remaining_burst) {
+//            current = current->next;
+//        }
+//    }
+//
+//    new_node->next = current->next;
+//    current->next = new_node;
+//
+//    queue->size++;
+//
+//    pthread_cond_signal(&queue->cond);
+//    pthread_mutex_unlock(&queue->mutex);
+//}
+
+// HRRN
+
+//uint64_t hrrn(process_t *process, uint64_t now) {
+//    if(process->last_burst == 0) return ULONG_MAX; // Avoid division by zero (first burst)
+//    uint64_t waiting_time = now - process->last_response;
+//    return waiting_time / process->last_burst;
+//}
+//
+//void ready_queue_push(ready_queue_t *queue, process_t *process) {
+//    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+//    new_node->process = process;
+//    new_node->next = NULL;
+//
+//    uint64_t now = os_time();
+//
+//    pthread_mutex_lock(&queue->mutex);
+//
+//    ready_queue_node_t *current = &queue->sentinel;
+//
+//    if(process != NULL)
+//    {
+//        uint64_t process_hrrn = hrrn(process, now);
+//
+//        while (current->next != NULL && process_hrrn < hrrn(current->next->process, now)) {
+//            current = current->next;
+//        }
+//    }
+//
+//    new_node->next = current->next;
+//    current->next = new_node;
+//
+//    queue->size++;
+//
+//    pthread_cond_signal(&queue->cond);
+//    pthread_mutex_unlock(&queue->mutex);
+//}
+
+
+// CFS
+
+void ready_queue_push(ready_queue_t *queue, process_t *process) {
+    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+    new_node->process = process;
+    new_node->next = NULL;
+
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *current = &queue->sentinel;
+
+    if(process != NULL)
+    {
+        while (current->next != NULL && process->vruntime > current->next->process->vruntime) {
+            current = current->next;
+        }
+
+        if(current == &queue->sentinel && current->next != NULL)
+        {
+            process->vruntime = current->next->process->vruntime;
+        }
+    }
+
+    new_node->next = current->next;
+    current->next = new_node;
+
+    queue->size++;
+
+    pthread_cond_signal(&queue->cond);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+
+process_t *ready_queue_pop(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    while (queue->sentinel.next == NULL) {
+        pthread_cond_wait(&queue->cond, &queue->mutex);
+    }
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    queue->sentinel.next = node->next;
+
+    queue->size--;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    free(node);
+
+    return process;
+}
+
+process_t *ready_queue_peek(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    return process;
+}
+
+size_t ready_queue_size(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+    size_t size = queue->size;
+    pthread_mutex_unlock(&queue->mutex);
+    return size;
+}
+
+#include "ready_queue.h"
+
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#include "os.h"
+
+void ready_queue_init(ready_queue_t *queue) {
+    queue->sentinel.next = NULL;
+    queue->size = 0;
+
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->cond, NULL);
+}
+
+void ready_queue_destroy(ready_queue_t *queue) {
+    pthread_cond_destroy(&queue->cond);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+uint64_t remaining_time(process_t *process) {
+    if(process->burst_time == 0)
+    {
+        return 0;
+    }
+
+    return process->burst_time - (process->vruntime - process->last_vruntime);
+}
+
+void ready_queue_push(ready_queue_t *queue, process_t *process) {
+    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+    new_node->process = process;
+    new_node->next = NULL;
+
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *current = &queue->sentinel;
+
+    if (process != NULL) {
+        while (current->next != NULL
+               && remaining_time(process) >= remaining_time(current->next->process)) {
+            current = current->next;
+        }
+    }
+
+    new_node->next = current->next;
+    current->next = new_node;
+
+    queue->size++;
+
+    pthread_cond_signal(&queue->cond);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+process_t *ready_queue_pop(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    while (queue->sentinel.next == NULL) {
+        pthread_cond_wait(&queue->cond, &queue->mutex);
+    }
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    queue->sentinel.next = node->next;
+
+    queue->size--;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    free(node);
+
+    return process;
+}
+
+size_t ready_queue_size(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    size_t size = queue->size;
+
+    pthread_mutex_unlock(&queue->mutex);
+    return size;
+}
+
+#include "ready_queue.h"
+
+#include <limits.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#include "os.h"
+
+void ready_queue_init(ready_queue_t *queue) {
+    queue->sentinel.next = NULL;
+    queue->size = 0;
+
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->cond, NULL);
+}
+
+void ready_queue_destroy(ready_queue_t *queue) {
+    pthread_cond_destroy(&queue->cond);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+void ready_queue_push(ready_queue_t *queue, process_t *process) {
+    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+    new_node->process = process;
+    new_node->next = NULL;
+
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *current = &queue->sentinel;
+
+    if (process != NULL) {
+        while (current->next != NULL
+               && process->last_burst >= current->next->process->last_burst) {
+            current = current->next;
+        }
+    }
+
+    new_node->next = current->next;
+    current->next = new_node;
+
+    queue->size++;
+
+    pthread_cond_signal(&queue->cond);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+process_t *ready_queue_pop(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    while (queue->sentinel.next == NULL) {
+        pthread_cond_wait(&queue->cond, &queue->mutex);
+    }
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    queue->sentinel.next = node->next;
+
+    queue->size--;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    free(node);
+
+    return process;
+}
+
+size_t ready_queue_size(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    size_t size = queue->size;
+
+    pthread_mutex_unlock(&queue->mutex);
+    return size;
+}
+
+#include "ready_queue.h"
+
+#include <limits.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#include "os.h"
+
+void ready_queue_init(ready_queue_t *queue) {
+    queue->sentinel.next = NULL;
+    queue->size = 0;
+
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->cond, NULL);
+}
+
+void ready_queue_destroy(ready_queue_t *queue) {
+    pthread_cond_destroy(&queue->cond);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+void ready_queue_push(ready_queue_t *queue, process_t *process) {
+    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+    new_node->process = process;
+    new_node->next = NULL;
+
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *current = &queue->sentinel;
+
+    while(current->next != NULL) {
+        current = current->next;
+    }
+
+    current->next = new_node;
+
+    queue->size++;
+
+    pthread_cond_signal(&queue->cond);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+process_t *ready_queue_pop(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    while (queue->sentinel.next == NULL) {
+        pthread_cond_wait(&queue->cond, &queue->mutex);
+    }
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    queue->sentinel.next = node->next;
+
+    queue->size--;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    free(node);
+
+    return process;
+}
+
+size_t ready_queue_size(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    size_t size = queue->size;
+
+    pthread_mutex_unlock(&queue->mutex);
+    return size;
+}
+
+#include "ready_queue.h"
+
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#include "os.h"
+
+void ready_queue_init(ready_queue_t *queue) {
+    queue->sentinel.next = NULL;
+    queue->size = 0;
+
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->cond, NULL);
+}
+
+void ready_queue_destroy(ready_queue_t *queue) {
+    pthread_cond_destroy(&queue->cond);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+uint64_t response_ratio(process_t *process, uint64_t now) {
+    uint64_t waiting_time = now - process->last_response;
+
+    uint64_t remaining_time = process->burst_time - (process->vruntime - process->last_vruntime);
+
+    if (process->burst_time == 0 || remaining_time == 0)
+    {
+        uint64_t approx_burst_time = process->vruntime + OS_CONTEXT_SWITCH_DURATION;
+        return waiting_time / approx_burst_time;
+    }
+
+    return waiting_time / remaining_time;
+}
+
+void ready_queue_push(ready_queue_t *queue, process_t *process) {
+    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+    new_node->process = process;
+    new_node->next = NULL;
+
+    uint64_t now = os_time();
+
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *current = &queue->sentinel;
+
+    if (process != NULL) {
+
+        uint64_t process_rr = response_ratio(process, now);
+
+        while (current->next != NULL
+               && process_rr <= response_ratio(current->next->process, now)) {
+            current = current->next;
+        }
+    }
+
+    new_node->next = current->next;
+    current->next = new_node;
+
+    queue->size++;
+
+    pthread_cond_signal(&queue->cond);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+process_t *ready_queue_pop(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    while (queue->sentinel.next == NULL) {
+        pthread_cond_wait(&queue->cond, &queue->mutex);
+    }
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    queue->sentinel.next = node->next;
+
+    queue->size--;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    free(node);
+
+    return process;
+}
+
+size_t ready_queue_size(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    size_t size = queue->size;
+
+    pthread_mutex_unlock(&queue->mutex);
+    return size;
+}
+
+#include "ready_queue.h"
+
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#include "os.h"
+
+void ready_queue_init(ready_queue_t *queue) {
+    queue->sentinel.next = NULL;
+    queue->size = 0;
+
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->cond, NULL);
+}
+
+void ready_queue_destroy(ready_queue_t *queue) {
+    pthread_cond_destroy(&queue->cond);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+uint64_t response_ratio(process_t *process, uint64_t now) {
+    uint64_t waiting_time = now - process->last_response;
+
+    if (process->burst_time == 0)
+    {
+        uint64_t approx_burst_time = process->vruntime + OS_CONTEXT_SWITCH_DURATION;
+        return waiting_time / approx_burst_time;
+    }
+
+    return waiting_time / process->burst_time;
+}
+
+void ready_queue_push(ready_queue_t *queue, process_t *process) {
+    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+    new_node->process = process;
+    new_node->next = NULL;
+
+    uint64_t now = os_time();
+
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *current = &queue->sentinel;
+
+    if (process != NULL) {
+
+        uint64_t process_rr = response_ratio(process, now);
+
+        while (current->next != NULL
+               && process_rr <= response_ratio(current->next->process, now)) {
+            current = current->next;
+        }
+    }
+
+    new_node->next = current->next;
+    current->next = new_node;
+
+    queue->size++;
+
+    pthread_cond_signal(&queue->cond);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+process_t *ready_queue_pop(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    while (queue->sentinel.next == NULL) {
+        pthread_cond_wait(&queue->cond, &queue->mutex);
+    }
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    queue->sentinel.next = node->next;
+
+    queue->size--;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    free(node);
+
+    return process;
+}
+
+size_t ready_queue_size(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    size_t size = queue->size;
+
+    pthread_mutex_unlock(&queue->mutex);
+    return size;
+}
+
+#include "ready_queue.h"
+
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#include "os.h"
+
+void ready_queue_init(ready_queue_t *queue) {
+    queue->sentinel.next = NULL;
+    queue->size = 0;
+
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->cond, NULL);
+}
+
+void ready_queue_destroy(ready_queue_t *queue) {
+    pthread_cond_destroy(&queue->cond);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+void ready_queue_push(ready_queue_t *queue, process_t *process) {
+    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+    new_node->process = process;
+    new_node->next = NULL;
+
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *current = &queue->sentinel;
+
+    while(current->next != NULL) {
+        current = current->next;
+    }
+
+    current->next = new_node;
+
+    queue->size++;
+
+    pthread_cond_signal(&queue->cond);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+process_t *ready_queue_pop(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    while (queue->sentinel.next == NULL) {
+        pthread_cond_wait(&queue->cond, &queue->mutex);
+    }
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    queue->sentinel.next = node->next;
+
+    queue->size--;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    free(node);
+
+    return process;
+}
+
+size_t ready_queue_size(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    size_t size = queue->size;
+
+    pthread_mutex_unlock(&queue->mutex);
+    return size;
+}
+
+#include "ready_queue.h"
+
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#include "os.h"
+
+void ready_queue_init(ready_queue_t *queue) {
+    queue->sentinel.next = NULL;
+    queue->size = 0;
+
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->cond, NULL);
+}
+
+void ready_queue_destroy(ready_queue_t *queue) {
+    pthread_cond_destroy(&queue->cond);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+uint64_t remaining_time(process_t *process) {
+    if(process->burst_time == 0)
+    {
+        return process->vruntime;
+    }
+
+    return process->burst_time - (process->vruntime - process->last_vruntime);
+}
+
+void ready_queue_push(ready_queue_t *queue, process_t *process) {
+    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+    new_node->process = process;
+    new_node->next = NULL;
+
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *current = &queue->sentinel;
+
+    if (process != NULL) {
+        while (current->next != NULL
+               && remaining_time(process) >= remaining_time(current->next->process)) {
+            current = current->next;
+        }
+    }
+
+    new_node->next = current->next;
+    current->next = new_node;
+
+    queue->size++;
+
+    pthread_cond_signal(&queue->cond);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+process_t *ready_queue_pop(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    while (queue->sentinel.next == NULL) {
+        pthread_cond_wait(&queue->cond, &queue->mutex);
+    }
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    queue->sentinel.next = node->next;
+
+    queue->size--;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    free(node);
+
+    return process;
+}
+
+size_t ready_queue_size(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    size_t size = queue->size;
+
+    pthread_mutex_unlock(&queue->mutex);
+    return size;
+}
+
+#include "ready_queue.h"
+
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+
+#include "os.h"
+
+void ready_queue_init(ready_queue_t *queue) {
+    queue->sentinel.next = NULL;
+    queue->size = 0;
+
+    pthread_mutex_init(&queue->mutex, NULL);
+    pthread_cond_init(&queue->cond, NULL);
+}
+
+void ready_queue_destroy(ready_queue_t *queue) {
+    pthread_cond_destroy(&queue->cond);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+void ready_queue_push(ready_queue_t *queue, process_t *process) {
+    ready_queue_node_t *new_node = malloc(sizeof(ready_queue_node_t));
+    new_node->process = process;
+    new_node->next = NULL;
+
+    pthread_mutex_lock(&queue->mutex);
+
+    ready_queue_node_t *current = &queue->sentinel;
+
+    if(process != NULL)
+    {
+        while (current->next != NULL && process->vruntime > current->next->process->vruntime) {
+            current = current->next;
+        }
+
+        if(current == &queue->sentinel && current->next != NULL)
+        {
+            process->vruntime = current->next->process->vruntime;
+        }
+    }
+
+    new_node->next = current->next;
+    current->next = new_node;
+
+    queue->size++;
+
+    pthread_cond_signal(&queue->cond);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+process_t *ready_queue_pop(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    while (queue->sentinel.next == NULL) {
+        pthread_cond_wait(&queue->cond, &queue->mutex);
+    }
+
+    ready_queue_node_t *node = queue->sentinel.next;
+    process_t *process = node->process;
+
+    queue->sentinel.next = node->next;
+
+    queue->size--;
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    free(node);
+
+    return process;
+}
+
+size_t ready_queue_size(ready_queue_t *queue) {
+    pthread_mutex_lock(&queue->mutex);
+
+    size_t size = queue->size;
+
+    pthread_mutex_unlock(&queue->mutex);
+    return size;
+}
+
+uint64_t ready_queue_min_vruntime(ready_queue_t *queue) {
+    uint64_t min_vruntime = 0;
+
+    pthread_mutex_lock(&queue->mutex);
+
+    if(queue->sentinel.next != NULL)
+    {
+        min_vruntime = queue->sentinel.next->process->vruntime;
+    }
+
+    pthread_mutex_unlock(&queue->mutex);
+
+    return min_vruntime;
+}

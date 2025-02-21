@@ -1,24 +1,23 @@
 #ifndef SCHEDULER_H
 #define SCHEDULER_H
 
-#ifdef __cplusplus
-extern "C" {
+#include "process.h"
+
+typedef enum {
+    ALG_CFS,
+    ALG_CFS_SRTF,
+    ALG_FIFO,
+    ALG_RR,
+    ALG_SJF,
+    ALG_STRF,
+    ALG_HRRN,
+    ALG_HRRN_RT,
+    ALG_BFS,
+    ALG_PRIORITY,
+    ALG_HPC_OVERSHADOW
+} scheduler_alg_t;
+
+void scheduler_select_algorithm(scheduler_alg_t alg);
+void scheduler_run(process_t* list, int count);
+
 #endif
-
-    /*
-     * Exposes the advanced "scheduler_main" entry point,
-     * which:
-     *  - Manages 5 test suites in a progression (basic->normal->edge->hidden->modes)
-     *    each requiring >= 60% success to unlock the next
-     *  - Offers OS-based, ReadyQueue-based, and single-worker concurrency approaches
-     *  - Optionally uses OpenGL for OS-based UI if compiled with -DUSE_OPENGL_UI
-     *
-     * Returns an integer exit code, typically 0 for normal exit.
-     */
-    int scheduler_main(void);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* SCHEDULER_H */

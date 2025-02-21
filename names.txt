@@ -1,1 +1,60 @@
 BATMAN 1111111
+#cmake_minimum_required(VERSION 3.20)
+#
+#if("${CMAKE_SOURCE_DIR}" STREQUAL "${CMAKE_BINARY_DIR}")
+#    message(FATAL_ERROR "No in-source builds allowed. Use a separate build directory.")
+#endif()
+#
+#project(TP2 VERSION 24 DESCRIPTION "Real-Time Process Scheduler" LANGUAGES C)
+#
+#set(CMAKE_C_STANDARD 17)
+#
+## Enable or disable the OpenGL-based UI
+#option(USE_OPENGL_UI "Enable OpenGL-based UI" OFF)
+#
+## Always find Threads for pthread usage
+#find_package(Threads REQUIRED)
+#
+## If user wants OpenGL UI, we check for OpenGL, GLUT, and freeglut_ext
+#if(USE_OPENGL_UI)
+#    find_package(OpenGL REQUIRED)
+#    find_package(GLUT REQUIRED)
+#    include(CheckIncludeFile)
+#    check_include_file("GL/freeglut_ext.h" HAVE_FREEGLUT_EXT_H)
+#    if(NOT HAVE_FREEGLUT_EXT_H)
+#        message(FATAL_ERROR "USE_OPENGL_UI=ON but <GL/freeglut_ext.h> not found. Install freeglut.")
+#    endif()
+#endif()
+#
+#add_executable(scheduler
+#        # Core OS sources
+#        src/os.c
+#        src/process.c
+#        src/ready.c
+#        src/worker.c
+#        src/safe_calls_library.c
+#        src/scheduler.c
+#
+#        # Five test suites
+#        test/basic-test.c
+#        test/normal-test.c
+#        test/modes-test.c
+#        test/edge-test.c
+#        test/hidden-test.c
+#)
+#
+#target_include_directories(scheduler PRIVATE
+#        ${CMAKE_CURRENT_SOURCE_DIR}/src
+#        ${CMAKE_CURRENT_SOURCE_DIR}/test
+#)
+#
+#target_link_libraries(scheduler PRIVATE Threads::Threads)
+#
+## If user wants OpenGL UI
+#if(USE_OPENGL_UI)
+#    add_compile_definitions(USE_OPENGL_UI)
+#    target_link_libraries(scheduler PRIVATE OpenGL::GL GLUT::GLUT)
+#    # We'll define FREEGLUT if freeglut_ext.h is found
+#    target_compile_definitions(scheduler PRIVATE FREEGLUT)
+#endif()
+
