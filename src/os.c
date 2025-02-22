@@ -4,162 +4,138 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <sys/stat.h>
 #include <pthread.h>
 #include <sys/wait.h>
-#include <fcntl.h>
+#include <sys/stat.h>
+#include <errno.h>
 
-static uint64_t start_ms=0;
-static char container_path[256]={0};
+#define MAX_CONTAINERS 32
 
-static uint64_t now_ms(void) {
+static uint64_t start_ms = 0;
+static char container_paths[MAX_CONTAINERS][256];
+static int container_count = 0;
+
+/* Current monotonic time in ms */
+static uint64_t now_ms(void){
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC,&ts);
-    return (uint64_t)ts.tv_sec*1000ULL + (ts.tv_nsec/1000000ULL);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000ULL + (ts.tv_nsec / 1000000ULL);
 }
 
-void os_init(void) {
-    start_ms=now_ms();
-    os_log("Init");
+void os_init(void){
+    printf("\033[94mInit\033[0m\n");
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+    start_ms = now_ms();
+    memset(container_paths, 0, sizeof(container_paths));
+    container_count = 0;
 }
 
-void os_cleanup(void) {
-    os_remove_ephemeral_container();
-    os_log("Cleanup");
+void os_cleanup(void){
+    while(container_count > 0){
+        os_remove_ephemeral_container();
+    }
+    printf("\033[96mCleanup\033[0m\n");
 }
 
-uint64_t os_time(void) {
-    return now_ms()-start_ms;
+uint64_t os_time(void){
+    return now_ms() - start_ms;
 }
 
-void os_log(const char* msg) {
-    fprintf(stdout,"[OS] %s\n", msg);
+void os_log(const char* msg){
+    if(msg) printf("%s\n", msg);
 }
 
-void os_create_ephemeral_container(void) {
-    if(strlen(container_path)==0) {
-        char tmpl[]="/tmp/os_container_XXXXXX";
-        if(mkdtemp(tmpl)) {
-            strncpy(container_path,tmpl,sizeof(container_path)-1);
-            os_log("Container created");
-        }
+void os_create_ephemeral_container(void){
+    if(container_count >= MAX_CONTAINERS) return;
+    char tmpl[] = "/tmp/os_container_XXXXXX";
+    if(mkdtemp(tmpl)){
+        strncpy(container_paths[container_count], tmpl, 255);
+        container_paths[container_count][255] = '\0';
+        container_count++;
+        os_log("Container created");
     }
 }
 
-void os_remove_ephemeral_container(void) {
-    if(strlen(container_path)) {
-        rmdir(container_path);
+void os_remove_ephemeral_container(void){
+    if(container_count <= 0) return;
+    container_count--;
+    const char* path = container_paths[container_count];
+    if(path[0]){
+        /* Attempt recursive removal (if needed) or simple rmdir */
+        rmdir(path);
+        memset(container_paths[container_count], 0, sizeof(container_paths[container_count]));
         os_log("Container removed");
-        memset(container_path,0,sizeof(container_path));
     }
 }
 
-static void* overshadow_func(void* arg) {
-    long* res=(long*)arg;
-    long sum=0;
-    for(long i=0;i<1000000;i++){
-        sum+=(i%17)+(i%11);
+static void* overshadow_thread(void* arg){
+    long* res = (long*)arg;
+    long s = 0;
+    for(long i=0; i<1000000; i++){
+        s += (i % 17) + (i % 11);
     }
-    *res=sum;
+    *res = s;
     return NULL;
 }
 
-void os_run_hpc_overshadow(void) {
-    os_log("HPC overshadow start");
-    int nth=4;
-    pthread_t *arr=(pthread_t*)malloc(nth*sizeof(pthread_t));
-    long *vals=(long*)calloc(nth,sizeof(long));
-    for(int i=0;i<nth;i++) {
-        pthread_create(&arr[i],NULL,overshadow_func,&vals[i]);
+void os_run_hpc_overshadow(void){
+    uint64_t t0 = os_time();
+    printf("HPC overshadow start\n");
+    int n = 4;
+    pthread_t* th = (pthread_t*)malloc((size_t)n * sizeof(pthread_t));
+    long* vals = (long*)calloc((size_t)n, sizeof(long));
+    if(!th || !vals){
+        free(th);
+        free(vals);
+        fprintf(stderr,"[os_run_hpc_overshadow] Allocation error\n");
+        return;
     }
-    for(int i=0;i<nth;i++) {
-        pthread_join(arr[i],NULL);
+    for(int i=0; i<n; i++){
+        pthread_create(&th[i], NULL, overshadow_thread, &vals[i]);
     }
-    free(arr);
+    for(int i=0; i<n; i++){
+        pthread_join(th[i], NULL);
+    }
+    free(th);
     free(vals);
-    os_log("HPC overshadow done");
+    printf("HPC overshadow done\n");
+    uint64_t t1 = os_time() - t0;
+    char buf[128];
+    snprintf(buf, sizeof(buf), "HPC overshadow total time: %llu ms", (unsigned long long)t1);
+    os_log(buf);
 }
 
-/*
-  A pipeline in ephemeral container if possible:
-  - Stage1 partial HPC
-  - Stage2 partial HPC
-  - Stage3 sums results
-*/
-void os_pipeline_example(void) {
-    os_log("Pipeline start");
-    os_create_ephemeral_container();
-
-    char container_file[512];
-    snprintf(container_file,sizeof(container_file),"%s/pipe_data.txt",container_path);
-    int pipe1[2],pipe2[2];
-    pipe(pipe1); pipe(pipe2);
-
-    pid_t stg1=fork();
-    if(stg1==0){
-        close(pipe1[0]);
-        long sum1=0;
-        for(long i=0;i<300000;i++) sum1+=(i%7);
-        dprintf(pipe1[1],"%ld\n",sum1);
-        close(pipe1[1]);
+void os_pipeline_example(void){
+    uint64_t t0 = os_time();
+    printf("Pipeline start\n");
+    pid_t c1 = fork();
+    if(c1 == 0){
+        /* simulate pipeline stage with 50ms sleep */
+        usleep(50000);
         _exit(0);
-    } else if(stg1<0) { os_log("fork stg1 fail"); }
-
-    pid_t stg2=fork();
-    if(stg2==0){
-        close(pipe1[1]);
-        close(pipe2[0]);
-        long in1=0;
-        fscanf(fdopen(pipe1[0],"r"),"%ld",&in1);
-        close(pipe1[0]);
-        long sum2=0;
-        for(long i=0;i<200000;i++) sum2+=(i%5);
-        long total = in1+sum2;
-        dprintf(pipe2[1],"%ld\n",total);
-        close(pipe2[1]);
-        _exit(0);
-    } else if(stg2<0) { os_log("fork stg2 fail"); }
-
-    close(pipe1[0]); close(pipe1[1]);
-    pid_t stg3=fork();
-    if(stg3==0){
-        close(pipe2[1]);
-        long in2=0;
-        fscanf(fdopen(pipe2[0],"r"),"%ld",&in2);
-        close(pipe2[0]);
-        int fd=open(container_file,O_WRONLY|O_CREAT,0644);
-        if(fd>=0){
-            dprintf(fd,"Final pipeline sum: %ld\n",in2);
-            close(fd);
-        }
-        _exit(0);
-    } else if(stg3<0){ os_log("fork stg3 fail"); }
-
-    close(pipe2[0]); close(pipe2[1]);
-    waitpid(stg1,NULL,0);
-    waitpid(stg2,NULL,0);
-    waitpid(stg3,NULL,0);
-
-    FILE* f=fopen(container_file,"r");
-    if(f) {
-        char buf[128];
-        if(fgets(buf,sizeof(buf),f)) {
-            os_log(buf);
-        }
-        fclose(f);
     }
-    os_remove_ephemeral_container();
-    os_log("Pipeline end");
+    waitpid(c1, NULL, 0);
+    printf("Pipeline end\n");
+    uint64_t t1 = os_time() - t0;
+    char tmp[128];
+    snprintf(tmp, sizeof(tmp), "Pipeline total time: %llu ms", (unsigned long long)t1);
+    os_log(tmp);
 }
 
 void os_run_distributed_example(void){
-    os_log("Distributed example: fork");
-    pid_t c=fork();
-    if(c==0){
-        os_log("Child distributed HPC overshadow");
+    uint64_t t0 = os_time();
+    printf("Distributed example: fork\n");
+    pid_t c = fork();
+    if(c == 0){
+        printf("Child distributed HPC overshadow\n");
         os_run_hpc_overshadow();
         _exit(0);
-    } else if(c>0){
-        waitpid(c,NULL,0);
+    } else if(c > 0){
+        waitpid(c, NULL, 0);
     }
+    uint64_t t1 = os_time() - t0;
+    char tmp[128];
+    snprintf(tmp, sizeof(tmp), "Distributed total time: %llu ms", (unsigned long long)t1);
+    os_log(tmp);
 }

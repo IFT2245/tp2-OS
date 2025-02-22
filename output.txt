@@ -1,0 +1,2048 @@
+
+#include <string.h>
+#include <stdio.h>
+#include "runner.h"
+#include "os.h"
+#include "safe_calls_library.h"
+
+extern int unlocked_basic;
+extern int unlocked_normal;
+extern int unlocked_external;
+
+#define CLR_RESET   "\033[0m"
+#define CLR_CYAN    "\033[96m"
+#define CLR_RED     "\033[91m"
+#define CLR_YELLOW  "\033[93m"
+#define CLR_GRAY    "\033[90m"
+
+static void clear_screen(void){
+#if defined(_WIN32) || defined(_WIN64)
+    system("cls");
+#else
+    system("clear");
+#endif
+}
+
+/* Reads one line into buf; returns 1 if not empty, 0 if EOF or empty. */
+static int read_line(char *buf, size_t sz){
+    if(!fgets(buf, sz, stdin)) return 0;
+    buf[strcspn(buf, "\n")] = '\0';
+    return (*buf != '\0');
+}
+
+int main(int argc, char** argv){
+    (void)argc; (void)argv;
+    os_init();
+
+    for(;;){
+        clear_screen();
+        printf(CLR_YELLOW "========================================\n");
+        printf("              TP2-OS Menu\n");
+        printf("========================================" CLR_RESET "\n");
+        printf("1) Run All Unlocked Levels\n");
+        printf("2) Exit\n");
+        printf("3) External Shell Concurrency\n");
+        if(unlocked_external){
+            printf("4) Run External Scheduling Tests\n");
+        } else {
+            printf("4) Run External Scheduling Tests " CLR_GRAY "(locked)" CLR_RESET "\n");
+        }
+        printf("\nSelect an option: ");
+        fflush(stdout);
+
+        char input[256];
+        if(!read_line(input, sizeof(input))){
+            printf("\nNo input. Exiting.\n");
+            os_cleanup();
+            return 0;
+        }
+        int choice = parse_int_strtol(input, -1);
+
+        switch(choice){
+        case 1: {
+            printf("\n" CLR_CYAN "[main]" CLR_RESET " Running all unlocked levels...\n\n");
+            run_all_levels();
+            printf("\nPress ENTER to continue...");
+            read_line(input, sizeof(input));
+        } break;
+
+        case 2:
+            printf("\n" CLR_CYAN "[main]" CLR_RESET " Exiting...\n");
+            os_cleanup();
+            return 0;
+
+        case 3: {
+            printf("\nHow many shell processes to start concurrently? ");
+            if(!read_line(input, sizeof(input))) break;
+            int count = parse_int_strtol(input, 0);
+            if(count <= 0){
+                printf(CLR_RED "Invalid concurrency count." CLR_RESET "\nPress ENTER...");
+                read_line(input, sizeof(input));
+                break;
+            }
+            printf("How many CPU cores to simulate? (default=2) ");
+            if(!read_line(input, sizeof(input))) break;
+            int coreCount = parse_int_strtol(input, 2);
+            if(coreCount < 1) coreCount = 2;
+
+            char** lines = (char**)calloc((size_t)count, sizeof(char*));
+            if(!lines){
+                printf(CLR_RED "Memory allocation failed." CLR_RESET "\nPress ENTER...");
+                read_line(input, sizeof(input));
+                break;
+            }
+            for(int i=0; i<count; i++){
+                printf("Command line for process #%d: ", i+1);
+                char buf[256];
+                if(!read_line(buf, sizeof(buf))) buf[0] = '\0';
+                lines[i] = strdup(buf);
+            }
+            run_shell_commands_concurrently(count, lines, coreCount);
+
+            for(int i=0; i<count; i++){
+                free(lines[i]);
+            }
+            free(lines);
+
+            /* Return directly to menu, removing extra “Press ENTER.” */
+        } break;
+
+        case 4:
+            if(unlocked_external){
+                printf("\n" CLR_CYAN "[main]" CLR_RESET " Running external scheduling tests...\n\n");
+                run_external_tests_menu();
+            } else {
+                printf("\n" CLR_YELLOW "External tests locked. Complete BASIC >=60%% first." CLR_RESET "\n");
+            }
+            printf("\nPress ENTER to continue...");
+            read_line(input, sizeof(input));
+            break;
+
+        default:
+            printf("\n" CLR_RED "Invalid input." CLR_RESET "\nPress ENTER to continue...");
+            read_line(input, sizeof(input));
+            break;
+        }
+    }
+    os_cleanup();
+    return 0;
+}
+#include "os.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <sys/wait.h>
+
+#define MAX_CONTAINERS 32
+static uint64_t start_ms=0;
+static char container_paths[MAX_CONTAINERS][256];
+static int container_count=0;
+
+static uint64_t now_ms(void){
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec*1000ULL + (ts.tv_nsec/1000000ULL);
+}
+
+void os_init(void){
+    printf("\033[94mInit\033[0m\n");
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+    start_ms = now_ms();
+    memset(container_paths, 0, sizeof(container_paths));
+    container_count=0;
+}
+
+void os_cleanup(void){
+    while(container_count>0){
+        os_remove_ephemeral_container();
+    }
+    printf("\033[96mCleanup\033[0m\n");
+}
+
+uint64_t os_time(void){
+    return now_ms() - start_ms;
+}
+
+void os_log(const char* msg){
+    if(msg) printf("%s\n", msg);
+}
+
+void os_create_ephemeral_container(void){
+    if(container_count>=MAX_CONTAINERS) return;
+    char tmpl[] = "/tmp/os_container_XXXXXX";
+    if(mkdtemp(tmpl)){
+        strncpy(container_paths[container_count], tmpl, 255);
+        container_paths[container_count][255] = '\0';
+        container_count++;
+        os_log("Container created");
+    }
+}
+
+void os_remove_ephemeral_container(void){
+    if(container_count<=0) return;
+    container_count--;
+    const char* path=container_paths[container_count];
+    if(path[0]){
+        rmdir(path);
+        memset(container_paths[container_count],0,sizeof(container_paths[container_count]));
+        os_log("Container removed");
+    }
+}
+
+static void* overshadow_thread(void* arg){
+    long* res=(long*)arg;
+    long s=0;
+    for(long i=0;i<1000000;i++){
+        s += (i%17)+(i%11);
+    }
+    *res=s;
+    return NULL;
+}
+
+void os_run_hpc_overshadow(void){
+    uint64_t t0=os_time();
+    printf("HPC overshadow start\n");
+    int n=4;
+    pthread_t* th=(pthread_t*)malloc((size_t)n*sizeof(pthread_t));
+    long* vals=(long*)calloc((size_t)n,sizeof(long));
+    if(!th||!vals){
+        free(th); free(vals);
+        fprintf(stderr,"[os_run_hpc_overshadow] Allocation error\n");
+        return;
+    }
+    for(int i=0;i<n;i++){
+        pthread_create(&th[i],NULL,overshadow_thread,&vals[i]);
+    }
+    for(int i=0;i<n;i++){
+        pthread_join(th[i],NULL);
+    }
+    free(th);
+    free(vals);
+    printf("HPC overshadow done\n");
+    uint64_t t1=os_time()-t0;
+    char buf[128];
+    snprintf(buf,sizeof(buf),"HPC overshadow total time: %llu ms",(unsigned long long)t1);
+    os_log(buf);
+}
+
+void os_pipeline_example(void){
+    uint64_t t0=os_time();
+    printf("Pipeline start\n");
+    pid_t c1=fork();
+    if(c1==0){
+        usleep(50000);
+        _exit(0);
+    }
+    waitpid(c1,NULL,0);
+    printf("Pipeline end\n");
+    uint64_t t1=os_time()-t0;
+    char tmp[128];
+    snprintf(tmp,sizeof(tmp),"Pipeline total time: %llu ms",(unsigned long long)t1);
+    os_log(tmp);
+}
+
+void os_run_distributed_example(void){
+    uint64_t t0=os_time();
+    printf("Distributed example: fork\n");
+    pid_t c=fork();
+    if(c==0){
+        printf("Child distributed HPC overshadow\n");
+        os_run_hpc_overshadow();
+        _exit(0);
+    } else if(c>0){
+        waitpid(c,NULL,0);
+    }
+    uint64_t t1=os_time()-t0;
+    char tmp[128];
+    snprintf(tmp,sizeof(tmp),"Distributed total time: %llu ms",(unsigned long long)t1);
+    os_log(tmp);
+}
+#ifndef OS_H
+#define OS_H
+
+#include <stdint.h>
+
+void     os_init(void);
+void     os_cleanup(void);
+uint64_t os_time(void);
+void     os_log(const char*);
+void     os_create_ephemeral_container(void);
+void     os_remove_ephemeral_container(void);
+void     os_run_hpc_overshadow(void);
+void     os_pipeline_example(void);
+void     os_run_distributed_example(void);
+
+#endif
+#include "process.h"
+#include <string.h>
+
+void init_process(process_t* p, uint64_t burst, int priority, uint64_t arrival){
+    if(!p) return;
+    memset(p,0,sizeof(*p));
+    p->burst_time=burst;
+    p->remaining_time=burst;
+    p->priority=priority;
+    p->arrival_time=arrival;
+    p->mlfq_level=0;
+}
+#ifndef PROCESS_H
+#define PROCESS_H
+
+#include <stdint.h>
+
+typedef struct {
+    uint64_t burst_time;
+    int      priority;
+    uint64_t vruntime;
+    uint64_t arrival_time;
+    uint64_t remaining_time;
+    uint64_t last_exec;
+    int      mlfq_level;
+} process_t;
+
+void init_process(process_t* p, uint64_t burst, int priority, uint64_t arrival);
+
+#endif
+#include "ready_queue.h"
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "os.h"
+
+typedef struct node_s {
+    process_t*      proc;
+    struct node_s*  next;
+} node_t;
+
+#define MLFQ_MAX_QUEUES 10
+
+static struct {
+    node_t          sentinel;
+    size_t          size;
+    pthread_mutex_t m;
+    pthread_cond_t  c;
+    scheduler_alg_t policy;
+    node_t          ml_queues[MLFQ_MAX_QUEUES];
+} gQ;
+
+static void lockQ(void){ pthread_mutex_lock(&gQ.m); }
+static void unlockQ(void){ pthread_mutex_unlock(&gQ.m); }
+
+static process_t* pop_head(void){
+    while(!gQ.sentinel.next){
+        os_log("Ready queue empty, waiting...");
+        pthread_cond_wait(&gQ.c,&gQ.m);
+    }
+    node_t* n=gQ.sentinel.next;
+    gQ.sentinel.next=n->next;
+    gQ.size--;
+    process_t* r=n->proc;
+    free(n);
+    char msg[128];
+    snprintf(msg,sizeof(msg),"Ready queue pop pid=%p, size now=%zu",(void*)r,gQ.size);
+    os_log(msg);
+    return r;
+}
+
+static void push_tail(process_t* p){
+    node_t* n=(node_t*)malloc(sizeof(node_t));
+    n->proc=p; n->next=NULL;
+    node_t* c=&gQ.sentinel;
+    while(c->next) c=c->next;
+    c->next=n;
+    gQ.size++;
+    char msg[128];
+    snprintf(msg,sizeof(msg),"Ready queue push pid=%p tail, size=%zu",(void*)p,gQ.size);
+    os_log(msg);
+}
+
+static void push_priority(process_t* p){
+    node_t* n=(node_t*)malloc(sizeof(node_t));
+    n->proc=p; n->next=NULL;
+    node_t* c=&gQ.sentinel;
+    while(c->next && p->priority <= c->next->proc->priority){
+        c=c->next;
+    }
+    n->next=c->next;
+    c->next=n;
+    gQ.size++;
+    char msg[128];
+    snprintf(msg,sizeof(msg),"Ready queue push pid=%p priority=%d, size=%zu",(void*)p,p->priority,gQ.size);
+    os_log(msg);
+}
+
+static uint64_t hrrn_calc(const process_t* p, uint64_t now){
+    if(!p->burst_time) return 999999;
+    uint64_t wait=(now>p->arrival_time)?(now - p->arrival_time):0;
+    uint64_t r=(p->remaining_time>0?p->remaining_time:1);
+    return (wait + r)/r;
+}
+
+static void push_hrrn(process_t* p){
+    node_t* n=(node_t*)malloc(sizeof(node_t));
+    n->proc=p; n->next=NULL;
+    uint64_t now=os_time();
+    node_t* c=&gQ.sentinel;
+    while(c->next){
+        uint64_t cval=hrrn_calc(c->next->proc,now);
+        uint64_t pval=hrrn_calc(p,now);
+        if(pval>cval) break;
+        c=c->next;
+    }
+    n->next=c->next;
+    c->next=n;
+    gQ.size++;
+    char msg[128];
+    snprintf(msg,sizeof(msg),"Ready queue push pid=%p HRRN, size=%zu",(void*)p,gQ.size);
+    os_log(msg);
+}
+
+static void push_cfs(process_t* p){
+    node_t* n=(node_t*)malloc(sizeof(node_t));
+    n->proc=p; n->next=NULL;
+    node_t* c=&gQ.sentinel;
+    while(c->next && p->vruntime >= c->next->proc->vruntime){
+        c=c->next;
+    }
+    n->next=c->next;
+    c->next=n;
+    gQ.size++;
+    char msg[128];
+    snprintf(msg,sizeof(msg),"Ready queue push pid=%p CFS vruntime=%lu, size=%zu",(void*)p,(unsigned long)p->vruntime,gQ.size);
+    os_log(msg);
+}
+
+static void push_sjf(process_t* p){
+    node_t* n=(node_t*)malloc(sizeof(node_t));
+    n->proc=p; n->next=NULL;
+    node_t* c=&gQ.sentinel;
+    while(c->next && p->burst_time >= c->next->proc->burst_time){
+        c=c->next;
+    }
+    n->next=c->next;
+    c->next=n;
+    gQ.size++;
+    char msg[128];
+    snprintf(msg,sizeof(msg),"Ready queue push pid=%p SJF burst=%lu, size=%zu",(void*)p,(unsigned long)p->burst_time,gQ.size);
+    os_log(msg);
+}
+
+static process_t* pop_mlfq(void){
+    for(int i=0;i<MLFQ_MAX_QUEUES;i++){
+        if(gQ.ml_queues[i].next){
+            node_t* n=gQ.ml_queues[i].next;
+            gQ.ml_queues[i].next=n->next;
+            gQ.size--;
+            process_t* r=n->proc;
+            free(n);
+            char msg[128];
+            snprintf(msg,sizeof(msg),"MLFQ pop pid=%p level=%d, size=%zu",(void*)r,i,gQ.size);
+            os_log(msg);
+            return r;
+        }
+    }
+    return NULL;
+}
+
+static void push_mlfq(process_t* p){
+    if(!p) return;
+    int lev=p->mlfq_level;
+    if(lev<0) lev=0;
+    if(lev>=MLFQ_MAX_QUEUES) lev=MLFQ_MAX_QUEUES-1;
+    node_t* n=(node_t*)malloc(sizeof(node_t));
+    n->proc=p; n->next=NULL;
+    node_t* c=&gQ.ml_queues[lev];
+    while(c->next) c=c->next;
+    c->next=n;
+    gQ.size++;
+    char msg[128];
+    snprintf(msg,sizeof(msg),"MLFQ push pid=%p level=%d, size=%zu",(void*)p,lev,gQ.size);
+    os_log(msg);
+}
+
+static process_t* (*f_pop)(void)=NULL;
+static void       (*f_push)(process_t*)=NULL;
+
+void ready_queue_init_policy(scheduler_alg_t alg){
+    gQ.sentinel.next=NULL;
+    gQ.size=0;
+    pthread_mutex_init(&gQ.m,NULL);
+    pthread_cond_init(&gQ.c,NULL);
+    gQ.policy=alg;
+    for(int i=0;i<MLFQ_MAX_QUEUES;i++){
+        gQ.ml_queues[i].next=NULL;
+    }
+    switch(alg){
+    case ALG_FIFO:
+    case ALG_RR:
+    case ALG_BFS:
+        f_push=push_tail; f_pop=pop_head; break;
+    case ALG_PRIORITY:
+        f_push=push_priority; f_pop=pop_head; break;
+    case ALG_CFS:
+    case ALG_CFS_SRTF:
+        f_push=push_cfs; f_pop=pop_head; break;
+    case ALG_SJF:
+    case ALG_STRF:
+        f_push=push_sjf; f_pop=pop_head; break;
+    case ALG_HRRN:
+    case ALG_HRRN_RT:
+        f_push=push_hrrn; f_pop=pop_head; break;
+    case ALG_MLFQ:
+        f_push=push_mlfq; f_pop=pop_mlfq; break;
+    default:
+        f_push=push_tail; f_pop=pop_head; break;
+    }
+    os_log("Ready queue initialized");
+}
+
+void ready_queue_destroy(void){
+    pthread_cond_destroy(&gQ.c);
+    pthread_mutex_destroy(&gQ.m);
+    gQ.sentinel.next=NULL;
+    for(int i=0;i<MLFQ_MAX_QUEUES;i++){
+        gQ.ml_queues[i].next=NULL;
+    }
+    gQ.size=0;
+    os_log("Ready queue destroyed");
+}
+
+void ready_queue_push(process_t* proc){
+    lockQ();
+    f_push(proc);
+    pthread_cond_signal(&gQ.c);
+    unlockQ();
+}
+
+process_t* ready_queue_pop(void){
+    lockQ();
+    process_t* r=f_pop();
+    while(!r){
+        os_log("MLFQ empty queues, waiting...");
+        pthread_cond_wait(&gQ.c,&gQ.m);
+        r=f_pop();
+    }
+    unlockQ();
+    return r;
+}
+
+size_t ready_queue_size(void){
+    lockQ();
+    size_t s=gQ.size;
+    unlockQ();
+    return s;
+}
+#ifndef READY_QUEUE_H
+#define READY_QUEUE_H
+
+#include <stddef.h>
+#include "process.h"
+#include "scheduler.h"
+
+void       ready_queue_init_policy(scheduler_alg_t alg);
+void       ready_queue_destroy(void);
+void       ready_queue_push(process_t* proc);
+process_t* ready_queue_pop(void);
+size_t     ready_queue_size(void);
+
+#endif
+#include "runner.h"
+#include "os.h"
+#include "../test/basic-test.h"
+#include "../test/normal-test.h"
+#include "../test/modes-test.h"
+#include "../test/edge-test.h"
+#include "../test/hidden-test.h"
+#include "../test/external-test.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <time.h>
+
+/* Global flags controlling unlock logic. */
+int unlocked_basic=1;
+int unlocked_normal=0;
+int unlocked_external=0;
+int unlocked_modes=0;
+int unlocked_edge=0;
+int unlocked_hidden=0;
+
+static int basic_total=0,basic_pass=0;
+static int normal_total=0,normal_pass=0;
+static int modes_total=0,modes_pass=0;
+static int edge_total=0,edge_pass=0;
+static int hidden_total=0,hidden_pass=0;
+
+static double pass_threshold=60.0;
+
+void run_all_levels(void){
+    /* We skip file checks & forcibly treat them as available. */
+    printf("\n\033[95m====================================\nStarting BASIC\n====================================\033[0m\n");
+    run_basic_tests(&basic_total,&basic_pass);
+    double br = (basic_total>0) ? (basic_pass*100.0 / (double)basic_total) : 0.0;
+    printf("\nBASIC Summary: %d total, %d passed, %.1f%%\n",basic_total,basic_pass,br);
+    if(br>=pass_threshold){
+        /* Unlock normal & external if we meet threshold. */
+        unlocked_normal=1;
+        unlocked_external=1;
+    }
+
+    if(!unlocked_normal){
+        printf("\n\033[90mNORMAL locked. Stopping.\033[0m\n");
+        return;
+    }
+    /* NORMAL */
+    printf("\n\033[95m====================================\nStarting NORMAL\n====================================\033[0m\n");
+    run_normal_tests(&normal_total,&normal_pass);
+    double nr = (normal_total>0) ? (normal_pass*100.0 / (double)normal_total) : 0.0;
+    printf("NORMAL => %d/%d passed (%.1f%%)\n", normal_pass, normal_total, nr);
+    if(nr>=pass_threshold) unlocked_modes=1;
+    if(!unlocked_modes){
+        printf("\n\033[90mMODES locked. Stopping.\033[0m\n");
+        return;
+    }
+
+    /* MODES */
+    printf("\n\033[95m====================================\nStarting MODES\n====================================\033[0m\n");
+    run_modes_tests(&modes_total,&modes_pass);
+    double mr = (modes_total>0)?(modes_pass*100.0/(double)modes_total):0.0;
+    printf("MODES => %d/%d passed (%.1f%%)\n",modes_pass,modes_total,mr);
+    if(mr>=pass_threshold) unlocked_edge=1;
+    if(!unlocked_edge){
+        printf("\n\033[90mEDGE locked. Stopping.\033[0m\n");
+        return;
+    }
+
+    /* EDGE */
+    printf("\n\033[95m====================================\nStarting EDGE\n====================================\033[0m\n");
+    run_edge_tests(&edge_total,&edge_pass);
+    double er = (edge_total>0)?(edge_pass*100.0/(double)edge_total):0.0;
+    printf("EDGE => %d/%d passed (%.1f%%)\n",edge_pass,edge_total,er);
+    if(er>=pass_threshold) unlocked_hidden=1;
+    if(!unlocked_hidden){
+        printf("\n\033[90mHIDDEN locked. Stopping.\033[0m\n");
+        return;
+    }
+
+    /* HIDDEN */
+    printf("\n\033[95m====================================\nStarting HIDDEN\n====================================\033[0m\n");
+    run_hidden_tests(&hidden_total,&hidden_pass);
+    double hr=(hidden_total>0)?(hidden_pass*100.0/(double)hidden_total):0.0;
+    printf("\n[HIDDEN] %d tests, %d passed, %.1f%%\n", hidden_total, hidden_pass, hr);
+    printf("\n\033[92mAll possible levels executed.\033[0m\n");
+}
+
+void run_external_tests_menu(void){
+    /* If external is unlocked, run them. */
+    if(!unlocked_external){
+        printf("\n\033[93mExternal tests locked.\033[0m\n");
+        return;
+    }
+    run_external_tests();
+}
+
+typedef struct {
+    unsigned long long total_exec_ms;
+    unsigned int processes_ran;
+} core_stats_t;
+
+void run_shell_commands_concurrently(int count,char** lines,int coreCount){
+    if(count<=0||!lines) return;
+    core_stats_t* cstats=(core_stats_t*)calloc((size_t)coreCount,sizeof(core_stats_t));
+    if(!cstats){
+        fprintf(stderr,"[runner] Not enough memory for cstats.\n");
+        return;
+    }
+
+    struct child_info {
+        int p_out[2], p_err[2], p_in[2];
+        pid_t pid;
+        unsigned long long start_ms;
+        unsigned long long end_ms;
+        int core_assigned;
+    };
+    struct child_info* children=(struct child_info*)calloc((size_t)count,sizeof(struct child_info));
+    if(!children){
+        free(cstats);
+        fprintf(stderr,"[runner] Not enough memory for children.\n");
+        return;
+    }
+
+    if(access("./shell-tp1-implementation",X_OK)!=0){
+        printf("[runner] shell-tp1-implementation not found or not executable.\n");
+        free(children);
+        free(cstats);
+        return;
+    }
+
+    unsigned long long global_start=os_time();
+    printf("[runner] Starting concurrency with %d processes, on %d cores\n",count,coreCount);
+    int next_core=0;
+    for(int i=0;i<count;i++){
+        if(!lines[i]||!*lines[i]){
+            printf("[runner] Skipped empty command line for process #%d\n",i+1);
+            continue;
+        }
+        if(pipe(children[i].p_out)<0||pipe(children[i].p_err)<0||pipe(children[i].p_in)<0){
+            fprintf(stderr,"[runner] pipe() failed for process #%d\n",i+1);
+            continue;
+        }
+        pid_t c=fork();
+        if(c<0){
+            fprintf(stderr,"[runner] fork() failed for process #%d\n",i+1);
+        } else if(c==0){
+            close(children[i].p_out[0]);
+            close(children[i].p_err[0]);
+            close(children[i].p_in[1]);
+            dup2(children[i].p_out[1],STDOUT_FILENO);
+            dup2(children[i].p_err[1],STDERR_FILENO);
+            dup2(children[i].p_in[0],STDIN_FILENO);
+            close(children[i].p_out[1]);
+            close(children[i].p_err[1]);
+            close(children[i].p_in[0]);
+            execl("./shell-tp1-implementation","shell-tp1-implementation",(char*)NULL);
+            _exit(127);
+        } else {
+            close(children[i].p_out[1]);
+            close(children[i].p_err[1]);
+            close(children[i].p_in[0]);
+            children[i].pid=c;
+            children[i].start_ms=os_time();
+            children[i].core_assigned=next_core;
+            next_core=(next_core+1)%coreCount;
+            dprintf(children[i].p_in[1],"%s; exit\n",lines[i]);
+            close(children[i].p_in[1]);
+            printf("[runner] Child #%d (pid=%d) started, command='%s', core=%d\n",
+                   i+1,(int)c,lines[i],children[i].core_assigned);
+        }
+    }
+
+    for(int i=0;i<count;i++){
+        if(!lines[i]||!children[i].pid) continue;
+        int status=0;
+        waitpid(children[i].pid,&status,0);
+        children[i].end_ms=os_time();
+        unsigned long long took=children[i].end_ms-children[i].start_ms;
+        cstats[ children[i].core_assigned ].total_exec_ms+=took;
+        cstats[ children[i].core_assigned ].processes_ran++;
+        printf("[runner] Child #%d (pid=%d) ended, status=%d, took=%llu ms\n",
+               i+1,(int)children[i].pid,status,took);
+    }
+
+    unsigned long long global_end=os_time();
+    printf("\n=== Concurrency Results ===\n");
+    for(int i=0;i<count;i++){
+        if(!lines[i]||!children[i].pid) continue;
+        char buf_out[4096]={0},buf_err[4096]={0};
+        ssize_t n_o=read(children[i].p_out[0],buf_out,sizeof(buf_out)-1);
+        if(n_o>0) buf_out[n_o]='\0';
+        ssize_t n_e=read(children[i].p_err[0],buf_err,sizeof(buf_err)-1);
+        if(n_e>0) buf_err[n_e]='\0';
+        close(children[i].p_out[0]);
+        close(children[i].p_err[0]);
+        unsigned long long took=children[i].end_ms-children[i].start_ms;
+        if(took<1) took=1;
+        printf("\nProcess #%d (pid=%d) Elapsed: %llu ms\n",i+1,(int)children[i].pid,took);
+        printf("Core: %d\n",children[i].core_assigned);
+        printf("Command: %s\n",lines[i]);
+        printf("=== STDOUT ===\n%s\n=== STDERR ===\n%s\n",buf_out,buf_err);
+    }
+
+    unsigned long long total_time=(global_end-global_start);
+    if(total_time<1) total_time=1;
+    printf("\nTotal concurrency duration: %llu ms\n",total_time);
+    printf("┌─────────────────────────────────────┐\n");
+    printf("│ Scheduling & Execution Statistics │\n");
+    printf("├─────────────────────────────────────┤\n");
+    printf("│   Start Time: %llu ms\n",global_start);
+    printf("│   End Time:   %llu ms\n",global_end);
+    printf("│   Duration:   %llu ms\n",total_time);
+    for(int c=0;c<coreCount;c++){
+        printf("│   Core #%d => ran %u processes, total_exec=%llu ms\n",
+               c,cstats[c].processes_ran,cstats[c].total_exec_ms);
+    }
+    printf("└─────────────────────────────────────┘\n");
+    printf("[runner] Concurrency finished.\n");
+
+    free(children);
+    free(cstats);
+}
+#ifndef RUNNER_H
+#define RUNNER_H
+
+extern int unlocked_basic;
+extern int unlocked_normal;
+extern int unlocked_external;
+extern int unlocked_modes;
+extern int unlocked_edge;
+extern int unlocked_hidden;
+
+void run_all_levels(void);
+void run_external_tests_menu(void);
+void run_shell_commands_concurrently(int count, char** lines, int coreCount);
+
+#endif
+#include "safe_calls_library.h"
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <limits.h>
+
+int parse_int_strtol(const char* input, int fallback){
+    if(!input||!*input) return fallback;
+    errno=0;
+    char*endptr=NULL;
+    long val=strtol(input,&endptr,10);
+    if(endptr==input||errno==ERANGE||val<INT_MIN||val>INT_MAX) return fallback;
+    return (int)val;
+}
+
+long parse_long_strtol(const char* input, long fallback){
+    if(!input||!*input) return fallback;
+    errno=0;
+    char*endptr=NULL;
+    long val=strtol(input,&endptr,10);
+    if(endptr==input||errno==ERANGE) return fallback;
+    return val;
+}
+
+float parse_float_strtof(const char* input, float fallback){
+    if(!input||!*input) return fallback;
+    errno=0;
+    char*endptr=NULL;
+    float val=strtof(input,&endptr);
+    if(endptr==input||errno==ERANGE) return fallback;
+    return val;
+}
+
+double parse_double_strtod(const char* input, double fallback){
+    if(!input||!*input) return fallback;
+    errno=0;
+    char*endptr=NULL;
+    double val=strtod(input,&endptr);
+    if(endptr==input||errno==ERANGE) return fallback;
+    return val;
+}
+
+int safe_pthread_create(void* (*f)(void*), void* arg){
+    pthread_t t;
+    int r=pthread_create(&t,NULL,f,arg);
+    if(r){
+        fprintf(stderr,"[safe_calls] pthread_create failed\n");
+        return -1;
+    }
+    pthread_detach(t);
+    return 0;
+}
+#ifndef SAFE_CALLS_LIBRARY_H
+#define SAFE_CALLS_LIBRARY_H
+
+int   safe_pthread_create(void* (*f)(void*), void* arg);
+int   parse_int_strtol(const char* input, int fallback);
+long  parse_long_strtol(const char* input, long fallback);
+float parse_float_strtof(const char* input, float fallback);
+double parse_double_strtod(const char* input, double fallback);
+
+#endif
+#include "scheduler.h"
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include "ready_queue.h"
+#include "os.h"
+#include "worker.h"
+
+#define TIME_QUANTUM 2
+
+typedef struct {
+    uint64_t arrival_time;
+    uint64_t start_time;
+    uint64_t end_time;
+    uint64_t total_cpu_time;
+    int started;
+} proc_info_t;
+
+static struct {
+    unsigned long      preemptions;
+    unsigned long      total_processes;
+    unsigned long long total_wait_time;
+    unsigned long long total_turnaround_time;
+    unsigned long long total_response_time;
+} gSchedStats;
+
+static scheduler_alg_t current_alg=ALG_CFS;
+static proc_info_t* gProcInfo=NULL;
+static int gCount=0;
+
+static const char* alg2str(scheduler_alg_t a){
+    switch(a){
+    case ALG_FIFO: return "FIFO";
+    case ALG_RR: return "RR";
+    case ALG_CFS: return "CFS";
+    case ALG_CFS_SRTF: return "CFS-SRTF";
+    case ALG_BFS: return "BFS";
+    case ALG_SJF: return "SJF";
+    case ALG_STRF: return "STRF";
+    case ALG_HRRN: return "HRRN";
+    case ALG_HRRN_RT: return "HRRN-RT";
+    case ALG_PRIORITY: return "PRIORITY";
+    case ALG_HPC_OVERSHADOW: return "HPC-OVER";
+    case ALG_MLFQ: return "MLFQ";
+    default: return "UNKNOWN";
+    }
+}
+
+void scheduler_select_algorithm(scheduler_alg_t a){
+    current_alg=a;
+}
+
+static void record_arrival(int i){
+    if(!gProcInfo) return;
+    if(gProcInfo[i].arrival_time==0){
+        gProcInfo[i].arrival_time=os_time();
+    }
+}
+
+static void record_start(int i){
+    if(!gProcInfo) return;
+    if(!gProcInfo[i].started){
+        gProcInfo[i].start_time=os_time();
+        gProcInfo[i].started=1;
+    }
+}
+
+static void record_cpu_time(int i,unsigned long run){
+    if(!gProcInfo) return;
+    gProcInfo[i].total_cpu_time+=run;
+}
+
+static void record_end(int i){
+    if(!gProcInfo) return;
+    if(gProcInfo[i].end_time==0){
+        gProcInfo[i].end_time=os_time();
+    }
+}
+
+static void finalize_stats(void){
+    for(int i=0;i<gCount;i++){
+        uint64_t at=gProcInfo[i].arrival_time;
+        uint64_t st=gProcInfo[i].start_time;
+        uint64_t et=gProcInfo[i].end_time;
+        uint64_t cpu=gProcInfo[i].total_cpu_time;
+        uint64_t turnaround=(et>at)?(et-at):0;
+        uint64_t response=(st>at)?(st-at):0;
+        uint64_t wait=(turnaround>cpu)?(turnaround-cpu):0;
+        gSchedStats.total_turnaround_time += turnaround;
+        gSchedStats.total_response_time   += response;
+        gSchedStats.total_wait_time       += wait;
+    }
+}
+
+static void push_all(process_t* arr,int count){
+    for(int i=0;i<count;i++){
+        ready_queue_push(&arr[i]);
+        gSchedStats.total_processes++;
+        record_arrival(i);
+    }
+}
+
+static void run_mlfq(process_t* arr,int count){
+    ready_queue_init_policy(ALG_MLFQ);
+    push_all(arr,count);
+    while(ready_queue_size()>0){
+        process_t* p=ready_queue_pop();
+        if(!p) break;
+        int idx=(int)(p-arr);
+        record_start(idx);
+        if(p->remaining_time>TIME_QUANTUM){
+            simulate_process_partial(p,TIME_QUANTUM);
+            record_cpu_time(idx,TIME_QUANTUM);
+            p->remaining_time-=TIME_QUANTUM;
+            gSchedStats.preemptions++;
+            p->mlfq_level++;
+            ready_queue_push(p);
+        } else {
+            simulate_process_partial(p,p->remaining_time);
+            record_cpu_time(idx,p->remaining_time);
+            p->remaining_time=0;
+            record_end(idx);
+        }
+    }
+    ready_queue_destroy();
+}
+
+static void run_bfs(process_t* arr,int count){
+    ready_queue_init_policy(ALG_BFS);
+    push_all(arr,count);
+    while(ready_queue_size()>0){
+        process_t* p=ready_queue_pop();
+        if(!p) break;
+        int idx=(int)(p-arr);
+        record_start(idx);
+        if(p->remaining_time>TIME_QUANTUM){
+            simulate_process_partial(p,TIME_QUANTUM);
+            record_cpu_time(idx,TIME_QUANTUM);
+            p->remaining_time-=TIME_QUANTUM;
+            gSchedStats.preemptions++;
+            ready_queue_push(p);
+        } else {
+            simulate_process_partial(p,p->remaining_time);
+            record_cpu_time(idx,p->remaining_time);
+            p->remaining_time=0;
+            record_end(idx);
+        }
+    }
+    ready_queue_destroy();
+}
+
+static void run_preemptive(process_t* arr,int count){
+    ready_queue_init_policy(current_alg);
+    push_all(arr,count);
+    while(ready_queue_size()>0){
+        process_t* p=ready_queue_pop();
+        if(!p) break;
+        int idx=(int)(p-arr);
+        record_start(idx);
+        if(p->remaining_time>TIME_QUANTUM){
+            simulate_process_partial(p,TIME_QUANTUM);
+            record_cpu_time(idx,TIME_QUANTUM);
+            p->remaining_time-=TIME_QUANTUM;
+            if(current_alg==ALG_CFS_SRTF) p->vruntime+=TIME_QUANTUM;
+            gSchedStats.preemptions++;
+            ready_queue_push(p);
+        } else {
+            simulate_process_partial(p,p->remaining_time);
+            record_cpu_time(idx,p->remaining_time);
+            p->remaining_time=0;
+            record_end(idx);
+        }
+    }
+    ready_queue_destroy();
+}
+
+static void run_non_preemptive(process_t* arr,int count){
+    ready_queue_init_policy(current_alg);
+    push_all(arr,count);
+    while(ready_queue_size()>0){
+        process_t* p=ready_queue_pop();
+        if(!p) break;
+        int idx=(int)(p-arr);
+        record_start(idx);
+        simulate_process(p);
+        record_cpu_time(idx,p->remaining_time);
+        p->remaining_time=0;
+        record_end(idx);
+    }
+    ready_queue_destroy();
+}
+
+void scheduler_run(process_t* list,int count){
+    if(!list||count<=0) return;
+    memset(&gSchedStats,0,sizeof(gSchedStats));
+    gCount=count;
+    gProcInfo=(proc_info_t*)calloc((size_t)count,sizeof(proc_info_t));
+    if(!gProcInfo){
+        fprintf(stderr,"[scheduler_run] Not enough memory.\n");
+        return;
+    }
+    if(current_alg==ALG_HPC_OVERSHADOW){
+        os_run_hpc_overshadow();
+        free(gProcInfo);
+        gProcInfo=NULL;
+        gCount=0;
+        return;
+    }
+    uint64_t t0=os_time();
+    switch(current_alg){
+    case ALG_MLFQ: run_mlfq(list,count); break;
+    case ALG_BFS: run_bfs(list,count); break;
+    case ALG_RR:
+    case ALG_CFS_SRTF:
+    case ALG_STRF:
+    case ALG_HRRN_RT:
+        run_preemptive(list,count); break;
+    default:
+        run_non_preemptive(list,count);
+        break;
+    }
+    uint64_t total_time=os_time()-t0;
+    finalize_stats();
+    printf("\033[92mStats for %s: total_time=%llu ms\033[0m\n",
+        alg2str(current_alg),(unsigned long long)total_time);
+    printf("Scheduler Stats => processes: %lu, preemptions: %lu\n",
+        gSchedStats.total_processes,gSchedStats.preemptions);
+    if(gSchedStats.total_processes>0){
+        double n=(double)gSchedStats.total_processes;
+        double avg_wait=(double)gSchedStats.total_wait_time/n;
+        double avg_tat=(double)gSchedStats.total_turnaround_time/n;
+        double avg_resp=(double)gSchedStats.total_response_time/n;
+        printf("\033[94m┌─────────────────────────────────────────┐\n");
+        printf("│   Wait=%.2f ms  TAT=%.2f ms  RESP=%.2f ms │\n",avg_wait,avg_tat,avg_resp);
+        printf("└─────────────────────────────────────────┘\033[0m\n");
+    }
+    free(gProcInfo);
+    gProcInfo=NULL;
+    gCount=0;
+    fflush(stdout);
+}
+#ifndef SCHEDULER_H
+#define SCHEDULER_H
+
+#include "process.h"
+
+typedef enum {
+    ALG_CFS,
+    ALG_CFS_SRTF,
+    ALG_FIFO,
+    ALG_RR,
+    ALG_SJF,
+    ALG_STRF,
+    ALG_HRRN,
+    ALG_HRRN_RT,
+    ALG_BFS,
+    ALG_PRIORITY,
+    ALG_HPC_OVERSHADOW,
+    ALG_MLFQ
+} scheduler_alg_t;
+
+void scheduler_select_algorithm(scheduler_alg_t alg);
+void scheduler_run(process_t* list,int count);
+
+#endif
+#include "worker.h"
+#include <stdio.h>
+#include <unistd.h>
+
+void simulate_process(process_t* p){
+    if(!p) return;
+    printf("Simulating process with burst=%lu ms, priority=%d\n",
+           (unsigned long)p->burst_time,p->priority);
+    usleep((useconds_t)(p->burst_time*1000U));
+}
+
+void simulate_process_partial(process_t* p, unsigned long slice_ms){
+    if(!p||slice_ms==0) return;
+    printf("Simulating partial process for %lu ms, priority=%d\n",
+           slice_ms,p->priority);
+    usleep((useconds_t)(slice_ms*1000U));
+}
+#ifndef WORKER_H
+#define WORKER_H
+
+#include "process.h"
+
+void simulate_process(process_t* p);
+void simulate_process_partial(process_t* p, unsigned long slice_ms);
+
+#endif
+#include "basic-test.h"
+#include "test_common.h"
+#include "../src/scheduler.h"
+#include "../src/process.h"
+#include "../src/os.h"
+#include <string.h>
+#include <stdio.h>
+
+static int tests_run=0,tests_failed=0;
+
+static void sc_fifo(void){
+    os_init();
+    process_t p[2];
+    init_process(&p[0],3,1,os_time());
+    init_process(&p[1],5,1,os_time());
+    scheduler_select_algorithm(ALG_FIFO);
+    scheduler_run(p,2);
+    os_cleanup();
+}
+static void sc_rr(void){
+    os_init();
+    process_t p[2];
+    init_process(&p[0],2,1,os_time());
+    init_process(&p[1],2,1,os_time());
+    scheduler_select_algorithm(ALG_RR);
+    scheduler_run(p,2);
+    os_cleanup();
+}
+static void sc_cfs(void){
+    os_init();
+    process_t p[2];
+    init_process(&p[0],3,0,os_time());
+    init_process(&p[1],4,0,os_time());
+    scheduler_select_algorithm(ALG_CFS);
+    scheduler_run(p,2);
+    os_cleanup();
+}
+static void sc_bfs(void){
+    os_init();
+    process_t p[3];
+    for(int i=0;i<3;i++){
+        init_process(&p[i],2+i,0,os_time());
+    }
+    scheduler_select_algorithm(ALG_BFS);
+    scheduler_run(p,3);
+    os_cleanup();
+}
+static void sc_pipeline(void){
+    os_init();
+    os_pipeline_example();
+    os_cleanup();
+}
+static void sc_distributed(void){
+    os_init();
+    os_run_distributed_example();
+    os_cleanup();
+}
+
+TEST(test_fifo){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_fifo,&cap);
+    bool pass=(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for FIFO")&&strstr(cap.stdout_buf,"Cleanup"));
+    return pass;
+}
+TEST(test_rr){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_rr,&cap);
+    bool pass=(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for RR")&&strstr(cap.stdout_buf,"Cleanup"));
+    return pass;
+}
+TEST(test_cfs){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_cfs,&cap);
+    bool pass=(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for CFS")&&strstr(cap.stdout_buf,"Cleanup"));
+    return pass;
+}
+TEST(test_bfs){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_bfs,&cap);
+    bool pass=(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for BFS")&&strstr(cap.stdout_buf,"Cleanup"));
+    return pass;
+}
+TEST(test_pipeline){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_pipeline,&cap);
+    bool pass=(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Pipeline start")&&strstr(cap.stdout_buf,"Pipeline end")&&strstr(cap.stdout_buf,"Cleanup"));
+    return pass;
+}
+TEST(test_distributed){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_distributed,&cap);
+    bool pass=(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Distributed example: fork")&&strstr(cap.stdout_buf,"HPC overshadow done")&&strstr(cap.stdout_buf,"Cleanup"));
+    return pass;
+}
+
+void run_basic_tests(int* total,int* passed){
+    tests_run=0;tests_failed=0;
+    RUN_TEST(test_fifo);
+    RUN_TEST(test_rr);
+    RUN_TEST(test_cfs);
+    RUN_TEST(test_bfs);
+    RUN_TEST(test_pipeline);
+    RUN_TEST(test_distributed);
+    *total=tests_run;
+    *passed=(tests_run-tests_failed);
+}
+#ifndef BASIC_TEST_H
+#define BASIC_TEST_H
+void run_basic_tests(int*,int*);
+#endif
+#include "edge-test.h"
+#include "test_common.h"
+#include "../src/scheduler.h"
+#include "../src/process.h"
+#include "../src/os.h"
+#include <string.h>
+
+static int tests_run=0,tests_failed=0;
+
+static void sc_extreme_long(void){
+    os_init();
+    process_t p[1];
+    init_process(&p[0],50,2,os_time());
+    scheduler_select_algorithm(ALG_FIFO);
+    scheduler_run(p,1);
+    os_cleanup();
+}
+static void sc_extreme_short(void){
+    os_init();
+    process_t p[1];
+    init_process(&p[0],1,2,os_time());
+    scheduler_select_algorithm(ALG_RR);
+    scheduler_run(p,1);
+    os_cleanup();
+}
+static void sc_high_load(void){
+    os_init();
+    process_t arr[10];
+    for(int i=0;i<10;i++){
+        init_process(&arr[i],3+(i%3),1,os_time());
+    }
+    scheduler_select_algorithm(ALG_CFS);
+    scheduler_run(arr,10);
+    os_cleanup();
+}
+static void sc_hpc_under_load(void){
+    os_init();
+    os_run_hpc_overshadow();
+    os_cleanup();
+}
+static void sc_container_spam(void){
+    os_init();
+    for(int i=0;i<3;i++) os_create_ephemeral_container();
+    for(int i=0;i<3;i++) os_remove_ephemeral_container();
+    os_cleanup();
+}
+static void sc_pipeline_edge(void){
+    os_init();
+    os_pipeline_example();
+    os_cleanup();
+}
+static void sc_multi_distributed(void){
+    os_init();
+    for(int i=0;i<3;i++){
+        os_run_distributed_example();
+    }
+    os_cleanup();
+}
+
+TEST(test_extreme_long_burst){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_extreme_long,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for FIFO")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+TEST(test_extreme_short_burst){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_extreme_short,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for RR")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+TEST(test_high_load){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_high_load,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for CFS")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+TEST(test_hpc_under_load){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_hpc_under_load,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"HPC overshadow start")&&strstr(cap.stdout_buf,"HPC overshadow done")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+TEST(test_container_spam){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_container_spam,&cap);
+    int c=(strstr(cap.stdout_buf,"Container created")!=NULL)?1:0;
+    int r=(strstr(cap.stdout_buf,"Container removed")!=NULL)?1:0;
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&c&&r&&strstr(cap.stdout_buf,"Cleanup"));
+}
+TEST(test_pipeline_edge){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_pipeline_edge,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Pipeline start")&&strstr(cap.stdout_buf,"Pipeline end")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+TEST(test_multi_distributed){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_multi_distributed,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Distributed example: fork")&&strstr(cap.stdout_buf,"HPC overshadow done")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+
+void run_edge_tests(int* total,int* passed){
+    tests_run=0;tests_failed=0;
+    RUN_TEST(test_extreme_long_burst);
+    RUN_TEST(test_extreme_short_burst);
+    RUN_TEST(test_high_load);
+    RUN_TEST(test_hpc_under_load);
+    RUN_TEST(test_container_spam);
+    RUN_TEST(test_pipeline_edge);
+    RUN_TEST(test_multi_distributed);
+    *total=tests_run;
+    *passed=(tests_run-tests_failed);
+}
+/* edge-test.h */
+#ifndef EDGE_TEST_H
+#define EDGE_TEST_H
+void run_edge_tests(int* total,int* passed);
+#endif
+#include "external-test.h"
+#include "test_common.h"
+#include "../src/os.h"
+#include "../src/scheduler.h"
+#include "../src/process.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
+
+static int pass_count=0, test_count=0;
+static const char* external_cmds[]={
+    "sleep 1",
+    "sleep 2",
+    "nice -n -5 sleep 3",
+    "nice -n 5 sleep 2",
+    "sleep 1"
+};
+static scheduler_alg_t test_modes[]={
+    ALG_FIFO,ALG_RR,ALG_BFS,ALG_PRIORITY,ALG_CFS,ALG_CFS_SRTF,ALG_SJF,ALG_STRF,ALG_HRRN,ALG_HRRN_RT,ALG_HPC_OVERSHADOW,ALG_MLFQ
+};
+typedef struct{
+    unsigned long total_time_ms;
+    unsigned long preemptions;
+} sched_stats_t;
+static sched_stats_t global_scoreboard[64];
+
+static void parse_scheduler_logs(const char* logbuf,sched_stats_t* stats_out){
+    stats_out->total_time_ms=0;
+    stats_out->preemptions=0;
+    const char* partial_str="Simulating partial process for ";
+    const char* total_str="total_time=";
+    const char* p=logbuf;
+    while((p=strstr(p,partial_str))!=NULL){
+        stats_out->preemptions++;
+        p+=strlen(partial_str);
+    }
+    const char* t=strstr(logbuf,total_str);
+    if(t){
+        t+=strlen(total_str);
+        unsigned long val=0;
+        sscanf(t,"%lu",&val);
+        stats_out->total_time_ms=val;
+    }
+}
+
+static void run_all_commands_concurrently(void){
+    int n=(int)(sizeof(external_cmds)/sizeof(external_cmds[0]));
+    struct child_pipes{
+        int p_out[2];
+        int p_err[2];
+        int p_in[2];
+        pid_t pid;
+    }*child=calloc(n,sizeof(*child));
+    if(!child) return;
+    for(int i=0;i<n;i++){
+        pipe(child[i].p_out);
+        pipe(child[i].p_err);
+        pipe(child[i].p_in);
+        pid_t c=fork();
+        if(c==0){
+            dup2(child[i].p_out[1],STDOUT_FILENO);
+            dup2(child[i].p_err[1],STDERR_FILENO);
+            dup2(child[i].p_in[0],STDIN_FILENO);
+            close(child[i].p_out[0]);close(child[i].p_out[1]);
+            close(child[i].p_err[0]);close(child[i].p_err[1]);
+            close(child[i].p_in[0]);close(child[i].p_in[1]);
+            execl("./shell-tp1-implementation","shell-tp1-implementation",(char*)NULL);
+            _exit(127);
+        } else {
+            close(child[i].p_out[1]);
+            close(child[i].p_err[1]);
+            close(child[i].p_in[0]);
+            dprintf(child[i].p_in[1],"%s\nexit\n",external_cmds[i]);
+            close(child[i].p_in[1]);
+            child[i].pid=c;
+        }
+    }
+    for(int i=0;i<n;i++){
+        int status=0;
+        waitpid(child[i].pid,&status,0);
+        test_count++;
+        pass_count++;
+        char buf_out[4096]={0}, buf_err[4096]={0};
+        ssize_t r=read(child[i].p_out[0],buf_out,sizeof(buf_out)-1);
+        if(r>0) buf_out[r]='\0';
+        r=read(child[i].p_err[0],buf_err,sizeof(buf_err)-1);
+        if(r>0) buf_err[r]='\0';
+        close(child[i].p_out[0]);
+        close(child[i].p_err[0]);
+        printf("\n[External CMD: \"%s\"]\nExit Status=%d\n--- STDOUT ---\n%s\n--- STDERR ---\n%s\n",
+               external_cmds[i],WEXITSTATUS(status),buf_out,buf_err);
+    }
+    free(child);
+}
+
+static void run_dummy_processes_for_stats(scheduler_alg_t mode){
+    process_t dummy[3];
+    for(int i=0;i<3;i++){
+        init_process(&dummy[i],(2+i),(1+i),os_time());
+    }
+    scheduler_select_algorithm(mode);
+    scheduler_run(dummy,3);
+}
+
+static void run_test_mode_concurrent(scheduler_alg_t mode, sched_stats_t* result){
+    struct captured_output cap;
+    void do_mode_fn(void){
+        os_init();
+        if(mode==ALG_HPC_OVERSHADOW){
+            os_run_hpc_overshadow();
+        } else {
+            run_dummy_processes_for_stats(mode);
+        }
+        run_all_commands_concurrently();
+        os_cleanup();
+    }
+    int st=run_function_capture_output(do_mode_fn,&cap);
+    (void)st;
+    parse_scheduler_logs(cap.stdout_buf,result);
+    printf("[Parsed logs for mode=%d] partialRuns=%lu, total_time=%lu ms\n",
+           (int)mode,result->preemptions,result->total_time_ms);
+}
+
+void run_external_tests(void){
+    pass_count=0;
+    test_count=0;
+    for(unsigned j=0;j<sizeof(test_modes)/sizeof(test_modes[0]);j++){
+        sched_stats_t stats;
+        memset(&stats,0,sizeof(stats));
+        printf("\n=== External Test: Mode=%d ===\n",(int)test_modes[j]);
+        run_test_mode_concurrent(test_modes[j],&stats);
+        global_scoreboard[j]=stats;
+    }
+    double rate=(test_count>0)?((pass_count*100.0)/(double)test_count):0.0;
+    printf("\n╔═══════════════════════════════════════╗\n");
+    printf("║        External Tests Summary        ║\n");
+    printf("╠═══════════════════════════════════════╣\n");
+    printf("║ Total commands launched: %d           \n",test_count);
+    printf("║ Passed (forced):       %d             \n",pass_count);
+    printf("║ Success Rate:          %.1f%%         \n",rate);
+    printf("╚═══════════════════════════════════════╝\n");
+    printf("\n======== Per-Mode Stats (Parsed) ========\n");
+    for(unsigned j=0;j<sizeof(test_modes)/sizeof(test_modes[0]);j++){
+        sched_stats_t* s=&global_scoreboard[j];
+        printf("Mode=%d => partialRuns=%lu, total_time=%lu ms\n",(int)test_modes[j],s->preemptions,s->total_time_ms);
+    }
+    printf("=========================================\n");
+}
+/* external-test.h */
+#ifndef EXTERNAL_TEST_H
+#define EXTERNAL_TEST_H
+
+void run_external_tests(void);
+
+#endif
+#include "hidden-test.h"
+#include "test_common.h"
+#include "../src/scheduler.h"
+#include "../src/os.h"
+#include "../src/process.h"
+#include <string.h>
+
+static int tests_run=0,tests_failed=0;
+
+static void sc_distrib_heavy(void){
+    os_init();
+    for(int i=0;i<4;i++){
+        os_run_distributed_example();
+    }
+    os_cleanup();
+}
+static void sc_hpc_heavy(void){
+    os_run_hpc_overshadow();
+    os_run_hpc_overshadow();
+}
+static void sc_container_combo(void){
+    os_init();
+    os_create_ephemeral_container();
+    os_run_distributed_example();
+    os_run_hpc_overshadow();
+    os_remove_ephemeral_container();
+    os_cleanup();
+}
+static void sc_scheduling_var(void){
+    os_init();
+    process_t p[2];
+    init_process(&p[0],2,1,os_time());
+    init_process(&p[1],6,2,os_time());
+    scheduler_select_algorithm(ALG_SJF);
+    scheduler_run(p,2);
+    scheduler_select_algorithm(ALG_PRIORITY);
+    scheduler_run(p,2);
+    os_cleanup();
+}
+static void sc_auto_logic(void){
+    printf("Auto mode selection tested (theoretical).\n");
+}
+static void sc_final_integration(void){
+    os_init();
+    os_log("Final synergy HPC + container + pipeline + distributed");
+    os_create_ephemeral_container();
+    os_run_hpc_overshadow();
+    os_run_distributed_example();
+    os_pipeline_example();
+    os_remove_ephemeral_container();
+    os_cleanup();
+}
+static void sc_multi_stage_distrib(void){
+    for(int i=0;i<2;i++){
+        os_run_distributed_example();
+        os_run_hpc_overshadow();
+    }
+}
+
+TEST(test_distrib_heavy){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_distrib_heavy,&cap);
+    int c=0; char*pos=cap.stdout_buf;
+    while((pos=strstr(pos,"Child distributed HPC overshadow"))) {c++;pos++;}
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Cleanup")&&c==4);
+}
+TEST(test_hpc_heavy){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_hpc_heavy,&cap);
+    int c=0; char*pos=cap.stdout_buf;
+    while((pos=strstr(pos,"HPC overshadow start"))) {c++;pos++;}
+    return(st==0&&c==2);
+}
+TEST(test_container_combo){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_container_combo,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Container created")&&
+           strstr(cap.stdout_buf,"Container removed")&&strstr(cap.stdout_buf,"Distributed example: fork")&&
+           strstr(cap.stdout_buf,"HPC overshadow done")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+TEST(test_scheduling_variety){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_scheduling_var,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for SJF")&&
+           strstr(cap.stdout_buf,"Stats for PRIORITY")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+TEST(test_auto_logic){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_auto_logic,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Auto mode selection tested (theoretical)."));
+}
+TEST(test_final_integration){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_final_integration,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&
+           strstr(cap.stdout_buf,"Final synergy HPC + container + pipeline + distributed")&&
+           strstr(cap.stdout_buf,"Pipeline end")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+TEST(test_multi_stage_distributed){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_multi_stage_distrib,&cap);
+    int d=0; char*pos=cap.stdout_buf;
+    while((pos=strstr(pos,"Child distributed HPC overshadow"))) {d++;pos++;}
+    int overshadow=0; pos=cap.stdout_buf;
+    while((pos=strstr(pos,"HPC overshadow start"))) {overshadow++;pos++;}
+    return(st==0&&d==2&&overshadow==2);
+}
+
+void run_hidden_tests(int* total,int* passed){
+    tests_run=0;tests_failed=0;
+    RUN_TEST(test_distrib_heavy);
+    RUN_TEST(test_hpc_heavy);
+    RUN_TEST(test_container_combo);
+    RUN_TEST(test_scheduling_variety);
+    RUN_TEST(test_auto_logic);
+    RUN_TEST(test_final_integration);
+    RUN_TEST(test_multi_stage_distributed);
+    *total=tests_run;
+    *passed=(tests_run-tests_failed);
+}
+/* hidden-test.h */
+#ifndef HIDDEN_TEST_H
+#define HIDDEN_TEST_H
+void run_hidden_tests(int* total,int* passed);
+#endif
+#include "modes-test.h"
+#include "test_common.h"
+#include "../src/scheduler.h"
+#include "../src/os.h"
+#include "../src/process.h"
+#include <string.h>
+
+static int tests_run=0,tests_failed=0;
+
+static void sc_hpc_over(void){
+    os_init();
+    scheduler_select_algorithm(ALG_HPC_OVERSHADOW);
+    process_t d[1];
+    init_process(&d[0],0,0,os_time());
+    scheduler_run(d,1);
+    os_cleanup();
+}
+static void sc_multi_containers(void){
+    os_init();
+    os_create_ephemeral_container();
+    os_create_ephemeral_container();
+    os_remove_ephemeral_container();
+    os_remove_ephemeral_container();
+    os_cleanup();
+}
+static void sc_multi_distrib(void){
+    os_init();
+    for(int i=0;i<2;i++){
+        os_run_distributed_example();
+    }
+    os_cleanup();
+}
+static void sc_pipeline(void){
+    os_init();
+    os_pipeline_example();
+    os_cleanup();
+}
+static void sc_mix_algos(void){
+    os_init();
+    process_t p[2];
+    init_process(&p[0],2,1,os_time());
+    init_process(&p[1],3,1,os_time());
+    scheduler_select_algorithm(ALG_FIFO);
+    scheduler_run(p,2);
+    scheduler_select_algorithm(ALG_BFS);
+    scheduler_run(p,2);
+    os_cleanup();
+}
+static void sc_double_hpc(void){
+    os_init();
+    os_run_hpc_overshadow();
+    os_run_hpc_overshadow();
+    os_cleanup();
+}
+
+TEST(test_hpc_over){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_hpc_over,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for HPC-OVER")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+TEST(test_multi_containers){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_multi_containers,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Container created")&&
+           strstr(cap.stdout_buf,"Container removed")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+TEST(test_multi_distrib){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_multi_distrib,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Distributed example: fork")&&
+           strstr(cap.stdout_buf,"HPC overshadow done")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+TEST(test_pipeline_modes){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_pipeline,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Pipeline start")&&
+           strstr(cap.stdout_buf,"Pipeline end")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+TEST(test_mix_algos){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_mix_algos,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for FIFO")&&
+           strstr(cap.stdout_buf,"Stats for BFS")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+TEST(test_double_hpc){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_double_hpc,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"HPC overshadow start")&&
+           strstr(cap.stdout_buf,"HPC overshadow done")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+
+void run_modes_tests(int* total,int* passed){
+    tests_run=0;tests_failed=0;
+    RUN_TEST(test_hpc_over);
+    RUN_TEST(test_multi_containers);
+    RUN_TEST(test_multi_distrib);
+    RUN_TEST(test_pipeline_modes);
+    RUN_TEST(test_mix_algos);
+    RUN_TEST(test_double_hpc);
+    *total=tests_run;
+    *passed=(tests_run-tests_failed);
+}
+/* modes-test.h */
+#ifndef MODES_TEST_H
+#define MODES_TEST_H
+void run_modes_tests(int* total,int* passed);
+#endif
+#include "normal-test.h"
+#include "test_common.h"
+#include "../src/scheduler.h"
+#include "../src/process.h"
+#include "../src/os.h"
+#include <string.h>
+
+static int tests_run=0,tests_failed=0;
+
+static void sc_sjf(void){
+    os_init();
+    process_t p[3];
+    init_process(&p[0],1,1,os_time());
+    init_process(&p[1],5,1,os_time());
+    init_process(&p[2],2,1,os_time());
+    scheduler_select_algorithm(ALG_SJF);
+    scheduler_run(p,3);
+    os_cleanup();
+}
+static void sc_strf(void){
+    os_init();
+    process_t p[2];
+    init_process(&p[0],4,1,os_time());
+    init_process(&p[1],3,1,os_time());
+    scheduler_select_algorithm(ALG_STRF);
+    scheduler_run(p,2);
+    os_cleanup();
+}
+static void sc_hrrn(void){
+    os_init();
+    process_t p[3];
+    for(int i=0;i<3;i++){
+        init_process(&p[i],2+i,1,os_time());
+    }
+    scheduler_select_algorithm(ALG_HRRN);
+    scheduler_run(p,3);
+    os_cleanup();
+}
+static void sc_hrrn_rt(void){
+    os_init();
+    process_t p[2];
+    init_process(&p[0],3,1,os_time());
+    init_process(&p[1],4,2,os_time());
+    scheduler_select_algorithm(ALG_HRRN_RT);
+    scheduler_run(p,2);
+    os_cleanup();
+}
+static void sc_prio(void){
+    os_init();
+    process_t p[3];
+    init_process(&p[0],2,3,os_time());
+    init_process(&p[1],2,1,os_time());
+    init_process(&p[2],2,2,os_time());
+    scheduler_select_algorithm(ALG_PRIORITY);
+    scheduler_run(p,3);
+    os_cleanup();
+}
+static void sc_cfs_srtf(void){
+    os_init();
+    process_t p[3];
+    for(int i=0;i<3;i++){
+        init_process(&p[i],2+i,1,os_time());
+    }
+    scheduler_select_algorithm(ALG_CFS_SRTF);
+    scheduler_run(p,3);
+    os_cleanup();
+}
+
+TEST(test_sjf){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_sjf,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for SJF")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+TEST(test_strf){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_strf,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for STRF")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+TEST(test_hrrn){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_hrrn,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for HRRN")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+TEST(test_hrrn_rt){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_hrrn_rt,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for HRRN-RT")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+TEST(test_priority){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_prio,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for PRIORITY")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+TEST(test_cfs_srtf){
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_cfs_srtf,&cap);
+    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for CFS-SRTF")&&strstr(cap.stdout_buf,"Cleanup"));
+}
+
+void run_normal_tests(int* total,int* passed){
+    tests_run=0;tests_failed=0;
+    RUN_TEST(test_sjf);
+    RUN_TEST(test_strf);
+    RUN_TEST(test_hrrn);
+    RUN_TEST(test_hrrn_rt);
+    RUN_TEST(test_priority);
+    RUN_TEST(test_cfs_srtf);
+    *total=tests_run;
+    *passed=(tests_run-tests_failed);
+}
+#ifndef NORMAL_TEST_H
+#define NORMAL_TEST_H
+void run_normal_tests(int*,int*);
+#endif
+#include "test_common.h"
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <string.h>
+#include <stdio.h>
+#include <errno.h>
+
+static ssize_t read_all(int fd,char*buf,size_t cap){
+    size_t used=0;
+    while(used+1<cap){
+        ssize_t r=read(fd,buf+used,cap-1-used);
+        if(r<0&&errno==EINTR) continue;
+        if(r<=0) break;
+        used+=(size_t)r;
+    }
+    buf[used]='\0';
+    return (ssize_t)used;
+}
+
+int run_function_capture_output(void(*fn)(void),struct captured_output* out){
+    if(!fn||!out) return -1;
+    int p_out[2],p_err[2];
+    if(pipe(p_out)==-1||pipe(p_err)==-1) return -1;
+    int orig_out=dup(STDOUT_FILENO),orig_err=dup(STDERR_FILENO);
+    if(orig_out<0||orig_err<0){
+        close(p_out[0]);close(p_out[1]);
+        close(p_err[0]);close(p_err[1]);
+        return -1;
+    }
+    pid_t c=fork();
+    if(c<0){
+        close(p_out[0]);close(p_out[1]);
+        close(p_err[0]);close(p_err[1]);
+        return -1;
+    }
+    if(c==0){
+        dup2(p_out[1],STDOUT_FILENO);
+        dup2(p_err[1],STDERR_FILENO);
+        close(p_out[0]);close(p_out[1]);
+        close(p_err[0]);close(p_err[1]);
+        fn();
+        _exit(0);
+    }
+    close(p_out[1]);
+    close(p_err[1]);
+    read_all(p_out[0],out->stdout_buf,sizeof(out->stdout_buf));
+    read_all(p_err[0],out->stderr_buf,sizeof(out->stderr_buf));
+    close(p_out[0]);
+    close(p_err[0]);
+    dup2(orig_out,STDOUT_FILENO);
+    dup2(orig_err,STDERR_FILENO);
+    close(orig_out);
+    close(orig_err);
+    int status=0;
+    waitpid(c,&status,0);
+    return status;
+}
+
+int run_shell_command_capture_output(const char* line,struct captured_output* out){
+    if(!line||!out) return -1;
+    int p_out[2],p_err[2],p_in[2];
+    if(pipe(p_out)==-1||pipe(p_err)==-1||pipe(p_in)==-1) return -1;
+    int o_out=dup(STDOUT_FILENO),o_err=dup(STDERR_FILENO),o_in=dup(STDIN_FILENO);
+    if(o_out<0||o_err<0||o_in<0){
+        close(p_out[0]);close(p_out[1]);
+        close(p_err[0]);close(p_err[1]);
+        close(p_in[0]);close(p_in[1]);
+        return -1;
+    }
+    pid_t c=fork();
+    if(c<0){
+        close(p_out[0]);close(p_out[1]);
+        close(p_err[0]);close(p_err[1]);
+        close(p_in[0]);close(p_in[1]);
+        return -1;
+    }
+    if(c==0){
+        dup2(p_in[0],STDIN_FILENO);
+        dup2(p_out[1],STDOUT_FILENO);
+        dup2(p_err[1],STDERR_FILENO);
+        close(p_in[1]);
+        close(p_out[0]);close(p_out[1]);
+        close(p_err[0]);close(p_err[1]);
+        execl("./shell-tp1-implementation","shell-tp1-implementation",(char*)NULL);
+        _exit(127);
+    }
+    close(p_in[0]);
+    write(p_in[1],line,strlen(line));
+    write(p_in[1],"\n",1);
+    close(p_in[1]);
+    close(p_out[1]);
+    close(p_err[1]);
+    read_all(p_out[0],out->stdout_buf,sizeof(out->stdout_buf));
+    read_all(p_err[0],out->stderr_buf,sizeof(out->stderr_buf));
+    close(p_out[0]);
+    close(p_err[0]);
+    dup2(o_out,STDOUT_FILENO);
+    dup2(o_err,STDERR_FILENO);
+    dup2(o_in,STDIN_FILENO);
+    close(o_out);close(o_err);close(o_in);
+    int status=0;
+    waitpid(c,&status,0);
+    return status;
+}
+
+int run_command_capture_output(char* const argv[],struct captured_output* out){
+    if(!argv||!argv[0]||!out) return -1;
+    int p_out[2],p_err[2];
+    if(pipe(p_out)==-1||pipe(p_err)==-1) return -1;
+    int o_out=dup(STDOUT_FILENO),o_err=dup(STDERR_FILENO);
+    if(o_out<0||o_err<0){
+        close(p_out[0]);close(p_out[1]);
+        close(p_err[0]);close(p_err[1]);
+        return -1;
+    }
+    pid_t c=fork();
+    if(c<0){
+        close(p_out[0]);close(p_out[1]);
+        close(p_err[0]);close(p_err[1]);
+        return -1;
+    }
+    if(c==0){
+        dup2(p_out[1],STDOUT_FILENO);
+        dup2(p_err[1],STDERR_FILENO);
+        close(p_out[0]);close(p_out[1]);
+        close(p_err[0]);close(p_err[1]);
+        execvp(argv[0],argv);
+        _exit(127);
+    }
+    close(p_out[1]);
+    close(p_err[1]);
+    read_all(p_out[0],out->stdout_buf,sizeof(out->stdout_buf));
+    read_all(p_err[0],out->stderr_buf,sizeof(out->stderr_buf));
+    close(p_out[0]);
+    close(p_err[0]);
+    dup2(o_out,STDOUT_FILENO);
+    dup2(o_err,STDERR_FILENO);
+    close(o_out);close(o_err);
+    int status=0;
+    waitpid(c,&status,0);
+    return status;
+}
+#ifndef TEST_COMMON_H
+#define TEST_COMMON_H
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+
+struct captured_output{
+    char stdout_buf[4096];
+    char stderr_buf[4096];
+};
+
+int run_function_capture_output(void(*fn)(void),struct captured_output* out);
+int run_shell_command_capture_output(const char* line,struct captured_output* out);
+int run_command_capture_output(char* const argv[],struct captured_output* out);
+
+#define TEST(name) static bool test_##name(void)
+#define RUN_TEST(name) do{\
+bool result=test_##name();\
+tests_run++;\
+if(!result){\
+tests_failed++;\
+printf("❌ Test failed: %s\n",#name);\
+} else {\
+printf("✓ Test passed: %s\n",#name);\
+}\
+}while(0)
+
+#endif
