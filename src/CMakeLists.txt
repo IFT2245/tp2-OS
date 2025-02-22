@@ -15,6 +15,8 @@ add_executable(main
         ../test/external-test.c
         ../test/test_common.c
         main.c
+        scoreboard.c
+        scoreboard.h
 )
 
-target_link_libraries(main PRIVATE Threads::Threads)
+target_link_libraries(main PRIVATE Threads::Threads sqlite3)

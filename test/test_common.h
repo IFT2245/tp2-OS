@@ -1,38 +1,25 @@
 #ifndef TEST_COMMON_H
 #define TEST_COMMON_H
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <stdbool.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 
-/* We'll capture stdout/stderr in buffers for validation. */
-struct captured_output {
-    char stdout_buf[4096];
-    char stderr_buf[4096];
-};
+extern char g_test_fail_reason[256];
+struct captured_output{ char stdout_buf[8192]; char stderr_buf[8192]; };
 
-/* Runs 'fn' in a child process, capturing its stdout/stderr. Returns child exit code. */
 int run_function_capture_output(void(*fn)(void), struct captured_output* out);
 
-/* Runs the shell-tp1-implementation passing 'line' as single input command, capturing output. */
-int run_shell_command_capture_output(const char* line, struct captured_output* out);
-
-/* Runs an external command with given argv[] in a child, capturing output. */
-int run_command_capture_output(char* const argv[], struct captured_output* out);
-
-/* A test macro that increments the global counters and prints pass/fail with small unicode art. */
 #define TEST(name) static bool test_##name(void)
-
-#define RUN_TEST(name) do {                     \
-bool result = test_##name();                \
-tests_run++;                                \
-if(!result){                                \
-tests_failed++;                         \
-printf("  ❌  %s : " #name "\n", __func__);  \
-} else {                                    \
-printf("  ✅  %s : " #name "\n", __func__);  \
-}                                           \
-} while(0)
+#define RUN_TEST(name) do{ \
+bool ok=test_##name(); \
+tests_run++; \
+if(!ok){ \
+tests_failed++; \
+printf("  FAIL: %s => %s\n",#name,g_test_fail_reason[0]?g_test_fail_reason:"???"); \
+} else { \
+printf("  PASS: %s\n",#name); \
+} \
+}while(0)
 
 #endif
