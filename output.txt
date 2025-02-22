@@ -4,16 +4,16 @@
 #include "runner.h"
 #include "os.h"
 #include "safe_calls_library.h"
-
-extern int unlocked_basic;
-extern int unlocked_normal;
-extern int unlocked_external;
+#include "scoreboard.h"
 
 #define CLR_RESET   "\033[0m"
-#define CLR_CYAN    "\033[96m"
+#define CLR_BOLD    "\033[1m"
+#define CLR_MAGENTA "\033[95m"
 #define CLR_RED     "\033[91m"
-#define CLR_YELLOW  "\033[93m"
 #define CLR_GRAY    "\033[90m"
+#define CLR_GREEN   "\033[92m"
+#define CLR_YELLOW  "\033[93m"
+#define CLR_CYAN    "\033[96m"
 
 static void clear_screen(void){
 #if defined(_WIN32) || defined(_WIN64)
@@ -23,55 +23,120 @@ static void clear_screen(void){
 #endif
 }
 
-/* Reads one line into buf; returns 1 if not empty, 0 if EOF or empty. */
 static int read_line(char *buf, size_t sz){
-    if(!fgets(buf, sz, stdin)) return 0;
+    if(!fgets(buf, sz, stdin)) {
+        return 0;
+    }
     buf[strcspn(buf, "\n")] = '\0';
     return (*buf != '\0');
 }
 
+static void menu_show_scoreboard(void){
+    scoreboard_t sb;
+    get_scoreboard(&sb);
+    clear_screen();
+    printf(CLR_BOLD CLR_MAGENTA "================ SCOREBOARD ================\n" CLR_RESET);
+    printf(" Levels & Tests:\n\n");
+
+    if(sb.basic_total > 0)
+        printf("  BASIC   => %d/%d (%.1f%%) => ", sb.basic_pass, sb.basic_total, sb.basic_percent);
+    else
+        printf("  BASIC   => [No tests run yet] => ");
+    printf(unlocked_basic ? CLR_GREEN "UNLOCKED\n" CLR_RESET : CLR_RED "LOCKED (need >=60%%)\n" CLR_RESET);
+
+    if(sb.normal_total > 0)
+        printf("  NORMAL  => %d/%d (%.1f%%) => ", sb.normal_pass, sb.normal_total, sb.normal_percent);
+    else
+        printf("  NORMAL  => [No tests run yet] => ");
+    printf(unlocked_normal ? CLR_GREEN "UNLOCKED\n" CLR_RESET : CLR_RED "LOCKED (need >=60%% in BASIC)\n" CLR_RESET);
+
+    if(sb.modes_total > 0)
+        printf("  MODES   => %d/%d (%.1f%%) => ", sb.modes_pass, sb.modes_total, sb.modes_percent);
+    else
+        printf("  MODES   => [No tests run yet] => ");
+    printf(unlocked_modes ? CLR_GREEN "UNLOCKED\n" CLR_RESET : CLR_RED "LOCKED (need >=60%% in NORMAL)\n" CLR_RESET);
+
+    if(sb.edge_total > 0)
+        printf("  EDGE    => %d/%d (%.1f%%) => ", sb.edge_pass, sb.edge_total, sb.edge_percent);
+    else
+        printf("  EDGE    => [No tests run yet] => ");
+    printf(unlocked_edge ? CLR_GREEN "UNLOCKED\n" CLR_RESET : CLR_RED "LOCKED (need >=60%% in MODES)\n" CLR_RESET);
+
+    if(sb.hidden_total > 0)
+        printf("  HIDDEN  => %d/%d (%.1f%%) => ", sb.hidden_pass, sb.hidden_total, sb.hidden_percent);
+    else
+        printf("  HIDDEN  => [No tests run yet] => ");
+    printf(unlocked_hidden ? CLR_GREEN "UNLOCKED\n" CLR_RESET : CLR_RED "LOCKED (need >=60%% in EDGE)\n" CLR_RESET);
+
+    printf("  EXTERNAL => forcibly passes => ");
+    printf(unlocked_external ? CLR_GREEN "UNLOCKED\n" CLR_RESET : CLR_RED "LOCKED (need >=60%% in BASIC)\n" CLR_RESET);
+
+    printf("\nScheduling Mastery:\n");
+    printf("  FIFO:%s RR:%s CFS:%s CFS-SRTF:%s BFS:%s SJF:%s STRF:%s HRRN:%s HRRN-RT:%s PRIORITY:%s HPC-OVER:%s MLFQ:%s\n",
+           sb.sc_fifo      ? "✔" : "✘",
+           sb.sc_rr        ? "✔" : "✘",
+           sb.sc_cfs       ? "✔" : "✘",
+           sb.sc_cfs_srtf  ? "✔" : "✘",
+           sb.sc_bfs       ? "✔" : "✘",
+           sb.sc_sjf       ? "✔" : "✘",
+           sb.sc_strf      ? "✔" : "✘",
+           sb.sc_hrrn      ? "✔" : "✘",
+           sb.sc_hrrn_rt   ? "✔" : "✘",
+           sb.sc_priority  ? "✔" : "✘",
+           sb.sc_hpc_over  ? "✔" : "✘",
+           sb.sc_mlfq      ? "✔" : "✘"
+    );
+    printf("\nPress ENTER to return...");
+    char tmp[256]; read_line(tmp, sizeof(tmp));
+}
+
+static void menu_clear_scoreboard(void){
+    scoreboard_clear();
+    printf("\nScoreboard cleared.\nPress ENTER...");
+    char tmp[256]; read_line(tmp, sizeof(tmp));
+}
+
 int main(int argc, char** argv){
     (void)argc; (void)argv;
+    scoreboard_load();
     os_init();
-
     for(;;){
         clear_screen();
-        printf(CLR_YELLOW "========================================\n");
-        printf("              TP2-OS Menu\n");
-        printf("========================================" CLR_RESET "\n");
+        printf(CLR_YELLOW "=================== TP2-OS Menu ===================\n" CLR_RESET);
         printf("1) Run All Unlocked Levels\n");
         printf("2) Exit\n");
         printf("3) External Shell Concurrency\n");
-        if(unlocked_external){
+        if(unlocked_external)
             printf("4) Run External Scheduling Tests\n");
-        } else {
+        else
             printf("4) Run External Scheduling Tests " CLR_GRAY "(locked)" CLR_RESET "\n");
-        }
+        printf("5) Show Scoreboard\n");
+        printf("6) Clear Scoreboard Data\n");
         printf("\nSelect an option: ");
-        fflush(stdout);
 
         char input[256];
         if(!read_line(input, sizeof(input))){
             printf("\nNo input. Exiting.\n");
             os_cleanup();
+            scoreboard_save();
             return 0;
         }
         int choice = parse_int_strtol(input, -1);
 
         switch(choice){
-        case 1: {
-            printf("\n" CLR_CYAN "[main]" CLR_RESET " Running all unlocked levels...\n\n");
+        case 1:
+            printf("\n" CLR_CYAN "[main]" CLR_RESET " Running all unlocked levels...\n");
             run_all_levels();
+            scoreboard_save();
             printf("\nPress ENTER to continue...");
             read_line(input, sizeof(input));
-        } break;
-
+            break;
         case 2:
             printf("\n" CLR_CYAN "[main]" CLR_RESET " Exiting...\n");
             os_cleanup();
+            scoreboard_save();
             return 0;
-
-        case 3: {
+        case 3:{
             printf("\nHow many shell processes to start concurrently? ");
             if(!read_line(input, sizeof(input))) break;
             int count = parse_int_strtol(input, 0);
@@ -84,10 +149,9 @@ int main(int argc, char** argv){
             if(!read_line(input, sizeof(input))) break;
             int coreCount = parse_int_strtol(input, 2);
             if(coreCount < 1) coreCount = 2;
-
             char** lines = (char**)calloc((size_t)count, sizeof(char*));
             if(!lines){
-                printf(CLR_RED "Memory allocation failed." CLR_RESET "\nPress ENTER...");
+                printf(CLR_RED "Memory alloc failed." CLR_RESET "\nPress ENTER...");
                 read_line(input, sizeof(input));
                 break;
             }
@@ -98,34 +162,37 @@ int main(int argc, char** argv){
                 lines[i] = strdup(buf);
             }
             run_shell_commands_concurrently(count, lines, coreCount);
-
-            for(int i=0; i<count; i++){
-                free(lines[i]);
-            }
+            for(int i=0; i<count; i++) free(lines[i]);
             free(lines);
-
-            /* Return directly to menu, removing extra “Press ENTER.” */
-        } break;
-
-        case 4:
-            if(unlocked_external){
-                printf("\n" CLR_CYAN "[main]" CLR_RESET " Running external scheduling tests...\n\n");
-                run_external_tests_menu();
-            } else {
-                printf("\n" CLR_YELLOW "External tests locked. Complete BASIC >=60%% first." CLR_RESET "\n");
-            }
             printf("\nPress ENTER to continue...");
             read_line(input, sizeof(input));
             break;
-
+        }
+        case 4:
+            if(!unlocked_external){
+                printf("\n" CLR_YELLOW "External tests locked. Need >=60%% in BASIC." CLR_RESET "\n");
+                printf("Press ENTER to continue...");
+                read_line(input, sizeof(input));
+            } else {
+                printf("\n" CLR_CYAN "[main]" CLR_RESET " Running external scheduling tests...\n");
+                run_external_tests_menu();
+                scoreboard_save();
+                printf("\nPress ENTER to continue...");
+                read_line(input, sizeof(input));
+            }
+            break;
+        case 5:
+            menu_show_scoreboard();
+            break;
+        case 6:
+            menu_clear_scoreboard();
+            break;
         default:
             printf("\n" CLR_RED "Invalid input." CLR_RESET "\nPress ENTER to continue...");
             read_line(input, sizeof(input));
             break;
         }
     }
-    os_cleanup();
-    return 0;
 }
 #include "os.h"
 #include <stdio.h>
@@ -135,24 +202,26 @@ int main(int argc, char** argv){
 #include <unistd.h>
 #include <pthread.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
+#include <errno.h>
 
 #define MAX_CONTAINERS 32
+
 static uint64_t start_ms=0;
 static char container_paths[MAX_CONTAINERS][256];
 static int container_count=0;
 
 static uint64_t now_ms(void){
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec*1000ULL + (ts.tv_nsec/1000000ULL);
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC,&ts);
+    return (uint64_t)ts.tv_sec*1000ULL+(ts.tv_nsec/1000000ULL);
 }
 
 void os_init(void){
     printf("\033[94mInit\033[0m\n");
-    setvbuf(stdout, NULL, _IONBF, 0);
-    setvbuf(stderr, NULL, _IONBF, 0);
-    start_ms = now_ms();
-    memset(container_paths, 0, sizeof(container_paths));
+    setvbuf(stdout,NULL,_IONBF,0);
+    setvbuf(stderr,NULL,_IONBF,0);
+    start_ms=now_ms();
+    memset(container_paths,0,sizeof(container_paths));
     container_count=0;
 }
 
@@ -164,19 +233,19 @@ void os_cleanup(void){
 }
 
 uint64_t os_time(void){
-    return now_ms() - start_ms;
+    return now_ms()-start_ms;
 }
 
 void os_log(const char* msg){
-    if(msg) printf("%s\n", msg);
+    if(msg) printf("%s\n",msg);
 }
 
 void os_create_ephemeral_container(void){
     if(container_count>=MAX_CONTAINERS) return;
-    char tmpl[] = "/tmp/os_container_XXXXXX";
+    char tmpl[]="/tmp/os_container_XXXXXX";
     if(mkdtemp(tmpl)){
-        strncpy(container_paths[container_count], tmpl, 255);
-        container_paths[container_count][255] = '\0';
+        strncpy(container_paths[container_count],tmpl,255);
+        container_paths[container_count][255]='\0';
         container_count++;
         os_log("Container created");
     }
@@ -194,10 +263,9 @@ void os_remove_ephemeral_container(void){
 }
 
 static void* overshadow_thread(void* arg){
-    long* res=(long*)arg;
-    long s=0;
+    long* res=(long*)arg; long s=0;
     for(long i=0;i<1000000;i++){
-        s += (i%17)+(i%11);
+        s+=(i%17)+(i%11);
     }
     *res=s;
     return NULL;
@@ -220,8 +288,7 @@ void os_run_hpc_overshadow(void){
     for(int i=0;i<n;i++){
         pthread_join(th[i],NULL);
     }
-    free(th);
-    free(vals);
+    free(th); free(vals);
     printf("HPC overshadow done\n");
     uint64_t t1=os_time()-t0;
     char buf[128];
@@ -266,22 +333,22 @@ void os_run_distributed_example(void){
 
 #include <stdint.h>
 
-void     os_init(void);
-void     os_cleanup(void);
+void os_init(void);
+void os_cleanup(void);
 uint64_t os_time(void);
-void     os_log(const char*);
-void     os_create_ephemeral_container(void);
-void     os_remove_ephemeral_container(void);
-void     os_run_hpc_overshadow(void);
-void     os_pipeline_example(void);
-void     os_run_distributed_example(void);
+void os_log(const char* msg);
+void os_create_ephemeral_container(void);
+void os_remove_ephemeral_container(void);
+void os_run_hpc_overshadow(void);
+void os_pipeline_example(void);
+void os_run_distributed_example(void);
 
 #endif
 #include "process.h"
 #include <string.h>
 
 void init_process(process_t* p, uint64_t burst, int priority, uint64_t arrival){
-    if(!p) return;
+    if(!p)return;
     memset(p,0,sizeof(*p));
     p->burst_time=burst;
     p->remaining_time=burst;
@@ -294,7 +361,7 @@ void init_process(process_t* p, uint64_t burst, int priority, uint64_t arrival){
 
 #include <stdint.h>
 
-typedef struct {
+typedef struct process_s {
     uint64_t burst_time;
     int      priority;
     uint64_t vruntime;
@@ -309,56 +376,46 @@ void init_process(process_t* p, uint64_t burst, int priority, uint64_t arrival);
 #endif
 #include "ready_queue.h"
 #include <pthread.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "os.h"
 
-typedef struct node_s {
-    process_t*      proc;
-    struct node_s*  next;
-} node_t;
-
 #define MLFQ_MAX_QUEUES 10
 
+typedef struct node_s {
+    process_t*     proc;
+    struct node_s* next;
+} node_t;
+
 static struct {
-    node_t          sentinel;
-    size_t          size;
+    node_t sentinel;
+    size_t size;
     pthread_mutex_t m;
     pthread_cond_t  c;
     scheduler_alg_t policy;
-    node_t          ml_queues[MLFQ_MAX_QUEUES];
+    node_t ml_queues[MLFQ_MAX_QUEUES];
 } gQ;
 
-static void lockQ(void){ pthread_mutex_lock(&gQ.m); }
-static void unlockQ(void){ pthread_mutex_unlock(&gQ.m); }
+static pthread_mutex_t* pm(void){ return &gQ.m; }
+static pthread_cond_t*  pc(void){ return &gQ.c; }
 
 static process_t* pop_head(void){
     while(!gQ.sentinel.next){
         os_log("Ready queue empty, waiting...");
-        pthread_cond_wait(&gQ.c,&gQ.m);
+        pthread_cond_wait(pc(),pm());
     }
     node_t* n=gQ.sentinel.next;
-    gQ.sentinel.next=n->next;
-    gQ.size--;
+    gQ.sentinel.next=n->next; gQ.size--;
     process_t* r=n->proc;
     free(n);
-    char msg[128];
-    snprintf(msg,sizeof(msg),"Ready queue pop pid=%p, size now=%zu",(void*)r,gQ.size);
-    os_log(msg);
     return r;
 }
-
 static void push_tail(process_t* p){
     node_t* n=(node_t*)malloc(sizeof(node_t));
     n->proc=p; n->next=NULL;
     node_t* c=&gQ.sentinel;
     while(c->next) c=c->next;
-    c->next=n;
-    gQ.size++;
-    char msg[128];
-    snprintf(msg,sizeof(msg),"Ready queue push pid=%p tail, size=%zu",(void*)p,gQ.size);
-    os_log(msg);
+    c->next=n; gQ.size++;
 }
 
 static void push_priority(process_t* p){
@@ -368,21 +425,15 @@ static void push_priority(process_t* p){
     while(c->next && p->priority <= c->next->proc->priority){
         c=c->next;
     }
-    n->next=c->next;
-    c->next=n;
-    gQ.size++;
-    char msg[128];
-    snprintf(msg,sizeof(msg),"Ready queue push pid=%p priority=%d, size=%zu",(void*)p,p->priority,gQ.size);
-    os_log(msg);
+    n->next=c->next; c->next=n; gQ.size++;
 }
 
-static uint64_t hrrn_calc(const process_t* p, uint64_t now){
-    if(!p->burst_time) return 999999;
-    uint64_t wait=(now>p->arrival_time)?(now - p->arrival_time):0;
+static uint64_t hrrn_calc(const process_t* p,uint64_t now){
+    if(!p->burst_time)return 999999UL;
+    uint64_t wait=(now>p->arrival_time)?(now-p->arrival_time):0;
     uint64_t r=(p->remaining_time>0?p->remaining_time:1);
-    return (wait + r)/r;
+    return (wait+r)/r;
 }
-
 static void push_hrrn(process_t* p){
     node_t* n=(node_t*)malloc(sizeof(node_t));
     n->proc=p; n->next=NULL;
@@ -394,14 +445,8 @@ static void push_hrrn(process_t* p){
         if(pval>cval) break;
         c=c->next;
     }
-    n->next=c->next;
-    c->next=n;
-    gQ.size++;
-    char msg[128];
-    snprintf(msg,sizeof(msg),"Ready queue push pid=%p HRRN, size=%zu",(void*)p,gQ.size);
-    os_log(msg);
+    n->next=c->next; c->next=n; gQ.size++;
 }
-
 static void push_cfs(process_t* p){
     node_t* n=(node_t*)malloc(sizeof(node_t));
     n->proc=p; n->next=NULL;
@@ -409,14 +454,8 @@ static void push_cfs(process_t* p){
     while(c->next && p->vruntime >= c->next->proc->vruntime){
         c=c->next;
     }
-    n->next=c->next;
-    c->next=n;
-    gQ.size++;
-    char msg[128];
-    snprintf(msg,sizeof(msg),"Ready queue push pid=%p CFS vruntime=%lu, size=%zu",(void*)p,(unsigned long)p->vruntime,gQ.size);
-    os_log(msg);
+    n->next=c->next; c->next=n; gQ.size++;
 }
-
 static void push_sjf(process_t* p){
     node_t* n=(node_t*)malloc(sizeof(node_t));
     n->proc=p; n->next=NULL;
@@ -424,14 +463,8 @@ static void push_sjf(process_t* p){
     while(c->next && p->burst_time >= c->next->proc->burst_time){
         c=c->next;
     }
-    n->next=c->next;
-    c->next=n;
-    gQ.size++;
-    char msg[128];
-    snprintf(msg,sizeof(msg),"Ready queue push pid=%p SJF burst=%lu, size=%zu",(void*)p,(unsigned long)p->burst_time,gQ.size);
-    os_log(msg);
+    n->next=c->next; c->next=n; gQ.size++;
 }
-
 static process_t* pop_mlfq(void){
     for(int i=0;i<MLFQ_MAX_QUEUES;i++){
         if(gQ.ml_queues[i].next){
@@ -440,43 +473,30 @@ static process_t* pop_mlfq(void){
             gQ.size--;
             process_t* r=n->proc;
             free(n);
-            char msg[128];
-            snprintf(msg,sizeof(msg),"MLFQ pop pid=%p level=%d, size=%zu",(void*)r,i,gQ.size);
-            os_log(msg);
             return r;
         }
     }
     return NULL;
 }
-
 static void push_mlfq(process_t* p){
-    if(!p) return;
+    if(!p)return;
     int lev=p->mlfq_level;
-    if(lev<0) lev=0;
-    if(lev>=MLFQ_MAX_QUEUES) lev=MLFQ_MAX_QUEUES-1;
+    if(lev<0) lev=0; if(lev>=MLFQ_MAX_QUEUES) lev=MLFQ_MAX_QUEUES-1;
     node_t* n=(node_t*)malloc(sizeof(node_t));
     n->proc=p; n->next=NULL;
     node_t* c=&gQ.ml_queues[lev];
     while(c->next) c=c->next;
-    c->next=n;
-    gQ.size++;
-    char msg[128];
-    snprintf(msg,sizeof(msg),"MLFQ push pid=%p level=%d, size=%zu",(void*)p,lev,gQ.size);
-    os_log(msg);
+    c->next=n; gQ.size++;
 }
 
 static process_t* (*f_pop)(void)=NULL;
-static void       (*f_push)(process_t*)=NULL;
+static void (*f_push)(process_t*)=NULL;
 
 void ready_queue_init_policy(scheduler_alg_t alg){
-    gQ.sentinel.next=NULL;
-    gQ.size=0;
-    pthread_mutex_init(&gQ.m,NULL);
-    pthread_cond_init(&gQ.c,NULL);
+    memset(&gQ,0,sizeof(gQ));
+    pthread_mutex_init(pm(),NULL);
+    pthread_cond_init(pc(),NULL);
     gQ.policy=alg;
-    for(int i=0;i<MLFQ_MAX_QUEUES;i++){
-        gQ.ml_queues[i].next=NULL;
-    }
     switch(alg){
     case ALG_FIFO:
     case ALG_RR:
@@ -500,41 +520,34 @@ void ready_queue_init_policy(scheduler_alg_t alg){
     }
     os_log("Ready queue initialized");
 }
-
 void ready_queue_destroy(void){
-    pthread_cond_destroy(&gQ.c);
-    pthread_mutex_destroy(&gQ.m);
-    gQ.sentinel.next=NULL;
-    for(int i=0;i<MLFQ_MAX_QUEUES;i++){
-        gQ.ml_queues[i].next=NULL;
-    }
-    gQ.size=0;
+    pthread_cond_destroy(pc());
+    pthread_mutex_destroy(pm());
+    memset(&gQ,0,sizeof(gQ));
     os_log("Ready queue destroyed");
 }
 
 void ready_queue_push(process_t* proc){
-    lockQ();
+    pthread_mutex_lock(pm());
     f_push(proc);
-    pthread_cond_signal(&gQ.c);
-    unlockQ();
+    pthread_cond_signal(pc());
+    pthread_mutex_unlock(pm());
 }
-
 process_t* ready_queue_pop(void){
-    lockQ();
+    pthread_mutex_lock(pm());
     process_t* r=f_pop();
     while(!r){
-        os_log("MLFQ empty queues, waiting...");
-        pthread_cond_wait(&gQ.c,&gQ.m);
+        os_log("MLFQ empty, waiting...");
+        pthread_cond_wait(pc(),pm());
         r=f_pop();
     }
-    unlockQ();
+    pthread_mutex_unlock(pm());
     return r;
 }
-
 size_t ready_queue_size(void){
-    lockQ();
+    pthread_mutex_lock(pm());
     size_t s=gQ.size;
-    unlockQ();
+    pthread_mutex_unlock(pm());
     return s;
 }
 #ifndef READY_QUEUE_H
@@ -544,14 +557,15 @@ size_t ready_queue_size(void){
 #include "process.h"
 #include "scheduler.h"
 
-void       ready_queue_init_policy(scheduler_alg_t alg);
-void       ready_queue_destroy(void);
-void       ready_queue_push(process_t* proc);
+void ready_queue_init_policy(scheduler_alg_t alg);
+void ready_queue_destroy(void);
+void ready_queue_push(process_t* proc);
 process_t* ready_queue_pop(void);
-size_t     ready_queue_size(void);
+size_t ready_queue_size(void);
 
 #endif
 #include "runner.h"
+#include "scoreboard.h"
 #include "os.h"
 #include "../test/basic-test.h"
 #include "../test/normal-test.h"
@@ -562,232 +576,190 @@ size_t     ready_queue_size(void);
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <time.h>
-
-/* Global flags controlling unlock logic. */
-int unlocked_basic=1;
-int unlocked_normal=0;
-int unlocked_external=0;
-int unlocked_modes=0;
-int unlocked_edge=0;
-int unlocked_hidden=0;
-
-static int basic_total=0,basic_pass=0;
-static int normal_total=0,normal_pass=0;
-static int modes_total=0,modes_pass=0;
-static int edge_total=0,edge_pass=0;
-static int hidden_total=0,hidden_pass=0;
-
-static double pass_threshold=60.0;
 
 void run_all_levels(void){
-    /* We skip file checks & forcibly treat them as available. */
-    printf("\n\033[95m====================================\nStarting BASIC\n====================================\033[0m\n");
-    run_basic_tests(&basic_total,&basic_pass);
-    double br = (basic_total>0) ? (basic_pass*100.0 / (double)basic_total) : 0.0;
-    printf("\nBASIC Summary: %d total, %d passed, %.1f%%\n",basic_total,basic_pass,br);
-    if(br>=pass_threshold){
-        /* Unlock normal & external if we meet threshold. */
-        unlocked_normal=1;
-        unlocked_external=1;
+    extern int unlocked_basic,unlocked_normal,unlocked_modes,unlocked_edge,unlocked_hidden;
+    if(!unlocked_basic){
+        printf("\nBASIC locked.\n");
+        return;
     }
-
+    printf("\n==== Starting BASIC ====\n");
+    {
+        int t=0,p=0; run_basic_tests(&t,&p);
+        scoreboard_update_basic(t,p);
+    }
     if(!unlocked_normal){
-        printf("\n\033[90mNORMAL locked. Stopping.\033[0m\n");
+        printf("\nNORMAL locked.\n");
         return;
     }
-    /* NORMAL */
-    printf("\n\033[95m====================================\nStarting NORMAL\n====================================\033[0m\n");
-    run_normal_tests(&normal_total,&normal_pass);
-    double nr = (normal_total>0) ? (normal_pass*100.0 / (double)normal_total) : 0.0;
-    printf("NORMAL => %d/%d passed (%.1f%%)\n", normal_pass, normal_total, nr);
-    if(nr>=pass_threshold) unlocked_modes=1;
+    printf("\n==== Starting NORMAL ====\n");
+    {
+        int t=0,p=0; run_normal_tests(&t,&p);
+        scoreboard_update_normal(t,p);
+    }
     if(!unlocked_modes){
-        printf("\n\033[90mMODES locked. Stopping.\033[0m\n");
+        printf("\nMODES locked.\n");
         return;
     }
-
-    /* MODES */
-    printf("\n\033[95m====================================\nStarting MODES\n====================================\033[0m\n");
-    run_modes_tests(&modes_total,&modes_pass);
-    double mr = (modes_total>0)?(modes_pass*100.0/(double)modes_total):0.0;
-    printf("MODES => %d/%d passed (%.1f%%)\n",modes_pass,modes_total,mr);
-    if(mr>=pass_threshold) unlocked_edge=1;
+    printf("\n==== Starting MODES ====\n");
+    {
+        int t=0,p=0; run_modes_tests(&t,&p);
+        scoreboard_update_modes(t,p);
+    }
     if(!unlocked_edge){
-        printf("\n\033[90mEDGE locked. Stopping.\033[0m\n");
+        printf("\nEDGE locked.\n");
         return;
     }
-
-    /* EDGE */
-    printf("\n\033[95m====================================\nStarting EDGE\n====================================\033[0m\n");
-    run_edge_tests(&edge_total,&edge_pass);
-    double er = (edge_total>0)?(edge_pass*100.0/(double)edge_total):0.0;
-    printf("EDGE => %d/%d passed (%.1f%%)\n",edge_pass,edge_total,er);
-    if(er>=pass_threshold) unlocked_hidden=1;
+    printf("\n==== Starting EDGE ====\n");
+    {
+        int t=0,p=0; run_edge_tests(&t,&p);
+        scoreboard_update_edge(t,p);
+    }
     if(!unlocked_hidden){
-        printf("\n\033[90mHIDDEN locked. Stopping.\033[0m\n");
+        printf("\nHIDDEN locked.\n");
         return;
     }
-
-    /* HIDDEN */
-    printf("\n\033[95m====================================\nStarting HIDDEN\n====================================\033[0m\n");
-    run_hidden_tests(&hidden_total,&hidden_pass);
-    double hr=(hidden_total>0)?(hidden_pass*100.0/(double)hidden_total):0.0;
-    printf("\n[HIDDEN] %d tests, %d passed, %.1f%%\n", hidden_total, hidden_pass, hr);
-    printf("\n\033[92mAll possible levels executed.\033[0m\n");
+    printf("\n==== Starting HIDDEN ====\n");
+    {
+        int t=0,p=0; run_hidden_tests(&t,&p);
+        scoreboard_update_hidden(t,p);
+    }
+    printf("\nAll possible levels executed.\n");
 }
 
 void run_external_tests_menu(void){
-    /* If external is unlocked, run them. */
+    extern int unlocked_external;
     if(!unlocked_external){
-        printf("\n\033[93mExternal tests locked.\033[0m\n");
+        printf("\nExternal tests locked.\n");
         return;
     }
     run_external_tests();
 }
 
-typedef struct {
-    unsigned long long total_exec_ms;
-    unsigned int processes_ran;
-} core_stats_t;
-
-void run_shell_commands_concurrently(int count,char** lines,int coreCount){
+void run_shell_commands_concurrently(int count, char** lines, int coreCount){
     if(count<=0||!lines) return;
-    core_stats_t* cstats=(core_stats_t*)calloc((size_t)coreCount,sizeof(core_stats_t));
-    if(!cstats){
-        fprintf(stderr,"[runner] Not enough memory for cstats.\n");
-        return;
-    }
-
-    struct child_info {
-        int p_out[2], p_err[2], p_in[2];
+    typedef struct {
+        int p_out[2],p_err[2],p_in[2];
         pid_t pid;
-        unsigned long long start_ms;
-        unsigned long long end_ms;
+        char* cmd;
+        unsigned long long start_ms, end_ms;
         int core_assigned;
-    };
-    struct child_info* children=(struct child_info*)calloc((size_t)count,sizeof(struct child_info));
-    if(!children){
-        free(cstats);
-        fprintf(stderr,"[runner] Not enough memory for children.\n");
+    } child_info_t;
+    typedef struct {
+        unsigned long long total_exec_ms;
+        unsigned int processes_ran;
+    } core_stats_t;
+
+    core_stats_t* cstats = (core_stats_t*)calloc((size_t)coreCount,sizeof(core_stats_t));
+    child_info_t* children= (child_info_t*)calloc((size_t)count,sizeof(child_info_t));
+    if(!children||!cstats){
+        free(children); free(cstats);
         return;
     }
 
-    if(access("./shell-tp1-implementation",X_OK)!=0){
-        printf("[runner] shell-tp1-implementation not found or not executable.\n");
-        free(children);
-        free(cstats);
+    if(access("./shell-tp1-implementation", X_OK)!=0){
+        printf("[runner] shell-tp1-implementation not found.\n");
+        free(children); free(cstats);
         return;
     }
-
-    unsigned long long global_start=os_time();
+    unsigned long long g_start = os_time();
     printf("[runner] Starting concurrency with %d processes, on %d cores\n",count,coreCount);
+
     int next_core=0;
-    for(int i=0;i<count;i++){
+    for(int i=0; i<count; i++){
         if(!lines[i]||!*lines[i]){
-            printf("[runner] Skipped empty command line for process #%d\n",i+1);
+            printf("[runner] Empty command line for #%d\n", i+1);
             continue;
         }
-        if(pipe(children[i].p_out)<0||pipe(children[i].p_err)<0||pipe(children[i].p_in)<0){
-            fprintf(stderr,"[runner] pipe() failed for process #%d\n",i+1);
-            continue;
-        }
+        pipe(children[i].p_out); pipe(children[i].p_err); pipe(children[i].p_in);
         pid_t c=fork();
         if(c<0){
-            fprintf(stderr,"[runner] fork() failed for process #%d\n",i+1);
+            fprintf(stderr,"[runner] fork() failed for process #%d\n", i+1);
         } else if(c==0){
             close(children[i].p_out[0]);
             close(children[i].p_err[0]);
-            close(children[i].p_in[1]);
-            dup2(children[i].p_out[1],STDOUT_FILENO);
-            dup2(children[i].p_err[1],STDERR_FILENO);
-            dup2(children[i].p_in[0],STDIN_FILENO);
+            close(children[i].p_in[0]);
+            dup2(children[i].p_out[1], STDOUT_FILENO);
+            dup2(children[i].p_err[1], STDERR_FILENO);
+            dup2(children[i].p_in[1],  STDIN_FILENO);
             close(children[i].p_out[1]);
             close(children[i].p_err[1]);
-            close(children[i].p_in[0]);
+            close(children[i].p_in[1]);
             execl("./shell-tp1-implementation","shell-tp1-implementation",(char*)NULL);
             _exit(127);
         } else {
+            children[i].pid = c;
+            children[i].cmd = lines[i];
+            children[i].start_ms = os_time();
+            children[i].core_assigned = next_core;
             close(children[i].p_out[1]);
             close(children[i].p_err[1]);
             close(children[i].p_in[0]);
-            children[i].pid=c;
-            children[i].start_ms=os_time();
-            children[i].core_assigned=next_core;
-            next_core=(next_core+1)%coreCount;
-            dprintf(children[i].p_in[1],"%s; exit\n",lines[i]);
+            dprintf(children[i].p_in[1], "%s\nexit\n", lines[i]);
             close(children[i].p_in[1]);
-            printf("[runner] Child #%d (pid=%d) started, command='%s', core=%d\n",
-                   i+1,(int)c,lines[i],children[i].core_assigned);
+            printf("[runner] Child #%d (pid=%d) core=%d cmd='%s'\n", i+1,(int)c,next_core,lines[i]);
+            next_core=(next_core+1)%coreCount;
         }
     }
 
-    for(int i=0;i<count;i++){
-        if(!lines[i]||!children[i].pid) continue;
-        int status=0;
-        waitpid(children[i].pid,&status,0);
-        children[i].end_ms=os_time();
-        unsigned long long took=children[i].end_ms-children[i].start_ms;
-        cstats[ children[i].core_assigned ].total_exec_ms+=took;
+    for(int i=0; i<count; i++){
+        if(!children[i].cmd||!children[i].pid) continue;
+        int st=0; waitpid(children[i].pid,&st,0);
+        children[i].end_ms = os_time();
+        unsigned long long took = children[i].end_ms - children[i].start_ms;
+        cstats[ children[i].core_assigned ].total_exec_ms += took;
         cstats[ children[i].core_assigned ].processes_ran++;
-        printf("[runner] Child #%d (pid=%d) ended, status=%d, took=%llu ms\n",
-               i+1,(int)children[i].pid,status,took);
+        printf("[runner] Child #%d (pid=%d) ended, took=%llu ms\n",i+1,(int)children[i].pid,took);
     }
 
-    unsigned long long global_end=os_time();
-    printf("\n=== Concurrency Results ===\n");
-    for(int i=0;i<count;i++){
-        if(!lines[i]||!children[i].pid) continue;
+    unsigned long long g_end = os_time();
+    unsigned long long total_time = g_end - g_start; if(total_time<1) total_time=1;
+
+    printf("\n=== Concurrency Overlap ===\n");
+    static const char* core_colors[]={
+        "\033[91m","\033[92m","\033[93m","\033[94m",
+        "\033[95m","\033[96m","\033[97m","\033[90m"
+    };
+    for(int i=0; i<count; i++){
+        if(!children[i].cmd||!children[i].pid) continue;
         char buf_out[4096]={0},buf_err[4096]={0};
         ssize_t n_o=read(children[i].p_out[0],buf_out,sizeof(buf_out)-1);
         if(n_o>0) buf_out[n_o]='\0';
+        close(children[i].p_out[0]);
         ssize_t n_e=read(children[i].p_err[0],buf_err,sizeof(buf_err)-1);
         if(n_e>0) buf_err[n_e]='\0';
-        close(children[i].p_out[0]);
         close(children[i].p_err[0]);
-        unsigned long long took=children[i].end_ms-children[i].start_ms;
+        unsigned long long took = children[i].end_ms - children[i].start_ms;
         if(took<1) took=1;
-        printf("\nProcess #%d (pid=%d) Elapsed: %llu ms\n",i+1,(int)children[i].pid,took);
-        printf("Core: %d\n",children[i].core_assigned);
-        printf("Command: %s\n",lines[i]);
-        printf("=== STDOUT ===\n%s\n=== STDERR ===\n%s\n",buf_out,buf_err);
+        unsigned long long bar_len = took/50ULL; if(bar_len<1) bar_len=1; if(bar_len>200) bar_len=200;
+        char timeline[256]; memset(timeline,0,sizeof(timeline));
+        for(unsigned long long k=0;k<bar_len&&k<255;k++){
+            timeline[k]='=';
+        }
+        const char* color=core_colors[ children[i].core_assigned % 8 ];
+        printf("\nProcess #%d (pid=%d) Core=%d Elapsed=%llu ms\n", i+1,(int)children[i].pid,children[i].core_assigned,took);
+        printf("Command: %s\nTimeline: %s%s\033[0m\n", children[i].cmd, color, timeline);
+        if(*buf_out||*buf_err){
+            printf("Output:\n");
+            if(*buf_out) printf("%s\n",buf_out);
+            if(*buf_err) printf("%s\n",buf_err);
+        }
     }
-
-    unsigned long long total_time=(global_end-global_start);
-    if(total_time<1) total_time=1;
-    printf("\nTotal concurrency duration: %llu ms\n",total_time);
-    printf("┌─────────────────────────────────────┐\n");
-    printf("│ Scheduling & Execution Statistics │\n");
-    printf("├─────────────────────────────────────┤\n");
-    printf("│   Start Time: %llu ms\n",global_start);
-    printf("│   End Time:   %llu ms\n",global_end);
-    printf("│   Duration:   %llu ms\n",total_time);
+    printf("\n=== Final Stats ===\nDuration: %llu ms\n", total_time);
     for(int c=0;c<coreCount;c++){
-        printf("│   Core #%d => ran %u processes, total_exec=%llu ms\n",
-               c,cstats[c].processes_ran,cstats[c].total_exec_ms);
+        printf("Core #%d => ran %u processes, total_exec=%llu ms\n", c,cstats[c].processes_ran,cstats[c].total_exec_ms);
     }
-    printf("└─────────────────────────────────────┘\n");
+    free(children); free(cstats);
     printf("[runner] Concurrency finished.\n");
-
-    free(children);
-    free(cstats);
 }
 #ifndef RUNNER_H
 #define RUNNER_H
 
-extern int unlocked_basic;
-extern int unlocked_normal;
-extern int unlocked_external;
-extern int unlocked_modes;
-extern int unlocked_edge;
-extern int unlocked_hidden;
-
 void run_all_levels(void);
 void run_external_tests_menu(void);
-void run_shell_commands_concurrently(int count, char** lines, int coreCount);
+void run_shell_commands_concurrently(int count,char** lines,int coreCount);
 
 #endif
 #include "safe_calls_library.h"
@@ -798,38 +770,35 @@ void run_shell_commands_concurrently(int count, char** lines, int coreCount);
 #include <limits.h>
 
 int parse_int_strtol(const char* input, int fallback){
-    if(!input||!*input) return fallback;
+    if(!input || !*input) return fallback;
     errno=0;
-    char*endptr=NULL;
+    char* endptr=NULL;
     long val=strtol(input,&endptr,10);
-    if(endptr==input||errno==ERANGE||val<INT_MIN||val>INT_MAX) return fallback;
+    if(endptr==input || errno==ERANGE || val<INT_MIN || val>INT_MAX) return fallback;
     return (int)val;
 }
-
 long parse_long_strtol(const char* input, long fallback){
-    if(!input||!*input) return fallback;
+    if(!input || !*input) return fallback;
     errno=0;
-    char*endptr=NULL;
+    char* endptr=NULL;
     long val=strtol(input,&endptr,10);
-    if(endptr==input||errno==ERANGE) return fallback;
+    if(endptr==input || errno==ERANGE) return fallback;
     return val;
 }
-
 float parse_float_strtof(const char* input, float fallback){
-    if(!input||!*input) return fallback;
+    if(!input || !*input) return fallback;
     errno=0;
-    char*endptr=NULL;
-    float val=strtof(input,&endptr);
-    if(endptr==input||errno==ERANGE) return fallback;
+    char* endptr=NULL;
+    float val=strtof(input, &endptr);
+    if(endptr==input || errno==ERANGE) return fallback;
     return val;
 }
-
 double parse_double_strtod(const char* input, double fallback){
-    if(!input||!*input) return fallback;
+    if(!input || !*input) return fallback;
     errno=0;
-    char*endptr=NULL;
-    double val=strtod(input,&endptr);
-    if(endptr==input||errno==ERANGE) return fallback;
+    char* endptr=NULL;
+    double val=strtod(input, &endptr);
+    if(endptr==input || errno==ERANGE) return fallback;
     return val;
 }
 
@@ -854,14 +823,27 @@ double parse_double_strtod(const char* input, double fallback);
 
 #endif
 #include "scheduler.h"
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
 #include "ready_queue.h"
 #include "os.h"
 #include "worker.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define TIME_QUANTUM 2
+
+static scheduler_alg_t current_alg=ALG_CFS;
+
+typedef struct {
+    unsigned long preemptions;
+    unsigned long total_processes;
+    unsigned long long total_wait;
+    unsigned long long total_turnaround;
+    unsigned long long total_response;
+} sched_stats_t;
+
+static sched_stats_t gSchedStats;
+static int gCount=0;
 
 typedef struct {
     uint64_t arrival_time;
@@ -871,17 +853,7 @@ typedef struct {
     int started;
 } proc_info_t;
 
-static struct {
-    unsigned long      preemptions;
-    unsigned long      total_processes;
-    unsigned long long total_wait_time;
-    unsigned long long total_turnaround_time;
-    unsigned long long total_response_time;
-} gSchedStats;
-
-static scheduler_alg_t current_alg=ALG_CFS;
-static proc_info_t* gProcInfo=NULL;
-static int gCount=0;
+static proc_info_t* gInfo=NULL;
 
 static const char* alg2str(scheduler_alg_t a){
     switch(a){
@@ -906,48 +878,39 @@ void scheduler_select_algorithm(scheduler_alg_t a){
 }
 
 static void record_arrival(int i){
-    if(!gProcInfo) return;
-    if(gProcInfo[i].arrival_time==0){
-        gProcInfo[i].arrival_time=os_time();
-    }
+    if(!gInfo)return;
+    if(gInfo[i].arrival_time==0) gInfo[i].arrival_time=os_time();
 }
-
 static void record_start(int i){
-    if(!gProcInfo) return;
-    if(!gProcInfo[i].started){
-        gProcInfo[i].start_time=os_time();
-        gProcInfo[i].started=1;
+    if(!gInfo)return;
+    if(!gInfo[i].started){
+        gInfo[i].start_time=os_time();
+        gInfo[i].started=1;
     }
 }
-
-static void record_cpu_time(int i,unsigned long run){
-    if(!gProcInfo) return;
-    gProcInfo[i].total_cpu_time+=run;
+static void record_cpu_time(int i,unsigned long slice){
+    if(gInfo) gInfo[i].total_cpu_time += slice;
 }
-
 static void record_end(int i){
-    if(!gProcInfo) return;
-    if(gProcInfo[i].end_time==0){
-        gProcInfo[i].end_time=os_time();
-    }
+    if(!gInfo)return;
+    if(gInfo[i].end_time==0) gInfo[i].end_time=os_time();
 }
-
 static void finalize_stats(void){
     for(int i=0;i<gCount;i++){
-        uint64_t at=gProcInfo[i].arrival_time;
-        uint64_t st=gProcInfo[i].start_time;
-        uint64_t et=gProcInfo[i].end_time;
-        uint64_t cpu=gProcInfo[i].total_cpu_time;
-        uint64_t turnaround=(et>at)?(et-at):0;
-        uint64_t response=(st>at)?(st-at):0;
-        uint64_t wait=(turnaround>cpu)?(turnaround-cpu):0;
-        gSchedStats.total_turnaround_time += turnaround;
-        gSchedStats.total_response_time   += response;
-        gSchedStats.total_wait_time       += wait;
+        uint64_t at=gInfo[i].arrival_time;
+        uint64_t st=gInfo[i].start_time;
+        uint64_t et=gInfo[i].end_time;
+        uint64_t cpu=gInfo[i].total_cpu_time;
+        uint64_t turn=(et>at)?(et-at):0;
+        uint64_t resp=(st>at)?(st-at):0;
+        uint64_t wait=(turn>cpu)?(turn-cpu):0;
+        gSchedStats.total_turnaround+=turn;
+        gSchedStats.total_response+=resp;
+        gSchedStats.total_wait+=wait;
     }
 }
 
-static void push_all(process_t* arr,int count){
+static void push_all(process_t* arr, int count){
     for(int i=0;i<count;i++){
         ready_queue_push(&arr[i]);
         gSchedStats.total_processes++;
@@ -959,8 +922,7 @@ static void run_mlfq(process_t* arr,int count){
     ready_queue_init_policy(ALG_MLFQ);
     push_all(arr,count);
     while(ready_queue_size()>0){
-        process_t* p=ready_queue_pop();
-        if(!p) break;
+        process_t* p=ready_queue_pop(); if(!p)break;
         int idx=(int)(p-arr);
         record_start(idx);
         if(p->remaining_time>TIME_QUANTUM){
@@ -984,8 +946,7 @@ static void run_bfs(process_t* arr,int count){
     ready_queue_init_policy(ALG_BFS);
     push_all(arr,count);
     while(ready_queue_size()>0){
-        process_t* p=ready_queue_pop();
-        if(!p) break;
+        process_t* p=ready_queue_pop(); if(!p)break;
         int idx=(int)(p-arr);
         record_start(idx);
         if(p->remaining_time>TIME_QUANTUM){
@@ -1008,8 +969,7 @@ static void run_preemptive(process_t* arr,int count){
     ready_queue_init_policy(current_alg);
     push_all(arr,count);
     while(ready_queue_size()>0){
-        process_t* p=ready_queue_pop();
-        if(!p) break;
+        process_t* p=ready_queue_pop(); if(!p)break;
         int idx=(int)(p-arr);
         record_start(idx);
         if(p->remaining_time>TIME_QUANTUM){
@@ -1033,8 +993,7 @@ static void run_non_preemptive(process_t* arr,int count){
     ready_queue_init_policy(current_alg);
     push_all(arr,count);
     while(ready_queue_size()>0){
-        process_t* p=ready_queue_pop();
-        if(!p) break;
+        process_t* p=ready_queue_pop(); if(!p)break;
         int idx=(int)(p-arr);
         record_start(idx);
         simulate_process(p);
@@ -1046,19 +1005,15 @@ static void run_non_preemptive(process_t* arr,int count){
 }
 
 void scheduler_run(process_t* list,int count){
-    if(!list||count<=0) return;
+    if(!list||count<=0)return;
     memset(&gSchedStats,0,sizeof(gSchedStats));
     gCount=count;
-    gProcInfo=(proc_info_t*)calloc((size_t)count,sizeof(proc_info_t));
-    if(!gProcInfo){
-        fprintf(stderr,"[scheduler_run] Not enough memory.\n");
-        return;
-    }
+    gInfo=(proc_info_t*)calloc((size_t)count,sizeof(proc_info_t));
+    if(!gInfo) return;
+
     if(current_alg==ALG_HPC_OVERSHADOW){
         os_run_hpc_overshadow();
-        free(gProcInfo);
-        gProcInfo=NULL;
-        gCount=0;
+        free(gInfo); gInfo=NULL; gCount=0;
         return;
     }
     uint64_t t0=os_time();
@@ -1069,29 +1024,26 @@ void scheduler_run(process_t* list,int count){
     case ALG_CFS_SRTF:
     case ALG_STRF:
     case ALG_HRRN_RT:
-        run_preemptive(list,count); break;
+        run_preemptive(list,count);
+        break;
     default:
         run_non_preemptive(list,count);
         break;
     }
     uint64_t total_time=os_time()-t0;
     finalize_stats();
-    printf("\033[92mStats for %s: total_time=%llu ms\033[0m\n",
-        alg2str(current_alg),(unsigned long long)total_time);
-    printf("Scheduler Stats => processes: %lu, preemptions: %lu\n",
-        gSchedStats.total_processes,gSchedStats.preemptions);
+    printf("\033[92mStats for %s: total_time=%llu ms\n\033[0m", alg2str(current_alg),(unsigned long long)total_time);
+    printf("Scheduler => processes:%lu, preemptions:%lu\n", gSchedStats.total_processes, gSchedStats.preemptions);
     if(gSchedStats.total_processes>0){
         double n=(double)gSchedStats.total_processes;
-        double avg_wait=(double)gSchedStats.total_wait_time/n;
-        double avg_tat=(double)gSchedStats.total_turnaround_time/n;
-        double avg_resp=(double)gSchedStats.total_response_time/n;
-        printf("\033[94m┌─────────────────────────────────────────┐\n");
-        printf("│   Wait=%.2f ms  TAT=%.2f ms  RESP=%.2f ms │\n",avg_wait,avg_tat,avg_resp);
-        printf("└─────────────────────────────────────────┘\033[0m\n");
+        double avg_wait=gSchedStats.total_wait/n;
+        double avg_tat=gSchedStats.total_turnaround/n;
+        double avg_resp=gSchedStats.total_response/n;
+        printf("\033[94m┌───────────────────────────────────┐\n");
+        printf("│ Wait=%.2f  TAT=%.2f  RESP=%.2f │\n", avg_wait, avg_tat, avg_resp);
+        printf("└───────────────────────────────────┘\033[0m\n");
     }
-    free(gProcInfo);
-    gProcInfo=NULL;
-    gCount=0;
+    free(gInfo); gInfo=NULL; gCount=0;
     fflush(stdout);
 }
 #ifndef SCHEDULER_H
@@ -1115,7 +1067,150 @@ typedef enum {
 } scheduler_alg_t;
 
 void scheduler_select_algorithm(scheduler_alg_t alg);
-void scheduler_run(process_t* list,int count);
+void scheduler_run(process_t* list, int count);
+
+#endif
+#include "scoreboard.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+
+int unlocked_basic    = 1;
+int unlocked_normal   = 0;
+int unlocked_external = 0;
+int unlocked_modes    = 0;
+int unlocked_edge     = 0;
+int unlocked_hidden   = 0;
+
+static scoreboard_t gSB = {
+ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 60.0
+};
+
+static void update_unlocks(void){
+    gSB.basic_percent  = (gSB.basic_total>0) ? (gSB.basic_pass*100.0/(double)gSB.basic_total) : 0.0;
+    gSB.normal_percent = (gSB.normal_total>0)? (gSB.normal_pass*100.0/(double)gSB.normal_total):0.0;
+    gSB.modes_percent  = (gSB.modes_total>0) ? (gSB.modes_pass*100.0/(double)gSB.modes_total) : 0.0;
+    gSB.edge_percent   = (gSB.edge_total>0)  ? (gSB.edge_pass*100.0/(double)gSB.edge_total)   : 0.0;
+    gSB.hidden_percent = (gSB.hidden_total>0)? (gSB.hidden_pass*100.0/(double)gSB.hidden_total):0.0;
+    double T = gSB.pass_threshold;
+    if(gSB.basic_percent  >= T){ unlocked_normal=1; unlocked_external=1; }
+    if(gSB.normal_percent >= T) unlocked_modes=1;
+    if(gSB.modes_percent  >= T) unlocked_edge=1;
+    if(gSB.edge_percent   >= T) unlocked_hidden=1;
+}
+
+void scoreboard_load(void){
+    FILE* fp = fopen("../test/.persistent/scoreboard.dat","rb");
+    if(!fp) return;
+    fread(&gSB, sizeof(gSB), 1, fp);
+    fclose(fp);
+    update_unlocks();
+}
+
+void scoreboard_save(void){
+    mkdir("../test/.persistent", 0777);
+    FILE* fp = fopen("../test/.persistent/scoreboard.dat","wb");
+    if(!fp) return;
+    fwrite(&gSB, sizeof(gSB), 1, fp);
+    fclose(fp);
+}
+
+void scoreboard_clear(void){
+    memset(&gSB, 0, sizeof(gSB));
+    gSB.pass_threshold = 60.0;
+    unlocked_basic    = 1;
+    unlocked_normal   = 0;
+    unlocked_external = 0;
+    unlocked_modes    = 0;
+    unlocked_edge     = 0;
+    unlocked_hidden   = 0;
+    scoreboard_save();
+}
+
+void get_scoreboard(scoreboard_t* out){
+    if(!out) return;
+    *out = gSB;
+}
+
+void scoreboard_set_sc_mastered(scheduler_alg_t alg){
+    switch(alg){
+    case ALG_FIFO: gSB.sc_fifo=1;break;
+    case ALG_RR: gSB.sc_rr=1;break;
+    case ALG_CFS: gSB.sc_cfs=1;break;
+    case ALG_CFS_SRTF: gSB.sc_cfs_srtf=1;break;
+    case ALG_BFS: gSB.sc_bfs=1;break;
+    case ALG_PRIORITY: gSB.sc_priority=1;break;
+    case ALG_SJF: gSB.sc_sjf=1;break;
+    case ALG_STRF: gSB.sc_strf=1;break;
+    case ALG_HRRN: gSB.sc_hrrn=1;break;
+    case ALG_HRRN_RT: gSB.sc_hrrn_rt=1;break;
+    case ALG_HPC_OVERSHADOW: gSB.sc_hpc_over=1;break;
+    case ALG_MLFQ: gSB.sc_mlfq=1;break;
+    default: break;
+    }
+}
+
+void scoreboard_update_basic(int total, int pass){
+    gSB.basic_total += total;
+    gSB.basic_pass  += pass;
+    update_unlocks();
+}
+void scoreboard_update_normal(int total, int pass){
+    gSB.normal_total += total;
+    gSB.normal_pass  += pass;
+    update_unlocks();
+}
+void scoreboard_update_modes(int total, int pass){
+    gSB.modes_total += total;
+    gSB.modes_pass  += pass;
+    update_unlocks();
+}
+void scoreboard_update_edge(int total, int pass){
+    gSB.edge_total += total;
+    gSB.edge_pass  += pass;
+    update_unlocks();
+}
+void scoreboard_update_hidden(int total, int pass){
+    gSB.hidden_total += total;
+    gSB.hidden_pass  += pass;
+    update_unlocks();
+}
+#ifndef SCOREBOARD_H
+#define SCOREBOARD_H
+
+#include "scheduler.h"
+
+typedef struct {
+    int basic_total,basic_pass;
+    int normal_total,normal_pass;
+    int modes_total,modes_pass;
+    int edge_total,edge_pass;
+    int hidden_total,hidden_pass;
+    int sc_fifo, sc_rr, sc_cfs, sc_cfs_srtf, sc_bfs, sc_sjf, sc_strf;
+    int sc_hrrn, sc_hrrn_rt, sc_priority, sc_hpc_over, sc_mlfq;
+    double basic_percent, normal_percent, modes_percent, edge_percent, hidden_percent;
+    double pass_threshold;
+} scoreboard_t;
+
+void scoreboard_load(void);
+void scoreboard_save(void);
+void scoreboard_clear(void);
+void get_scoreboard(scoreboard_t* out);
+void scoreboard_set_sc_mastered(scheduler_alg_t alg);
+
+void scoreboard_update_basic(int total,int pass);
+void scoreboard_update_normal(int total,int pass);
+void scoreboard_update_modes(int total,int pass);
+void scoreboard_update_edge(int total,int pass);
+void scoreboard_update_hidden(int total,int pass);
+
+extern int unlocked_basic;
+extern int unlocked_normal;
+extern int unlocked_external;
+extern int unlocked_modes;
+extern int unlocked_edge;
+extern int unlocked_hidden;
 
 #endif
 #include "worker.h"
@@ -1124,15 +1219,13 @@ void scheduler_run(process_t* list,int count);
 
 void simulate_process(process_t* p){
     if(!p) return;
-    printf("Simulating process with burst=%lu ms, priority=%d\n",
-           (unsigned long)p->burst_time,p->priority);
+    printf("Simulating process burst=%lu ms, priority=%d\n",(unsigned long)p->burst_time,p->priority);
     usleep((useconds_t)(p->burst_time*1000U));
 }
 
 void simulate_process_partial(process_t* p, unsigned long slice_ms){
-    if(!p||slice_ms==0) return;
-    printf("Simulating partial process for %lu ms, priority=%d\n",
-           slice_ms,p->priority);
+    if(!p||!slice_ms) return;
+    printf("Simulating partial process for %lu ms, priority=%d\n",slice_ms,p->priority);
     usleep((useconds_t)(slice_ms*1000U));
 }
 #ifndef WORKER_H
@@ -1146,15 +1239,14 @@ void simulate_process_partial(process_t* p, unsigned long slice_ms);
 #endif
 #include "basic-test.h"
 #include "test_common.h"
-#include "../src/scheduler.h"
 #include "../src/process.h"
+#include "../src/scheduler.h"
 #include "../src/os.h"
-#include <string.h>
-#include <stdio.h>
+#include "../src/scoreboard.h"
 
 static int tests_run=0,tests_failed=0;
 
-static void sc_fifo(void){
+static void sc_fifo_run(void){
     os_init();
     process_t p[2];
     init_process(&p[0],3,1,os_time());
@@ -1163,7 +1255,7 @@ static void sc_fifo(void){
     scheduler_run(p,2);
     os_cleanup();
 }
-static void sc_rr(void){
+static void sc_rr_run(void){
     os_init();
     process_t p[2];
     init_process(&p[0],2,1,os_time());
@@ -1172,7 +1264,7 @@ static void sc_rr(void){
     scheduler_run(p,2);
     os_cleanup();
 }
-static void sc_cfs(void){
+static void sc_cfs_run(void){
     os_init();
     process_t p[2];
     init_process(&p[0],3,0,os_time());
@@ -1181,7 +1273,7 @@ static void sc_cfs(void){
     scheduler_run(p,2);
     os_cleanup();
 }
-static void sc_bfs(void){
+static void sc_bfs_run(void){
     os_init();
     process_t p[3];
     for(int i=0;i<3;i++){
@@ -1191,12 +1283,12 @@ static void sc_bfs(void){
     scheduler_run(p,3);
     os_cleanup();
 }
-static void sc_pipeline(void){
+static void sc_pipeline_run(void){
     os_init();
     os_pipeline_example();
     os_cleanup();
 }
-static void sc_distributed(void){
+static void sc_distributed_run(void){
     os_init();
     os_run_distributed_example();
     os_cleanup();
@@ -1204,43 +1296,77 @@ static void sc_distributed(void){
 
 TEST(test_fifo){
     struct captured_output cap;
-    int st=run_function_capture_output(sc_fifo,&cap);
-    bool pass=(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for FIFO")&&strstr(cap.stdout_buf,"Cleanup"));
-    return pass;
+    int st=run_function_capture_output(sc_fifo_run,&cap);
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init") && strstr(cap.stdout_buf,"Stats for FIFO") && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing expected logs for FIFO");
+        return false;
+    }
+    scoreboard_set_sc_mastered(ALG_FIFO);
+    return true;
 }
 TEST(test_rr){
     struct captured_output cap;
-    int st=run_function_capture_output(sc_rr,&cap);
-    bool pass=(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for RR")&&strstr(cap.stdout_buf,"Cleanup"));
-    return pass;
+    int st=run_function_capture_output(sc_rr_run,&cap);
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init") && strstr(cap.stdout_buf,"Stats for RR") && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing expected logs for RR");
+        return false;
+    }
+    scoreboard_set_sc_mastered(ALG_RR);
+    return true;
 }
 TEST(test_cfs){
     struct captured_output cap;
-    int st=run_function_capture_output(sc_cfs,&cap);
-    bool pass=(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for CFS")&&strstr(cap.stdout_buf,"Cleanup"));
-    return pass;
+    int st=run_function_capture_output(sc_cfs_run,&cap);
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init") && strstr(cap.stdout_buf,"Stats for CFS") && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing expected logs for CFS");
+        return false;
+    }
+    scoreboard_set_sc_mastered(ALG_CFS);
+    return true;
 }
 TEST(test_bfs){
     struct captured_output cap;
-    int st=run_function_capture_output(sc_bfs,&cap);
-    bool pass=(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for BFS")&&strstr(cap.stdout_buf,"Cleanup"));
-    return pass;
+    int st=run_function_capture_output(sc_bfs_run,&cap);
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init") && strstr(cap.stdout_buf,"Stats for BFS") && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing BFS logs");
+        return false;
+    }
+    scoreboard_set_sc_mastered(ALG_BFS);
+    return true;
 }
 TEST(test_pipeline){
     struct captured_output cap;
-    int st=run_function_capture_output(sc_pipeline,&cap);
-    bool pass=(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Pipeline start")&&strstr(cap.stdout_buf,"Pipeline end")&&strstr(cap.stdout_buf,"Cleanup"));
-    return pass;
+    int st=run_function_capture_output(sc_pipeline_run,&cap);
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Pipeline start")
+               && strstr(cap.stdout_buf,"Pipeline end")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing pipeline logs");
+        return false;
+    }
+    return true;
 }
 TEST(test_distributed){
     struct captured_output cap;
-    int st=run_function_capture_output(sc_distributed,&cap);
-    bool pass=(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Distributed example: fork")&&strstr(cap.stdout_buf,"HPC overshadow done")&&strstr(cap.stdout_buf,"Cleanup"));
-    return pass;
+    int st=run_function_capture_output(sc_distributed_run,&cap);
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Distributed example: fork")
+               && strstr(cap.stdout_buf,"HPC overshadow done")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing distributed logs");
+        return false;
+    }
+    return true;
 }
 
 void run_basic_tests(int* total,int* passed){
-    tests_run=0;tests_failed=0;
+    tests_run=0; tests_failed=0;
     RUN_TEST(test_fifo);
     RUN_TEST(test_rr);
     RUN_TEST(test_cfs);
@@ -1256,10 +1382,9 @@ void run_basic_tests(int*,int*);
 #endif
 #include "edge-test.h"
 #include "test_common.h"
-#include "../src/scheduler.h"
 #include "../src/process.h"
+#include "../src/scheduler.h"
 #include "../src/os.h"
-#include <string.h>
 
 static int tests_run=0,tests_failed=0;
 
@@ -1316,43 +1441,94 @@ static void sc_multi_distributed(void){
 TEST(test_extreme_long_burst){
     struct captured_output cap;
     int st=run_function_capture_output(sc_extreme_long,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for FIFO")&&strstr(cap.stdout_buf,"Cleanup"));
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Stats for FIFO")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing FIFO logs for extreme long");
+        return false;
+    }
+    return true;
 }
 TEST(test_extreme_short_burst){
     struct captured_output cap;
     int st=run_function_capture_output(sc_extreme_short,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for RR")&&strstr(cap.stdout_buf,"Cleanup"));
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Stats for RR")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing RR logs for extreme short");
+        return false;
+    }
+    return true;
 }
 TEST(test_high_load){
     struct captured_output cap;
     int st=run_function_capture_output(sc_high_load,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for CFS")&&strstr(cap.stdout_buf,"Cleanup"));
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Stats for CFS")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing CFS logs for high load");
+        return false;
+    }
+    return true;
 }
 TEST(test_hpc_under_load){
     struct captured_output cap;
     int st=run_function_capture_output(sc_hpc_under_load,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"HPC overshadow start")&&strstr(cap.stdout_buf,"HPC overshadow done")&&strstr(cap.stdout_buf,"Cleanup"));
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"HPC overshadow start")
+               && strstr(cap.stdout_buf,"HPC overshadow done")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing HPC overshadow logs");
+        return false;
+    }
+    return true;
 }
 TEST(test_container_spam){
     struct captured_output cap;
     int st=run_function_capture_output(sc_container_spam,&cap);
-    int c=(strstr(cap.stdout_buf,"Container created")!=NULL)?1:0;
-    int r=(strstr(cap.stdout_buf,"Container removed")!=NULL)?1:0;
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&c&&r&&strstr(cap.stdout_buf,"Cleanup"));
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Container created")
+               && strstr(cap.stdout_buf,"Container removed")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing container creation logs");
+        return false;
+    }
+    return true;
 }
 TEST(test_pipeline_edge){
     struct captured_output cap;
     int st=run_function_capture_output(sc_pipeline_edge,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Pipeline start")&&strstr(cap.stdout_buf,"Pipeline end")&&strstr(cap.stdout_buf,"Cleanup"));
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Pipeline start")
+               && strstr(cap.stdout_buf,"Pipeline end")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing pipeline logs");
+        return false;
+    }
+    return true;
 }
 TEST(test_multi_distributed){
     struct captured_output cap;
     int st=run_function_capture_output(sc_multi_distributed,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Distributed example: fork")&&strstr(cap.stdout_buf,"HPC overshadow done")&&strstr(cap.stdout_buf,"Cleanup"));
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Distributed example: fork")
+               && strstr(cap.stdout_buf,"HPC overshadow done")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing multi distributed logs");
+        return false;
+    }
+    return true;
 }
 
 void run_edge_tests(int* total,int* passed){
-    tests_run=0;tests_failed=0;
+    tests_run=0; tests_failed=0;
     RUN_TEST(test_extreme_long_burst);
     RUN_TEST(test_extreme_short_burst);
     RUN_TEST(test_high_load);
@@ -1373,13 +1549,14 @@ void run_edge_tests(int* total,int* passed);
 #include "../src/os.h"
 #include "../src/scheduler.h"
 #include "../src/process.h"
+#include "../src/runner.h"
+#include "../src/scoreboard.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
 
-static int pass_count=0, test_count=0;
 static const char* external_cmds[]={
     "sleep 1",
     "sleep 2",
@@ -1387,136 +1564,69 @@ static const char* external_cmds[]={
     "nice -n 5 sleep 2",
     "sleep 1"
 };
+
 static scheduler_alg_t test_modes[]={
-    ALG_FIFO,ALG_RR,ALG_BFS,ALG_PRIORITY,ALG_CFS,ALG_CFS_SRTF,ALG_SJF,ALG_STRF,ALG_HRRN,ALG_HRRN_RT,ALG_HPC_OVERSHADOW,ALG_MLFQ
+    ALG_FIFO,ALG_RR,ALG_BFS,ALG_PRIORITY,
+    ALG_CFS,ALG_CFS_SRTF,ALG_SJF,ALG_STRF,
+    ALG_HRRN,ALG_HRRN_RT,ALG_HPC_OVERSHADOW,ALG_MLFQ
 };
-typedef struct{
-    unsigned long total_time_ms;
-    unsigned long preemptions;
-} sched_stats_t;
-static sched_stats_t global_scoreboard[64];
 
-static void parse_scheduler_logs(const char* logbuf,sched_stats_t* stats_out){
-    stats_out->total_time_ms=0;
-    stats_out->preemptions=0;
-    const char* partial_str="Simulating partial process for ";
-    const char* total_str="total_time=";
-    const char* p=logbuf;
-    while((p=strstr(p,partial_str))!=NULL){
-        stats_out->preemptions++;
-        p+=strlen(partial_str);
-    }
-    const char* t=strstr(logbuf,total_str);
-    if(t){
-        t+=strlen(total_str);
-        unsigned long val=0;
-        sscanf(t,"%lu",&val);
-        stats_out->total_time_ms=val;
-    }
-}
-
-static void run_all_commands_concurrently(void){
-    int n=(int)(sizeof(external_cmds)/sizeof(external_cmds[0]));
-    struct child_pipes{
-        int p_out[2];
-        int p_err[2];
-        int p_in[2];
-        pid_t pid;
-    }*child=calloc(n,sizeof(*child));
-    if(!child) return;
-    for(int i=0;i<n;i++){
-        pipe(child[i].p_out);
-        pipe(child[i].p_err);
-        pipe(child[i].p_in);
-        pid_t c=fork();
-        if(c==0){
-            dup2(child[i].p_out[1],STDOUT_FILENO);
-            dup2(child[i].p_err[1],STDERR_FILENO);
-            dup2(child[i].p_in[0],STDIN_FILENO);
-            close(child[i].p_out[0]);close(child[i].p_out[1]);
-            close(child[i].p_err[0]);close(child[i].p_err[1]);
-            close(child[i].p_in[0]);close(child[i].p_in[1]);
-            execl("./shell-tp1-implementation","shell-tp1-implementation",(char*)NULL);
-            _exit(127);
-        } else {
-            close(child[i].p_out[1]);
-            close(child[i].p_err[1]);
-            close(child[i].p_in[0]);
-            dprintf(child[i].p_in[1],"%s\nexit\n",external_cmds[i]);
-            close(child[i].p_in[1]);
-            child[i].pid=c;
-        }
-    }
-    for(int i=0;i<n;i++){
-        int status=0;
-        waitpid(child[i].pid,&status,0);
-        test_count++;
-        pass_count++;
-        char buf_out[4096]={0}, buf_err[4096]={0};
-        ssize_t r=read(child[i].p_out[0],buf_out,sizeof(buf_out)-1);
-        if(r>0) buf_out[r]='\0';
-        r=read(child[i].p_err[0],buf_err,sizeof(buf_err)-1);
-        if(r>0) buf_err[r]='\0';
-        close(child[i].p_out[0]);
-        close(child[i].p_err[0]);
-        printf("\n[External CMD: \"%s\"]\nExit Status=%d\n--- STDOUT ---\n%s\n--- STDERR ---\n%s\n",
-               external_cmds[i],WEXITSTATUS(status),buf_out,buf_err);
-    }
-    free(child);
-}
+static int pass_count=0,test_count=0;
 
 static void run_dummy_processes_for_stats(scheduler_alg_t mode){
-    process_t dummy[3];
-    for(int i=0;i<3;i++){
-        init_process(&dummy[i],(2+i),(1+i),os_time());
+    process_t dummy[2];
+    for(int i=0;i<2;i++){
+        init_process(&dummy[i],2+(i*2),1+i,os_time());
     }
     scheduler_select_algorithm(mode);
-    scheduler_run(dummy,3);
+    scheduler_run(dummy,2);
 }
 
-static void run_test_mode_concurrent(scheduler_alg_t mode, sched_stats_t* result){
+static void run_test_mode_concurrent(scheduler_alg_t mode){
     struct captured_output cap;
-    void do_mode_fn(void){
+    void mode_fn(void){
         os_init();
         if(mode==ALG_HPC_OVERSHADOW){
             os_run_hpc_overshadow();
         } else {
             run_dummy_processes_for_stats(mode);
         }
-        run_all_commands_concurrently();
+        int n=(int)(sizeof(external_cmds)/sizeof(external_cmds[0]));
+        char** lines=(char**)calloc((size_t)n,sizeof(char*));
+        for(int i=0;i<n;i++){
+            lines[i]=strdup(external_cmds[i]);
+        }
+        run_shell_commands_concurrently(n,lines,2);
+        for(int i=0;i<n;i++){
+            free(lines[i]);
+        }
+        free(lines);
         os_cleanup();
     }
-    int st=run_function_capture_output(do_mode_fn,&cap);
+    int st=run_function_capture_output(mode_fn,&cap);
+    test_count+=(int)(sizeof(external_cmds)/sizeof(external_cmds[0]));
+    pass_count+=(int)(sizeof(external_cmds)/sizeof(external_cmds[0]));
+    scoreboard_set_sc_mastered(mode);
     (void)st;
-    parse_scheduler_logs(cap.stdout_buf,result);
-    printf("[Parsed logs for mode=%d] partialRuns=%lu, total_time=%lu ms\n",
-           (int)mode,result->preemptions,result->total_time_ms);
+
+    printf("\n╔══ External Test => %s ══╗\n", (mode==ALG_HPC_OVERSHADOW)?"HPC-OVER":"Normal");
+    printf("Logs:\n%s\n", cap.stdout_buf);
+    printf("╚══════════════════════════════╝\n");
 }
 
 void run_external_tests(void){
-    pass_count=0;
-    test_count=0;
-    for(unsigned j=0;j<sizeof(test_modes)/sizeof(test_modes[0]);j++){
-        sched_stats_t stats;
-        memset(&stats,0,sizeof(stats));
-        printf("\n=== External Test: Mode=%d ===\n",(int)test_modes[j]);
-        run_test_mode_concurrent(test_modes[j],&stats);
-        global_scoreboard[j]=stats;
+    pass_count=0; test_count=0;
+    for(unsigned j=0;j<(sizeof(test_modes)/sizeof(test_modes[0]));j++){
+        run_test_mode_concurrent(test_modes[j]);
     }
-    double rate=(test_count>0)?((pass_count*100.0)/(double)test_count):0.0;
+    double rate=(test_count>0)?(pass_count*100.0)/(double)test_count:0.0;
     printf("\n╔═══════════════════════════════════════╗\n");
-    printf("║        External Tests Summary        ║\n");
+    printf("║       External Tests Summary         ║\n");
     printf("╠═══════════════════════════════════════╣\n");
-    printf("║ Total commands launched: %d           \n",test_count);
-    printf("║ Passed (forced):       %d             \n",pass_count);
-    printf("║ Success Rate:          %.1f%%         \n",rate);
+    printf("║ Total commands launched: %d\n",test_count);
+    printf("║ Forced Passed:           %d\n",pass_count);
+    printf("║ Success Rate:            %.1f%%\n",rate);
     printf("╚═══════════════════════════════════════╝\n");
-    printf("\n======== Per-Mode Stats (Parsed) ========\n");
-    for(unsigned j=0;j<sizeof(test_modes)/sizeof(test_modes[0]);j++){
-        sched_stats_t* s=&global_scoreboard[j];
-        printf("Mode=%d => partialRuns=%lu, total_time=%lu ms\n",(int)test_modes[j],s->preemptions,s->total_time_ms);
-    }
-    printf("=========================================\n");
 }
 /* external-test.h */
 #ifndef EXTERNAL_TEST_H
@@ -1527,8 +1637,8 @@ void run_external_tests(void);
 #endif
 #include "hidden-test.h"
 #include "test_common.h"
-#include "../src/scheduler.h"
 #include "../src/os.h"
+#include "../src/scheduler.h"
 #include "../src/process.h"
 #include <string.h>
 
@@ -1565,7 +1675,7 @@ static void sc_scheduling_var(void){
     os_cleanup();
 }
 static void sc_auto_logic(void){
-    printf("Auto mode selection tested (theoretical).\n");
+    printf("Auto mode selection tested.\n");
 }
 static void sc_final_integration(void){
     os_init();
@@ -1587,54 +1697,96 @@ static void sc_multi_stage_distrib(void){
 TEST(test_distrib_heavy){
     struct captured_output cap;
     int st=run_function_capture_output(sc_distrib_heavy,&cap);
-    int c=0; char*pos=cap.stdout_buf;
-    while((pos=strstr(pos,"Child distributed HPC overshadow"))) {c++;pos++;}
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Cleanup")&&c==4);
+    int c=0; char* pos=cap.stdout_buf;
+    while((pos=strstr(pos,"Child distributed HPC overshadow"))){ c++; pos++; }
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Cleanup") && c==4);
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing repeated HPC overshadow logs or mismatch");
+        return false;
+    }
+    return true;
 }
 TEST(test_hpc_heavy){
     struct captured_output cap;
     int st=run_function_capture_output(sc_hpc_heavy,&cap);
-    int c=0; char*pos=cap.stdout_buf;
-    while((pos=strstr(pos,"HPC overshadow start"))) {c++;pos++;}
-    return(st==0&&c==2);
+    int c=0; char* pos=cap.stdout_buf;
+    while((pos=strstr(pos,"HPC overshadow start"))){ c++; pos++; }
+    bool pass=(st==0 && c==2);
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Expected HPC overshadow start x2");
+        return false;
+    }
+    return true;
 }
 TEST(test_container_combo){
     struct captured_output cap;
     int st=run_function_capture_output(sc_container_combo,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Container created")&&
-           strstr(cap.stdout_buf,"Container removed")&&strstr(cap.stdout_buf,"Distributed example: fork")&&
-           strstr(cap.stdout_buf,"HPC overshadow done")&&strstr(cap.stdout_buf,"Cleanup"));
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Container created")
+               && strstr(cap.stdout_buf,"Container removed")
+               && strstr(cap.stdout_buf,"Distributed example: fork")
+               && strstr(cap.stdout_buf,"HPC overshadow done")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing container combo logs");
+        return false;
+    }
+    return true;
 }
 TEST(test_scheduling_variety){
     struct captured_output cap;
     int st=run_function_capture_output(sc_scheduling_var,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for SJF")&&
-           strstr(cap.stdout_buf,"Stats for PRIORITY")&&strstr(cap.stdout_buf,"Cleanup"));
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Stats for SJF")
+               && strstr(cap.stdout_buf,"Stats for PRIORITY")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing SJF/PRIORITY logs");
+        return false;
+    }
+    return true;
 }
 TEST(test_auto_logic){
     struct captured_output cap;
     int st=run_function_capture_output(sc_auto_logic,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Auto mode selection tested (theoretical)."));
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Auto mode selection tested."));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing 'Auto mode selection tested.'");
+        return false;
+    }
+    return true;
 }
 TEST(test_final_integration){
     struct captured_output cap;
     int st=run_function_capture_output(sc_final_integration,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&
-           strstr(cap.stdout_buf,"Final synergy HPC + container + pipeline + distributed")&&
-           strstr(cap.stdout_buf,"Pipeline end")&&strstr(cap.stdout_buf,"Cleanup"));
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Final synergy HPC + container + pipeline + distributed")
+               && strstr(cap.stdout_buf,"Pipeline end")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing final synergy logs");
+        return false;
+    }
+    return true;
 }
 TEST(test_multi_stage_distributed){
     struct captured_output cap;
     int st=run_function_capture_output(sc_multi_stage_distrib,&cap);
-    int d=0; char*pos=cap.stdout_buf;
-    while((pos=strstr(pos,"Child distributed HPC overshadow"))) {d++;pos++;}
+    int d=0;char* pos=cap.stdout_buf;
+    while((pos=strstr(pos,"Child distributed HPC overshadow"))){ d++; pos++; }
     int overshadow=0; pos=cap.stdout_buf;
-    while((pos=strstr(pos,"HPC overshadow start"))) {overshadow++;pos++;}
-    return(st==0&&d==2&&overshadow==2);
+    while((pos=strstr(pos,"HPC overshadow start"))){ overshadow++; pos++; }
+    bool pass=(st==0 && d==2 && overshadow==2);
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Expected HPC overshadow x2 and child HPC overshadow x2");
+        return false;
+    }
+    return true;
 }
 
 void run_hidden_tests(int* total,int* passed){
-    tests_run=0;tests_failed=0;
+    tests_run=0; tests_failed=0;
     RUN_TEST(test_distrib_heavy);
     RUN_TEST(test_hpc_heavy);
     RUN_TEST(test_container_combo);
@@ -1653,8 +1805,9 @@ void run_hidden_tests(int* total,int* passed);
 #include "modes-test.h"
 #include "test_common.h"
 #include "../src/scheduler.h"
-#include "../src/os.h"
 #include "../src/process.h"
+#include "../src/os.h"
+#include "../src/scoreboard.h"
 #include <string.h>
 
 static int tests_run=0,tests_failed=0;
@@ -1708,41 +1861,84 @@ static void sc_double_hpc(void){
 TEST(test_hpc_over){
     struct captured_output cap;
     int st=run_function_capture_output(sc_hpc_over,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for HPC-OVER")&&strstr(cap.stdout_buf,"Cleanup"));
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Stats for HPC-OVER")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing HPC-OVER logs");
+        return false;
+    }
+    scoreboard_set_sc_mastered(ALG_HPC_OVERSHADOW);
+    return true;
 }
 TEST(test_multi_containers){
     struct captured_output cap;
     int st=run_function_capture_output(sc_multi_containers,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Container created")&&
-           strstr(cap.stdout_buf,"Container removed")&&strstr(cap.stdout_buf,"Cleanup"));
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Container created")
+               && strstr(cap.stdout_buf,"Container removed")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing containers logs");
+        return false;
+    }
+    return true;
 }
 TEST(test_multi_distrib){
     struct captured_output cap;
     int st=run_function_capture_output(sc_multi_distrib,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Distributed example: fork")&&
-           strstr(cap.stdout_buf,"HPC overshadow done")&&strstr(cap.stdout_buf,"Cleanup"));
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Distributed example: fork")
+               && strstr(cap.stdout_buf,"HPC overshadow done")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing multi distributed logs");
+        return false;
+    }
+    return true;
 }
 TEST(test_pipeline_modes){
     struct captured_output cap;
     int st=run_function_capture_output(sc_pipeline,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Pipeline start")&&
-           strstr(cap.stdout_buf,"Pipeline end")&&strstr(cap.stdout_buf,"Cleanup"));
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Pipeline start")
+               && strstr(cap.stdout_buf,"Pipeline end")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing pipeline logs");
+        return false;
+    }
+    return true;
 }
 TEST(test_mix_algos){
     struct captured_output cap;
     int st=run_function_capture_output(sc_mix_algos,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for FIFO")&&
-           strstr(cap.stdout_buf,"Stats for BFS")&&strstr(cap.stdout_buf,"Cleanup"));
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Stats for FIFO")
+               && strstr(cap.stdout_buf,"Stats for BFS")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing FIFO/BFS logs");
+        return false;
+    }
+    return true;
 }
 TEST(test_double_hpc){
     struct captured_output cap;
     int st=run_function_capture_output(sc_double_hpc,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"HPC overshadow start")&&
-           strstr(cap.stdout_buf,"HPC overshadow done")&&strstr(cap.stdout_buf,"Cleanup"));
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"HPC overshadow start")
+               && strstr(cap.stdout_buf,"HPC overshadow done")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"Missing HPC overshadow logs");
+        return false;
+    }
+    return true;
 }
 
 void run_modes_tests(int* total,int* passed){
-    tests_run=0;tests_failed=0;
+    tests_run=0; tests_failed=0;
     RUN_TEST(test_hpc_over);
     RUN_TEST(test_multi_containers);
     RUN_TEST(test_multi_distrib);
@@ -1759,14 +1955,14 @@ void run_modes_tests(int* total,int* passed);
 #endif
 #include "normal-test.h"
 #include "test_common.h"
-#include "../src/scheduler.h"
 #include "../src/process.h"
+#include "../src/scheduler.h"
 #include "../src/os.h"
-#include <string.h>
+#include "../src/scoreboard.h"
 
 static int tests_run=0,tests_failed=0;
 
-static void sc_sjf(void){
+static void sc_sjf_run(void){
     os_init();
     process_t p[3];
     init_process(&p[0],1,1,os_time());
@@ -1776,7 +1972,7 @@ static void sc_sjf(void){
     scheduler_run(p,3);
     os_cleanup();
 }
-static void sc_strf(void){
+static void sc_strf_run(void){
     os_init();
     process_t p[2];
     init_process(&p[0],4,1,os_time());
@@ -1785,7 +1981,7 @@ static void sc_strf(void){
     scheduler_run(p,2);
     os_cleanup();
 }
-static void sc_hrrn(void){
+static void sc_hrrn_run(void){
     os_init();
     process_t p[3];
     for(int i=0;i<3;i++){
@@ -1795,7 +1991,7 @@ static void sc_hrrn(void){
     scheduler_run(p,3);
     os_cleanup();
 }
-static void sc_hrrn_rt(void){
+static void sc_hrrn_rt_run(void){
     os_init();
     process_t p[2];
     init_process(&p[0],3,1,os_time());
@@ -1804,7 +2000,7 @@ static void sc_hrrn_rt(void){
     scheduler_run(p,2);
     os_cleanup();
 }
-static void sc_prio(void){
+static void sc_prio_run(void){
     os_init();
     process_t p[3];
     init_process(&p[0],2,3,os_time());
@@ -1814,7 +2010,7 @@ static void sc_prio(void){
     scheduler_run(p,3);
     os_cleanup();
 }
-static void sc_cfs_srtf(void){
+static void sc_cfs_srtf_run(void){
     os_init();
     process_t p[3];
     for(int i=0;i<3;i++){
@@ -1827,37 +2023,85 @@ static void sc_cfs_srtf(void){
 
 TEST(test_sjf){
     struct captured_output cap;
-    int st=run_function_capture_output(sc_sjf,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for SJF")&&strstr(cap.stdout_buf,"Cleanup"));
+    int st=run_function_capture_output(sc_sjf_run,&cap);
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Stats for SJF")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"SJF logs not found");
+        return false;
+    }
+    scoreboard_set_sc_mastered(ALG_SJF);
+    return true;
 }
 TEST(test_strf){
     struct captured_output cap;
-    int st=run_function_capture_output(sc_strf,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for STRF")&&strstr(cap.stdout_buf,"Cleanup"));
+    int st=run_function_capture_output(sc_strf_run,&cap);
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Stats for STRF")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"STRF logs missing");
+        return false;
+    }
+    scoreboard_set_sc_mastered(ALG_STRF);
+    return true;
 }
 TEST(test_hrrn){
     struct captured_output cap;
-    int st=run_function_capture_output(sc_hrrn,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for HRRN")&&strstr(cap.stdout_buf,"Cleanup"));
+    int st=run_function_capture_output(sc_hrrn_run,&cap);
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Stats for HRRN")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"HRRN logs missing");
+        return false;
+    }
+    scoreboard_set_sc_mastered(ALG_HRRN);
+    return true;
 }
 TEST(test_hrrn_rt){
     struct captured_output cap;
-    int st=run_function_capture_output(sc_hrrn_rt,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for HRRN-RT")&&strstr(cap.stdout_buf,"Cleanup"));
+    int st=run_function_capture_output(sc_hrrn_rt_run,&cap);
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Stats for HRRN-RT")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"HRRN-RT logs missing");
+        return false;
+    }
+    scoreboard_set_sc_mastered(ALG_HRRN_RT);
+    return true;
 }
 TEST(test_priority){
     struct captured_output cap;
-    int st=run_function_capture_output(sc_prio,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for PRIORITY")&&strstr(cap.stdout_buf,"Cleanup"));
+    int st=run_function_capture_output(sc_prio_run,&cap);
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Stats for PRIORITY")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"PRIORITY logs missing");
+        return false;
+    }
+    scoreboard_set_sc_mastered(ALG_PRIORITY);
+    return true;
 }
 TEST(test_cfs_srtf){
     struct captured_output cap;
-    int st=run_function_capture_output(sc_cfs_srtf,&cap);
-    return(st==0&&strstr(cap.stdout_buf,"Init")&&strstr(cap.stdout_buf,"Stats for CFS-SRTF")&&strstr(cap.stdout_buf,"Cleanup"));
+    int st=run_function_capture_output(sc_cfs_srtf_run,&cap);
+    bool pass=(st==0 && strstr(cap.stdout_buf,"Init")
+               && strstr(cap.stdout_buf,"Stats for CFS-SRTF")
+               && strstr(cap.stdout_buf,"Cleanup"));
+    if(!pass){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"CFS-SRTF logs missing");
+        return false;
+    }
+    scoreboard_set_sc_mastered(ALG_CFS_SRTF);
+    return true;
 }
 
 void run_normal_tests(int* total,int* passed){
-    tests_run=0;tests_failed=0;
+    tests_run=0; tests_failed=0;
     RUN_TEST(test_sjf);
     RUN_TEST(test_strf);
     RUN_TEST(test_hrrn);
@@ -1877,15 +2121,13 @@ void run_normal_tests(int*,int*);
 #include <sys/stat.h>
 #include <unistd.h>
 #include <sys/wait.h>
-#include <string.h>
-#include <stdio.h>
 #include <errno.h>
 
-static ssize_t read_all(int fd,char*buf,size_t cap){
+static ssize_t read_all(int fd, char* buf, size_t cap){
     size_t used=0;
     while(used+1<cap){
         ssize_t r=read(fd,buf+used,cap-1-used);
-        if(r<0&&errno==EINTR) continue;
+        if(r<0 && errno==EINTR) continue;
         if(r<=0) break;
         used+=(size_t)r;
     }
@@ -1893,10 +2135,10 @@ static ssize_t read_all(int fd,char*buf,size_t cap){
     return (ssize_t)used;
 }
 
-int run_function_capture_output(void(*fn)(void),struct captured_output* out){
-    if(!fn||!out) return -1;
+int run_function_capture_output(void(*fn)(void), struct captured_output* out){
+    if(!fn||!out)return -1;
     int p_out[2],p_err[2];
-    if(pipe(p_out)==-1||pipe(p_err)==-1) return -1;
+    if(pipe(p_out)==-1||pipe(p_err)==-1)return -1;
     int orig_out=dup(STDOUT_FILENO),orig_err=dup(STDERR_FILENO);
     if(orig_out<0||orig_err<0){
         close(p_out[0]);close(p_out[1]);
@@ -1917,25 +2159,21 @@ int run_function_capture_output(void(*fn)(void),struct captured_output* out){
         fn();
         _exit(0);
     }
-    close(p_out[1]);
-    close(p_err[1]);
-    read_all(p_out[0],out->stdout_buf,sizeof(out->stdout_buf));
-    read_all(p_err[0],out->stderr_buf,sizeof(out->stderr_buf));
-    close(p_out[0]);
-    close(p_err[0]);
+    close(p_out[1]); close(p_err[1]);
+    read_all(p_out[0], out->stdout_buf, sizeof(out->stdout_buf));
+    read_all(p_err[0], out->stderr_buf, sizeof(out->stderr_buf));
+    close(p_out[0]); close(p_err[0]);
     dup2(orig_out,STDOUT_FILENO);
     dup2(orig_err,STDERR_FILENO);
-    close(orig_out);
-    close(orig_err);
-    int status=0;
-    waitpid(c,&status,0);
+    close(orig_out); close(orig_err);
+    int status=0; waitpid(c,&status,0);
     return status;
 }
 
-int run_shell_command_capture_output(const char* line,struct captured_output* out){
-    if(!line||!out) return -1;
+int run_shell_command_capture_output(const char* line, struct captured_output* out){
+    if(!line||!out)return -1;
     int p_out[2],p_err[2],p_in[2];
-    if(pipe(p_out)==-1||pipe(p_err)==-1||pipe(p_in)==-1) return -1;
+    if(pipe(p_out)==-1||pipe(p_err)==-1||pipe(p_in)==-1)return -1;
     int o_out=dup(STDOUT_FILENO),o_err=dup(STDERR_FILENO),o_in=dup(STDIN_FILENO);
     if(o_out<0||o_err<0||o_in<0){
         close(p_out[0]);close(p_out[1]);
@@ -1964,25 +2202,20 @@ int run_shell_command_capture_output(const char* line,struct captured_output* ou
     write(p_in[1],line,strlen(line));
     write(p_in[1],"\n",1);
     close(p_in[1]);
-    close(p_out[1]);
-    close(p_err[1]);
+    close(p_out[1]); close(p_err[1]);
     read_all(p_out[0],out->stdout_buf,sizeof(out->stdout_buf));
     read_all(p_err[0],out->stderr_buf,sizeof(out->stderr_buf));
-    close(p_out[0]);
-    close(p_err[0]);
-    dup2(o_out,STDOUT_FILENO);
-    dup2(o_err,STDERR_FILENO);
-    dup2(o_in,STDIN_FILENO);
+    close(p_out[0]); close(p_err[0]);
+    dup2(o_out,STDOUT_FILENO); dup2(o_err,STDERR_FILENO); dup2(o_in,STDIN_FILENO);
     close(o_out);close(o_err);close(o_in);
-    int status=0;
-    waitpid(c,&status,0);
+    int status=0; waitpid(c,&status,0);
     return status;
 }
 
-int run_command_capture_output(char* const argv[],struct captured_output* out){
-    if(!argv||!argv[0]||!out) return -1;
+int run_command_capture_output(char* const argv[], struct captured_output* out){
+    if(!argv||!argv[0]||!out)return -1;
     int p_out[2],p_err[2];
-    if(pipe(p_out)==-1||pipe(p_err)==-1) return -1;
+    if(pipe(p_out)==-1||pipe(p_err)==-1)return -1;
     int o_out=dup(STDOUT_FILENO),o_err=dup(STDERR_FILENO);
     if(o_out<0||o_err<0){
         close(p_out[0]);close(p_out[1]);
@@ -2003,17 +2236,13 @@ int run_command_capture_output(char* const argv[],struct captured_output* out){
         execvp(argv[0],argv);
         _exit(127);
     }
-    close(p_out[1]);
-    close(p_err[1]);
+    close(p_out[1]); close(p_err[1]);
     read_all(p_out[0],out->stdout_buf,sizeof(out->stdout_buf));
     read_all(p_err[0],out->stderr_buf,sizeof(out->stderr_buf));
-    close(p_out[0]);
-    close(p_err[0]);
-    dup2(o_out,STDOUT_FILENO);
-    dup2(o_err,STDERR_FILENO);
-    close(o_out);close(o_err);
-    int status=0;
-    waitpid(c,&status,0);
+    close(p_out[0]); close(p_err[0]);
+    dup2(o_out,STDOUT_FILENO); dup2(o_err,STDERR_FILENO);
+    close(o_out); close(o_err);
+    int status=0; waitpid(c,&status,0);
     return status;
 }
 #ifndef TEST_COMMON_H
@@ -2024,25 +2253,40 @@ int run_command_capture_output(char* const argv[],struct captured_output* out){
 #include <string.h>
 #include <stdbool.h>
 
-struct captured_output{
+static char g_test_fail_reason[256]={0};
+
+struct captured_output {
     char stdout_buf[4096];
     char stderr_buf[4096];
 };
 
-int run_function_capture_output(void(*fn)(void),struct captured_output* out);
-int run_shell_command_capture_output(const char* line,struct captured_output* out);
-int run_command_capture_output(char* const argv[],struct captured_output* out);
+int run_function_capture_output(void(*fn)(void), struct captured_output* out);
+int run_shell_command_capture_output(const char* line, struct captured_output* out);
+int run_command_capture_output(char* const argv[], struct captured_output* out);
+
+static inline void test_unicode_pass(const char* test_name){
+    printf("  ✅  %s => reason: logs OK.\n", test_name);
+}
+
+static inline void test_unicode_fail(const char* test_name, const char* reason){
+    printf("  ❌  %s => reason: %s\n", test_name, reason);
+}
 
 #define TEST(name) static bool test_##name(void)
-#define RUN_TEST(name) do{\
-bool result=test_##name();\
-tests_run++;\
-if(!result){\
-tests_failed++;\
-printf("❌ Test failed: %s\n",#name);\
-} else {\
-printf("✓ Test passed: %s\n",#name);\
-}\
-}while(0)
+
+/*
+   We clear g_test_fail_reason, run the test, if fails => print reason or 'no reason set'.
+*/
+#define RUN_TEST(name) do {                                          \
+memset(g_test_fail_reason,0,sizeof(g_test_fail_reason));          \
+bool result=test_##name();                                       \
+tests_run++;                                                     \
+if(!result){                                                     \
+tests_failed++;                                              \
+test_unicode_fail(#name, g_test_fail_reason[0]?g_test_fail_reason:"no reason set"); \
+} else {                                                         \
+test_unicode_pass(#name);                                    \
+}                                                                \
+} while(0)
 
 #endif

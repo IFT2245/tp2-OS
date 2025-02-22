@@ -6,33 +6,40 @@
 #include <string.h>
 #include <stdbool.h>
 
-/* We'll capture stdout/stderr in buffers for validation. */
+static char g_test_fail_reason[256]={0};
+
 struct captured_output {
     char stdout_buf[4096];
     char stderr_buf[4096];
 };
 
-/* Runs 'fn' in a child process, capturing its stdout/stderr. Returns child exit code. */
 int run_function_capture_output(void(*fn)(void), struct captured_output* out);
-
-/* Runs the shell-tp1-implementation passing 'line' as single input command, capturing output. */
 int run_shell_command_capture_output(const char* line, struct captured_output* out);
-
-/* Runs an external command with given argv[] in a child, capturing output. */
 int run_command_capture_output(char* const argv[], struct captured_output* out);
 
-/* A test macro that increments the global counters and prints pass/fail with small unicode art. */
+static inline void test_unicode_pass(const char* test_name){
+    printf("  ✅  %s => reason: logs OK.\n", test_name);
+}
+
+static inline void test_unicode_fail(const char* test_name, const char* reason){
+    printf("  ❌  %s => reason: %s\n", test_name, reason);
+}
+
 #define TEST(name) static bool test_##name(void)
 
-#define RUN_TEST(name) do {                     \
-bool result = test_##name();                \
-tests_run++;                                \
-if(!result){                                \
-tests_failed++;                         \
-printf("  ❌  %s : " #name "\n", __func__);  \
-} else {                                    \
-printf("  ✅  %s : " #name "\n", __func__);  \
-}                                           \
+/*
+   We clear g_test_fail_reason, run the test, if fails => print reason or 'no reason set'.
+*/
+#define RUN_TEST(name) do {                                          \
+memset(g_test_fail_reason,0,sizeof(g_test_fail_reason));          \
+bool result=test_##name();                                       \
+tests_run++;                                                     \
+if(!result){                                                     \
+tests_failed++;                                              \
+test_unicode_fail(#name, g_test_fail_reason[0]?g_test_fail_reason:"no reason set"); \
+} else {                                                         \
+test_unicode_pass(#name);                                    \
+}                                                                \
 } while(0)
 
 #endif

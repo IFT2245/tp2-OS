@@ -1,0 +1,359 @@
+// Created by Spokboud
+#include "tokenizer.h"
+#include <ctype.h>
+
+#define SAFE_FREE(ptr) do { if (ptr) { free(ptr); ptr = NULL; } } while(0)
+
+typedef struct {
+    const char* keyword;
+    token_category_t categories;
+} keyword_map;
+
+static const keyword_map KEYWORDS[] = {
+    {"cd", TOK_KEYWORD | TOK_RESERVED},
+    {"and", TOK_KEYWORD | TOK_LOGICAL_AND},
+    {"or", TOK_KEYWORD | TOK_LOGICAL_OR},
+    {"pipe", TOK_KEYWORD | TOK_PIPE},
+    {"?", TOK_SYMBOL | TOK_UNSUPPORTED | TOK_UNEXPECTED},
+    {"|", TOK_SYMBOL | TOK_PIPE},
+    {"&", TOK_MALFORMED | TOK_UNSUPPORTED | TOK_UNEXPECTED},
+    {"&&", TOK_SYMBOL | TOK_OPERATOR | TOK_LOGICAL_AND},
+    {"||", TOK_SYMBOL | TOK_OPERATOR | TOK_LOGICAL_OR},
+    {"\"", TOK_SYMBOL | TOK_STRING_LIT},
+    {"\'", TOK_SYMBOL | TOK_STRING_LIT},
+    {";", TOK_SYMBOL | TOK_SEMICOLON},
+    {NULL, TOK_INVALID}
+};
+
+static char* read_until_quote(int* c, const int quote_char) {
+    if (*c == EOF) return NULL;
+
+    size_t size = INITIAL_BUFFER_SIZE;
+    size_t pos = 0;
+    char* buffer = malloc(size);
+    if (!buffer) return NULL;
+
+    while (*c != EOF && *c != quote_char) {
+        if (pos + 2 >= size) {  // +2 for potential escape char and null terminator
+            size *= 2;
+            char* new_buffer = realloc(buffer, size);
+            if (!new_buffer) {
+                SAFE_FREE(buffer);
+                return NULL;
+            }
+            buffer = new_buffer;
+        }
+
+        if (*c == '\\') {
+            buffer[pos++] = (char)*c;
+            *c = getchar();
+            if (*c == EOF) {
+                SAFE_FREE(buffer);
+                return NULL;
+            }
+        }
+
+        buffer[pos++] = (char)*c;
+        *c = getchar();
+        if (ferror(stdin)) {
+            clearerr(stdin);
+            SAFE_FREE(buffer);
+            return NULL;
+        }
+    }
+    
+    buffer[pos] = '\0';
+    return buffer;
+}
+
+static char* read_until_delimiter(int* c, int (*delimiter)(int)) {
+    if (!delimiter || *c == EOF) return NULL;
+
+    size_t size = INITIAL_BUFFER_SIZE;
+    size_t pos = 0;
+    char* buffer = malloc(size);
+    if (!buffer) return NULL;
+
+    while (*c != EOF && !isspace(*c) && delimiter(*c)) {
+        if (pos + 1 >= size) {
+            size *= 2;
+            char* new_buffer = realloc(buffer, size);
+            if (!new_buffer) {
+                SAFE_FREE(buffer);
+                return NULL;
+            }
+            buffer = new_buffer;
+        }
+
+        buffer[pos++] = (char)*c;
+        *c = getchar();
+        if (ferror(stdin)) {
+            clearerr(stdin);
+            SAFE_FREE(buffer);
+            return NULL;
+        }
+    }
+
+    if (!delimiter(*c) && *c == ';' || *c == '|' || *c == '&')
+    {
+        const int ch = *c;
+        if (ungetc(ch, stdin) != ch) {
+            free(buffer);
+            return NULL;
+        }
+    }
+
+    buffer[pos] = '\0';
+    return buffer;
+}
+
+static int is_symbol_char(const int c) {
+    return !isalnum(c) && c != '_' && c != '-' && c != '.' && c != '/';
+}
+
+static int is_alpha_char(const int c) {
+    return isalnum(c) || c == '_' || c == '-' || c == '.' || c == '/';
+}
+
+static token_category_t get_keyword_categories(const char* value) {
+    for (const keyword_map* kw = KEYWORDS; kw->keyword != NULL; kw++) {
+        if (strcasecmp(value, kw->keyword) == 0) {
+            return kw->categories;
+        }
+    }
+    return TOK_UNSUPPORTED;
+}
+
+static struct token* create_token(const token_category_t category, char** value) {
+    if (!*value) return NULL;
+
+    struct token* tok = calloc(1, sizeof(struct token));
+    if (!tok) {
+        SAFE_FREE(*value);
+        return NULL;
+    }
+
+    tok->category = category;
+    tok->value = *value;
+    *value = NULL;  // Transfer ownership to token
+    return tok;
+}
+
+static struct token* handle_string_literal(const int quote_char) {
+    int c = getchar();
+    if (c == EOF) return NULL;
+
+    char* str = read_until_quote(&c, quote_char);
+    if (!str) return NULL;
+
+    if (c != quote_char) {
+        SAFE_FREE(str);
+        return NULL;
+    }
+    
+    // Consume closing quote
+    (void)getchar();
+
+    token_category_t flags = TOK_STRING_LIT | TOK_QUOTED;
+    if (strchr(str, '\n')) flags |= TOK_MULTILINE;
+    if (strchr(str, '\\')) flags |= TOK_ESCAPED;
+
+    return create_token(flags, &str);
+}
+
+static struct token* handle_compound_operator(const int first_char) {
+    const int next = getchar();
+    char* combined = malloc(3);
+    if (!combined) return NULL;
+    
+    combined[0] = (char)first_char;
+    combined[1] = (char)next;
+    combined[2] = '\0';
+
+    if ((first_char == '|' && next == '|') || (first_char == '&' && next == '&')) {
+        const int peek = getchar();
+        if (peek == ' ' || peek == '\t' || peek == '\n' || peek == EOF) {
+            if (peek != EOF) {
+                ungetc(peek, stdin);
+                token_category_t category = (first_char == '&') ? 
+                    (TOK_OPERATOR | TOK_LOGICAL_AND | TOK_SYMBOL) :
+                    (TOK_OPERATOR | TOK_LOGICAL_OR | TOK_SYMBOL);
+                return create_token(category, &combined);
+            }
+            SAFE_FREE(combined);
+            return NULL;
+        }
+        ungetc(peek, stdin);
+        return create_token(TOK_ERROR, &combined);
+    }
+
+    // Handle single operators
+    ungetc(next, stdin);
+    combined[1] = '\0';
+    
+    if (first_char == '&') {
+        return create_token(TOK_UNEXPECTED | TOK_ERROR | TOK_SYMBOL, &combined);
+    }
+    if (first_char == '|') {
+        return create_token(TOK_PIPE | TOK_SYMBOL, &combined);
+    }
+    
+    SAFE_FREE(combined);
+    return NULL;
+}
+
+struct token* tok_next(void) {
+    int c;
+    while ((c = getchar()) != EOF && isspace(c) && c != '\n'){};
+
+    if (c == EOF) return NULL;
+
+    char* val = malloc(2);
+    if (!val) return NULL;
+    
+    val[0] = (char)c;
+    val[1] = '\0';
+
+    switch (c) {
+        case '\n':
+            return create_token(TOK_NEWLINE, &val);
+
+        case ';':
+            return create_token(TOK_SEMICOLON | TOK_SYMBOL, &val);
+
+        case '&':
+        case '|':
+            SAFE_FREE(val);
+            return handle_compound_operator(c);
+
+        case '"':
+        case '\'':
+            SAFE_FREE(val);
+            return handle_string_literal(c);
+        case '\\':  // Bare backslash
+            SAFE_FREE(val);
+            return NULL;
+        default:
+            SAFE_FREE(val);
+            if (is_symbol_char(c)) {
+                char* value = read_until_delimiter(&c, is_symbol_char);
+                if (!value) return NULL;
+                return create_token(get_keyword_categories(value), &value);
+            }
+
+            if (is_alpha_char(c)) {
+                char* value = read_until_delimiter(&c, is_alpha_char);
+                if (!value) return NULL;
+                return create_token(get_keyword_categories(value), &value);
+            }
+
+            // Invalid character
+            fprintf(stderr, "Invalid character: %c\n", (char)c);
+            return NULL;
+    }
+}
+
+struct token* tok_next_line(void) {
+    struct token* head = tok_next();
+    if (!head) return NULL;
+
+    if (TOK_MASK_FLAGS(head, TOK_ERROR_MASK)) {
+        tok_free(head);
+        return NULL;
+    }
+
+    struct token* current = head;
+    while (current && !(current->category & TOK_NEWLINE)) {
+        current->next = tok_next();
+        if (!current->next) break;
+        if (TOK_MASK_FLAGS(current->next, TOK_ERROR_MASK)) {
+            tok_free(head);
+            fprintf(stderr, "Error parsing line, there was surely an unexpected token\n");
+            return NULL;
+        }
+        current = current->next;
+    }
+
+    return head;
+}
+
+bool tok_free(struct token* tokens) {
+    if (!tokens) return false;
+
+    bool no_errors = true;
+    struct token* current = tokens;
+
+    while (current) {
+        struct token* next = current->next;
+        if (current->category & TOK_ERROR_MASK) {
+            no_errors = false;
+        }
+        SAFE_FREE(current->value);
+        SAFE_FREE(current);
+        current = next;
+    }
+
+    return no_errors;
+}
+
+void tok_debug_print(const struct token* tokens) {
+    static const char* flag_names[] = {
+        /* bit  0 */ "SYMBOL",
+        /* bit  1 */ "STRING_LIT",
+        /* bit  2 */ "SEMICOLON",
+        /* bit  3 */ "PIPE",
+        /* bit  4 */ "LOGICAL_AND",
+        /* bit  5 */ "LOGICAL_OR",
+        /* bit  6 */ "NEWLINE",
+        /* bit  7 */ "ESCAPED",
+        /* bit  8 */ "QUOTED",
+        /* bit  9 */ "MULTILINE",
+        /* bit 10 */ "PARTIAL",
+        /* bit 11 */ "TRUNCATED",
+        /* bit 12 */ "RESERVED",
+        /* bit 13 */ "KEYWORD",
+        /* bit 14 */ "OPERATOR",
+        /* bit 15 */ "VALIDATED",
+        /* bit 16 */ "PROCESSED",
+        /* bit 17 */ "CACHED",
+        /* bit 18 */ "UNSUPPORTED",
+        /* bit 19 */ "LINEFLAG",
+        /* bit 20 */ "VIRTUAL",
+        /* bit 21 */ "TEMPORARY",
+        /* bit 22 */ "PERSISTENT",
+        /* bit 23 */ "ERROR",
+        /* bit 24 */ "OVERFLOW",
+        /* bit 25 */ "LOCKED",
+        /* bit 26 */ "MALFORMED",
+        /* bit 27 */ "UNEXPECTED",
+        /* bit 28 */ "MODIFIED",
+        /* bit 29 */ "DEPRECATED",
+        /* bit 30 */ "CRITICAL",
+        /* bit 31 */ "FATAL"
+    };
+
+
+    if (!tokens) {
+        printf("(null)\n");
+        return;
+    }
+
+    for (const struct token* current = tokens; current; current = current->next) {
+        printf("Token {\n  flags: ");
+        bool first = true;
+        
+        for (size_t i = 0; i < sizeof(flag_names)/sizeof(flag_names[0]); i++) {
+            if (current->category & (1U << i)) {
+                printf("%s%s", first ? "" : " | ", flag_names[i]);
+                first = false;
+            }
+        }
+
+        printf("\n  masks: ");
+        printf("TYPE=%s ", TOK_MASK_FLAGS(current, TOK_TYPE_MASK) ? "YES" : "NO");
+        printf("VALID=%s ", TOK_MASK_FLAGS(current, TOK_VALID_MASK) ? "YES" : "NO");
+        printf("STATE=%s ", TOK_MASK_FLAGS(current, TOK_STATE_MASK) ? "YES" : "NO");
+        printf("ERROR=%s", TOK_MASK_FLAGS(current, TOK_ERROR_MASK) ? "YES" : "NO");
+        printf("\n  value: %s\n}\n", current->value ? current->value : "null");
+    }
+}

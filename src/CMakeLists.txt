@@ -6,6 +6,7 @@ add_executable(main
         process.c
         scheduler.c
         runner.c
+        scoreboard.c
         safe_calls_library.c
         ../test/basic-test.c
         ../test/normal-test.c
@@ -17,4 +18,11 @@ add_executable(main
         main.c
 )
 
-target_link_libraries(main PRIVATE Threads::Threads)
+find_package(SQLite3)
+if(SQLITE3_FOUND)
+    include_directories(${SQLITE3_INCLUDE_DIRS})
+    target_link_libraries(main PRIVATE Threads::Threads sqlite3)
+else()
+    message(FATAL_ERROR "SQLite3 not found")
+endif()
+
