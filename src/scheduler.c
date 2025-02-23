@@ -5,248 +5,306 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <pthread.h>
+
+/* We allow up to some max cores. */
+#ifndef MAX_CORES
+#define MAX_CORES 4
+#endif
 
 static scheduler_alg_t current_alg=ALG_CFS;
-static int gCount=0;
+
+/* We'll maintain a global simulated_time, incremented by slices. */
+static uint64_t g_sim_time=0;
+
+/* Because we do concurrency, we need a lock to safely read/update g_sim_time. */
+static pthread_mutex_t sim_time_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Accessor for the ready_queue to see the "now" for HRRN, etc. */
+uint64_t get_global_sim_time(void){
+    pthread_mutex_lock(&sim_time_lock);
+    uint64_t t = g_sim_time;
+    pthread_mutex_unlock(&sim_time_lock);
+    return t;
+}
 
 typedef struct {
+    double avg_wait;
+    double avg_turnaround;
+    double avg_response;
     unsigned long long preemptions;
-    unsigned long long total_processes;
-    unsigned long long total_wait;
-    unsigned long long total_turnaround;
-    unsigned long long total_response;
-} sched_stats_t;
-static sched_stats_t gStats;
+    unsigned long long total_procs;
+    uint64_t total_wait;
+    int total_processes;
+    uint64_t total_response;
+    int total_turnaround;
+} sched_stats_accum_t;
 
-typedef struct {
-    uint64_t arrival;
-    uint64_t start;
-    uint64_t end;
-    uint64_t cpu;
-    int      started;
-} track_t;
-static track_t* gTrack=NULL;
+static sched_stats_accum_t gStats;
+static double gAvgWait=0.0, gAvgTAT=0.0, gAvgResp=0.0;
+static unsigned long long gPreemptions=0, gProcs=0;
+static int HPC_over_mode=0;
 
-typedef struct {
-    uint64_t start_ms;
-    uint64_t end_ms;
-    int      p_index;
-} exec_event_t;
-static exec_event_t* events=NULL;
-static int event_cap=0, event_count=0;
+/* Track whether we are done scheduling or not. If no processes remain, we end. */
+static int g_running=0;
+static int g_num_cores=1;
 
-/* Ensure we have space in events[] array. */
-static void ensure_event_cap(void){
-    if(event_count>=event_cap){
-        int new_cap=(event_cap==0)?64:event_cap*2;
-        events=(exec_event_t*)realloc(events,new_cap*sizeof(exec_event_t));
-        memset(events+event_cap,0,(new_cap-event_cap)*sizeof(exec_event_t));
-        event_cap=new_cap;
+static void reset_accumulators(void){
+    memset(&gStats, 0, sizeof(gStats));
+    gAvgWait=0; gAvgTAT=0; gAvgResp=0;
+    gPreemptions=0; gProcs=0;
+    HPC_over_mode=0;
+    g_sim_time=0;
+}
+
+/* Worker thread for each core => pop from ready queue, run partial or full. */
+static void* scheduling_core_thread(void* arg){
+    long core_id = (long)arg;
+    int quantum=2; /* for RR-like partial or BFS, etc. */
+
+    while(g_running){
+        process_t* p = ready_queue_pop(); /* block until available or done */
+
+        /* Check if we should exit because the queue was destroyed. */
+        if(!g_running || !p) break;
+
+        /* Print line for scheduling (real time for user, but we also have sim_time inside). */
+        uint64_t real_t = os_time(); /* for user display only */
+        printf("\033[93m[time=%llu ms] => container=1 core=%ld => scheduling processPtr=%p\n"
+               "   => burst_time=%lu, prio=%d, vruntime=%llu, remain=%llu, timesScheduled=%d\033[0m\n",
+               (unsigned long long)real_t,
+               core_id, (void*)p,
+               (unsigned long)p->burst_time,
+               p->priority,
+               (unsigned long long)p->vruntime,
+               (unsigned long long)p->remaining_time,
+               p->times_owning_core);
+        usleep(300000);
+
+        /* Mark first response time if not responded yet. */
+        if(!p->responded){
+            p->responded=1;
+            p->first_response = get_global_sim_time();
+        }
+        p->times_owning_core++;
+
+        /* Decide how many ms to run (in simulated time). */
+        unsigned long slice = 0;
+        int preemptive = 0;
+
+        switch(current_alg){
+        case ALG_RR:
+        case ALG_BFS:
+        case ALG_CFS_SRTF:
+        case ALG_STRF:
+        case ALG_HRRN_RT:
+        case ALG_MLFQ:
+            preemptive = 1; /* partial preemption possible */
+            break;
+        default:
+            preemptive = 0; /* run entire burst with no preemption */
+            break;
+        }
+
+        if(preemptive){
+            if(p->remaining_time > (unsigned long)quantum){
+                slice = quantum;
+            } else {
+                slice = p->remaining_time;
+            }
+        } else {
+            slice = p->remaining_time;
+        }
+
+        /* Actually "run" the slice in simulated time. */
+        simulate_process_partial(p, slice); /* real-time sleep for user */
+        /* Then increment sim_time. */
+        pthread_mutex_lock(&sim_time_lock);
+        g_sim_time += slice;
+        pthread_mutex_unlock(&sim_time_lock);
+
+        /* Update stats in p. */
+        p->remaining_time -= slice;
+        if(current_alg==ALG_CFS_SRTF){
+            p->vruntime += slice;
+        }
+
+        if(preemptive && p->remaining_time>0){
+            /* we preempt => put back in queue => increment preemptions. */
+            __sync_fetch_and_add(&gStats.preemptions, 1ULL);
+
+            printf("\033[94m   => PREEMPT => processPtr=%p => new remain=%llu => preemptions=%llu\033[0m\n",
+                   (void*)p,
+                   (unsigned long long)p->remaining_time,
+                   (unsigned long long)gStats.preemptions);
+            usleep(300000);
+
+            /* If MLFQ, we move it to next queue. */
+            if(current_alg==ALG_MLFQ){
+                p->mlfq_level++;
+            }
+            ready_queue_push(p);
+        } else {
+            /* finished. */
+            p->end_time = get_global_sim_time();
+
+            printf("\033[92m   => FINISH => processPtr=%p => total CPU used=%lu ms => time=%llu ms\033[0m\n",
+                   (void*)p,
+                   (unsigned long)slice,
+                   (unsigned long long)os_time());
+            usleep(300000);
+        }
     }
+    return NULL;
 }
 
-static void add_event(int p_idx, uint64_t start, uint64_t end){
-    ensure_event_cap();
-    events[event_count].start_ms=start;
-    events[event_count].end_ms=end;
-    events[event_count].p_index=p_idx;
-    event_count++;
-}
-
-static void rec_arrival(int i){
-    if(gTrack && gTrack[i].arrival==0){
-        gTrack[i].arrival=os_time();
-    }
-}
-static void rec_start(int i){
-    if(gTrack && !gTrack[i].started){
-        gTrack[i].start=os_time();
-        gTrack[i].started=1;
-    }
-}
-static void rec_cpu(int i,unsigned long s){
-    if(gTrack) gTrack[i].cpu += s;
-}
-static void rec_end(int i){
-    if(gTrack && gTrack[i].end==0){
-        gTrack[i].end=os_time();
-    }
-}
-
-/* Convert alg enum to string. */
-static const char* alg2str(scheduler_alg_t x){
-    switch(x){
-    case ALG_FIFO:         return "FIFO";
-    case ALG_RR:           return "RR";
-    case ALG_CFS:          return "CFS";
-    case ALG_CFS_SRTF:     return "CFS-SRTF";
-    case ALG_BFS:          return "BFS";
-    case ALG_SJF:          return "SJF";
-    case ALG_STRF:         return "STRF";
-    case ALG_HRRN:         return "HRRN";
-    case ALG_HRRN_RT:      return "HRRN-RT";
-    case ALG_PRIORITY:     return "PRIORITY";
-    case ALG_HPC_OVERSHADOW: return "HPC-OVER";
-    case ALG_MLFQ:         return "MLFQ";
-    default:               return "???";
-    }
-}
+/* We'll store process array globally for stats finalize. */
+static process_t* g_list=NULL;
+static int        g_count=0;
 
 static void finalize(void){
-    for(int i=0;i<gCount;i++){
-        uint64_t at=gTrack[i].arrival;
-        uint64_t st=gTrack[i].start;
-        uint64_t et=gTrack[i].end;
-        uint64_t cpu=gTrack[i].cpu;
-        uint64_t turn=(et>at?(et-at):0);
-        uint64_t resp=(st>at?(st-at):0);
-        uint64_t wait=(turn>cpu?(turn-cpu):0);
-        gStats.total_turnaround+=turn;
-        gStats.total_response+=resp;
-        gStats.total_wait+=wait;
+    if(g_count<=0 || HPC_over_mode){
+        return;
     }
+    /* compute wait, TAT, response for each process. */
+    for(int i=0; i<g_count; i++){
+        process_t* P = &g_list[i];
+        uint64_t at  = P->arrival_time;
+        uint64_t st  = P->first_response;
+        uint64_t et  = P->end_time;
+        uint64_t bt  = P->burst_time; /* for reference */
+
+        /* Wait = (start - arrival). */
+        uint64_t wait = (st > at) ? (st - at) : 0ULL;
+        /* TAT = end - arrival. */
+        uint64_t tat  = (et > at) ? (et - at) : 0ULL;
+        /* Resp = (first_response - arrival). */
+        uint64_t resp = wait; /* same as wait here. */
+
+        gStats.total_wait       += wait;
+        gStats.total_turnaround += tat;
+        gStats.total_response   += resp;
+    }
+    unsigned long long n = gStats.total_processes;
+    if(n>0){
+        gAvgWait = (double)gStats.total_wait/(double)n;
+        gAvgTAT  = (double)gStats.total_turnaround/(double)n;
+        gAvgResp = (double)gStats.total_response/(double)n;
+    }
+    gPreemptions = gStats.preemptions;
+    gProcs       = n;
 }
 
 void scheduler_select_algorithm(scheduler_alg_t a){
     current_alg=a;
 }
 
-/* Put all processes in the ready queue, record arrivals. */
-static void enqueue_all(process_t* arr,int n){
-    for(int i=0;i<n;i++){
-        ready_queue_push(&arr[i]);
-        gStats.total_processes++;
-        rec_arrival(i);
-    }
-}
-
-/* Compare function for sorting local concurrency events by start time. */
-static int cmp_events(const void* a,const void* b){
-    exec_event_t* xa=(exec_event_t*)a;
-    exec_event_t* xb=(exec_event_t*)b;
-    if(xa->start_ms<xb->start_ms) return -1;
-    if(xa->start_ms>xb->start_ms) return 1;
-    return 0;
-}
-
-/*
-  scheduler_run() => local concurrency timeline from events[]:
-  1) If HPC-OVER, just run overshadow and skip queue logic
-  2) Otherwise, init queue with given algorithm
-  3) Repeatedly pop => simulate => push or finish => record concurrency events
-  4) Print final timeline
-*/
 void scheduler_run(process_t* list,int count){
-    if(!list||count<=0) return;
-    gCount=count;
-    gTrack=(track_t*)calloc(count,sizeof(track_t));
-    memset(&gStats,0,sizeof(gStats));
-    free(events); events=NULL; event_cap=0; event_count=0;
-
-    if(current_alg==ALG_HPC_OVERSHADOW){
-        os_run_hpc_overshadow();
-        free(gTrack); gTrack=NULL;
+    reset_accumulators();
+    if(!list || count<=0){
         return;
     }
 
+    /* Special HPC overshadow mode => no normal stats. */
+    if(current_alg==ALG_HPC_OVERSHADOW){
+        HPC_over_mode=1;
+        printf("\n\033[95m$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n");
+        printf("SCHEDULE NAME => HPC-OVERSHADOW\n");
+        printf("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\033[0m\n");
+        usleep(300000);
+
+        os_run_hpc_overshadow();
+
+        printf("\033[96m$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n");
+        printf("SCHEDULE END => HPC-OVERSHADOW => no normal stats.\n");
+        printf("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\033[0m\n");
+        usleep(300000);
+        return;
+    }
+
+    /* else normal scheduling. Print big block start. */
+    printf("\n\033[95m$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n");
+    printf("SCHEDULE NAME => %d (enum)\n", current_alg);
+    printf("Number of processes=%d\n", count);
+    printf("Time start=%llu ms\n", (unsigned long long)os_time());
+    printf("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\033[0m\n");
+    usleep(300000);
+
     ready_queue_init_policy(current_alg);
-    enqueue_all(list,count);
+    g_list = list;
+    g_count= count;
 
-    uint64_t t0=os_time();
-    int quantum=2;
-    while(ready_queue_size()>0){
-        process_t* p=ready_queue_pop();
-        if(!p) break;
-        int idx=(int)(p-list);
-        rec_start(idx);
-        uint64_t st_block=os_time();
-
-        if(current_alg==ALG_MLFQ||current_alg==ALG_BFS||current_alg==ALG_RR||
-           current_alg==ALG_CFS_SRTF||current_alg==ALG_STRF||current_alg==ALG_HRRN_RT){
-            if(p->remaining_time>(unsigned long)quantum){
-                simulate_process_partial(p,quantum);
-                rec_cpu(idx,quantum);
-                p->remaining_time-=quantum;
-                if(current_alg==ALG_CFS_SRTF) p->vruntime+=quantum;
-                gStats.preemptions++;
-                if(current_alg==ALG_MLFQ) p->mlfq_level++;
-                uint64_t en_block=os_time();
-                add_event(idx, st_block, en_block);
-                ready_queue_push(p);
-            } else {
-                simulate_process_partial(p,p->remaining_time);
-                rec_cpu(idx,p->remaining_time);
-                uint64_t en_block=os_time();
-                add_event(idx, st_block, en_block);
-                p->remaining_time=0;
-                rec_end(idx);
-            }
-        } else {
-            /* FIFO, PRIORITY, BFS(non-preempt?), etc. => just run to completion. */
-            simulate_process(p);
-            rec_cpu(idx,p->remaining_time);
-            uint64_t en_block=os_time();
-            add_event(idx, st_block, en_block);
-            p->remaining_time=0;
-            rec_end(idx);
-        }
+    /* We default to 1 core in most tests. If you want multi-core in tests, you can set it. */
+    g_num_cores = 1;
+    if(current_alg==ALG_BFS){
+        /* BFS is interesting with multiple cores. Let's do 2 just for demonstration. */
+        g_num_cores = 2;
     }
+
+    g_running=1;
+    /* Initialize each process arrival => push to queue. */
+    for(int i=0;i<count;i++){
+        ready_queue_push(&list[i]);
+        gStats.total_processes++;
+    }
+
+    /* Start core threads. */
+    pthread_t tid[MAX_CORES];
+    int n = (g_num_cores>MAX_CORES?MAX_CORES:g_num_cores);
+    for(int i=0;i<n;i++){
+        pthread_create(&tid[i],NULL,scheduling_core_thread,(void*)(long)i);
+    }
+
+    /* Wait until queue empties => we watch size periodically. */
+    while( ready_queue_size()>0 ){
+        usleep(200000);
+    }
+    /* Then stop the scheduling threads. */
+    g_running=0;
+    /* So they unblock from pop => we do cond_signal multiple times. */
+    for(int k=0;k<n;k++){
+        /* push a dummy? or just signal broadcast. */
+        ready_queue_push(NULL);
+    }
+    for(int i=0;i<n;i++){
+        pthread_join(tid[i],NULL);
+    }
+
     ready_queue_destroy();
-
-    uint64_t tot=os_time()-t0;
     finalize();
-    printf("\033[92mStats for %s => time=%llu\n\033[0m",
-           alg2str(current_alg),(unsigned long long)tot);
-    printf("procs=%llu preempt=%llu\n",gStats.total_processes,gStats.preemptions);
-    if(gStats.total_processes>0){
-        double n=(double)gStats.total_processes;
-        double avgW=gStats.total_wait/n;
-        double avgT=gStats.total_turnaround/n;
-        double avgR=gStats.total_response/n;
-        printf("Wait=%.2f TAT=%.2f RESP=%.2f\n",avgW,avgT,avgR);
+
+    /* End ASCII block. */
+    uint64_t total_time = get_global_sim_time();
+    printf("\033[96m$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n");
+    printf("SCHEDULE END => alg=%d => totalTime=%llums\n", current_alg,
+           (unsigned long long)total_time);
+    printf("Stats: preemptions=%llu, totalProcs=%llu\n",
+           (unsigned long long)gPreemptions,
+           (unsigned long long)gProcs);
+    printf("AvgWait=%.2f, AvgTAT=%.2f, AvgResp=%.2f\n",
+           gAvgWait, gAvgTAT, gAvgResp);
+    printf("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\033[0m\n");
+    usleep(300000);
+
+    /* Cleanup references. */
+    g_list=NULL;
+    g_count=0;
+}
+
+void scheduler_fetch_report(sched_report_t* out){
+    if(!out) return;
+    if(HPC_over_mode){
+        out->avg_wait=0.0;
+        out->avg_turnaround=0.0;
+        out->avg_response=0.0;
+        out->preemptions=0ULL;
+        out->total_procs=0ULL;
+    } else {
+        out->avg_wait       = gAvgWait;
+        out->avg_turnaround = gAvgTAT;
+        out->avg_response   = gAvgResp;
+        out->preemptions    = gPreemptions;
+        out->total_procs    = gProcs;
     }
-
-    /* local concurrency timeline from events[] => show partial runs. */
-    if(event_count>0){
-        printf("\n\033[93m--- Local Concurrency Timeline [%s] ---\033[0m\n",
-               alg2str(current_alg));
-        qsort(events,event_count,sizeof(exec_event_t),cmp_events);
-
-        /* find min_s, max_e. */
-        uint64_t min_s=(uint64_t)-1, max_e=0ULL;
-        for(int i=0;i<event_count;i++){
-            if(events[i].start_ms<min_s) min_s=events[i].start_ms;
-            if(events[i].end_ms>max_e) max_e=events[i].end_ms;
-        }
-        if(min_s==(uint64_t)-1) min_s=0;
-        if(max_e<min_s) max_e=min_s;
-
-        const int COLS=30;
-        uint64_t span=(max_e>min_s?(max_e-min_s):1ULL);
-
-        /* print each event => partial or full run. */
-        for(int i=0;i<event_count;i++){
-            char row[COLS+1];
-            memset(row,' ',sizeof(row));
-            row[COLS]='\0';
-            uint64_t s=events[i].start_ms;
-            uint64_t e=events[i].end_ms;
-            for(int c=0;c<COLS;c++){
-                uint64_t t=min_s + (c*span/COLS);
-                if(t>=s && t<e){
-                    row[c]='█';
-                }
-            }
-            uint64_t dur=(e>s?(e-s):0ULL);
-            printf("P%d:[%s] start=%llu end=%llu dur=%llums\n",
-                   events[i].p_index+1,row,
-                   (unsigned long long)s,
-                   (unsigned long long)e,
-                   (unsigned long long)dur);
-        }
-        printf("\n");
-    }
-
-    free(events);  events=NULL;  event_cap=0;  event_count=0;
-    free(gTrack);  gTrack=NULL;  gCount=0;
 }

@@ -4,16 +4,16 @@
 #include "scheduler.h"
 
 typedef struct {
-    int basic_total,basic_pass;
-    int normal_total,normal_pass;
-    int external_total,external_pass;
-    int modes_total,modes_pass;
-    int edge_total,edge_pass;
-    int hidden_total,hidden_pass;
+    int basic_total,    basic_pass;
+    int normal_total,   normal_pass;
+    int external_total, external_pass;
+    int modes_total,    modes_pass;
+    int edge_total,     edge_pass;
+    int hidden_total,   hidden_pass;
 
-    int sc_fifo,sc_rr,sc_cfs,sc_cfs_srtf,sc_bfs;
-    int sc_sjf,sc_strf,sc_hrrn,sc_hrrn_rt;
-    int sc_priority,sc_hpc_over,sc_mlfq;
+    int sc_fifo, sc_rr, sc_cfs, sc_cfs_srtf, sc_bfs;
+    int sc_sjf, sc_strf, sc_hrrn, sc_hrrn_rt;
+    int sc_priority, sc_hpc_over, sc_mlfq;
 
     double basic_percent;
     double normal_percent;

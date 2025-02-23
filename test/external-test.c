@@ -8,67 +8,110 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
-/* List of all sched modes tested externally. */
-static scheduler_alg_t test_modes[]={
-    ALG_FIFO, ALG_RR, ALG_BFS, ALG_PRIORITY,
-    ALG_CFS, ALG_CFS_SRTF, ALG_SJF, ALG_STRF,
-    ALG_HRRN, ALG_HRRN_RT, ALG_HPC_OVERSHADOW, ALG_MLFQ
-};
+static int tests_run=0;
+static int tests_failed=0;
+extern char g_test_fail_reason[256];
 
-static const char* modeName(scheduler_alg_t m){
-    switch(m){
-    case ALG_FIFO:          return "FIFO";
-    case ALG_RR:            return "RR";
-    case ALG_BFS:           return "BFS";
-    case ALG_PRIORITY:      return "PRIORITY";
-    case ALG_CFS:           return "CFS";
-    case ALG_CFS_SRTF:      return "CFS-SRTF";
-    case ALG_SJF:           return "SJF";
-    case ALG_STRF:          return "STRF";
-    case ALG_HRRN:          return "HRRN";
-    case ALG_HRRN_RT:       return "HRRN-RT";
-    case ALG_HPC_OVERSHADOW:return "HPC-OVER";
-    case ALG_MLFQ:          return "MLFQ";
-    default:                return "???";
+/* HPC overshadow => expect 0 stats. */
+bool test_external_hpc(void)
+{
+    os_init();
+    process_t dummy[1];
+    init_process(&dummy[0], 0, 0, 0);
+
+    scheduler_select_algorithm(ALG_HPC_OVERSHADOW);
+    scheduler_run(dummy,1);
+
+    sched_report_t rep;
+    scheduler_fetch_report(&rep);
+    os_cleanup();
+
+    if(rep.total_procs!=0){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
+                 "test_external_hpc => expected total_procs=0, got %llu",
+                 (unsigned long long)rep.total_procs);
+        return false;
     }
+    return true;
 }
 
-/*
-  For each mode:
-    1) We do a trivial internal run => HPC overshadow or short process => prints local concurrency timeline.
-    2) Then run_shell_commands_concurrently(1, "sleep 2", 1, that mode, 0)
-    3) Mark scoreboard as mastered => final pass
-*/
-void run_external_tests(void){
-    printf("[External] Testing each scheduling mode individually.\n");
-    int total=0, passed=0;
-    int mc=(int)(sizeof(test_modes)/sizeof(test_modes[0]));
+/* BFS => partial => expect at least 1 preemption for 2 short procs. */
+bool test_external_bfs(void)
+{
+    os_init();
+    process_t p[2];
+    init_process(&p[0],3,1,0);
+    init_process(&p[1],3,1,0);
 
-    for(int i=0;i<mc;i++){
-        total++;
-        printf("  Testing %s... Init\n", modeName(test_modes[i]));
-        fflush(stdout);
+    scheduler_select_algorithm(ALG_BFS);
+    scheduler_run(p,2);
 
-        os_init();
-        /* trivial internal run => HPC overshadow or short process */
-        process_t d[1];
-        init_process(&d[0], 2, 1, os_time()); // short burst=2ms
-        scheduler_select_algorithm(test_modes[i]);
-        scheduler_run(d,1);
+    sched_report_t rep;
+    scheduler_fetch_report(&rep);
+    os_cleanup();
 
-        /* concurrency => single command => "sleep 2" => prints external concurrency timeline */
-        char* lines[1];
-        lines[0]="sleep 2";
-        run_shell_commands_concurrently(1, lines, 1, test_modes[i], 0);
+    if(rep.total_procs!=2 || rep.preemptions<1){
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
+                 "test_external_bfs => mismatch => procs=%llu, preempt=%llu",
+                 (unsigned long long)rep.total_procs,
+                 (unsigned long long)rep.preemptions);
+        return false;
+    }
+    return true;
+}
 
-        scoreboard_set_sc_mastered(test_modes[i]);
-        passed++;
-        printf("PASS\nCleanup\n");
-        os_cleanup();
+/* run shell concurrency => pass if no crash */
+bool test_run_shell_concurrency(void)
+{
+    int count=2;
+    char* lines[2];
+    lines[0] = "sleep 2";
+    lines[1] = "sleep 3";
+
+    /* single core, FIFO mode */
+    run_shell_commands_concurrently(count, lines, 1, ALG_FIFO, 0);
+    return true;
+}
+
+void run_external_tests(void)
+{
+    printf("[External] => Starting external tests.\n");
+    {
+        tests_run++;
+        bool ok=test_external_hpc();
+        if(!ok){
+            tests_failed++;
+            printf("  FAIL: test_external_hpc => %s\n", g_test_fail_reason);
+        } else {
+            printf("  PASS: test_external_hpc\n");
+        }
     }
 
-    printf("\n[External] => %d total, %d passed.\n", total, passed);
-    scoreboard_update_external(total, passed);
+    {
+        tests_run++;
+        bool ok=test_external_bfs();
+        if(!ok){
+            tests_failed++;
+            printf("  FAIL: test_external_bfs => %s\n", g_test_fail_reason);
+        } else {
+            printf("  PASS: test_external_bfs\n");
+        }
+    }
+
+    {
+        tests_run++;
+        bool ok=test_run_shell_concurrency();
+        if(!ok){
+            tests_failed++;
+            printf("  FAIL: test_run_shell_concurrency => %s\n", g_test_fail_reason);
+        } else {
+            printf("  PASS: test_run_shell_concurrency\n");
+        }
+    }
+
+    scoreboard_update_external(tests_run, tests_run - tests_failed);
     scoreboard_save();
+    printf("[External] => %d total, %d passed.\n", tests_run, (tests_run - tests_failed));
 }

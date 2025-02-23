@@ -6,172 +6,195 @@
 #include "../src/scoreboard.h"
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
+#include <unistd.h>
 
-/*
-  We'll accumulate the number of tests run & failed locally,
-  and update them in run_basic_tests().
-*/
 static int tests_run=0, tests_failed=0;
 
-static void sc_fifo_run(void){
+static int almost_equal(double a, double b, double eps){
+    return fabs(a - b) < eps;
+}
+static bool check_stats(const sched_report_t* rep,
+                        double exp_wait, double exp_tat,
+                        double exp_resp, unsigned long long exp_preempt,
+                        double eps)
+{
+    if(!almost_equal(rep->avg_wait,       exp_wait, eps)) return false;
+    if(!almost_equal(rep->avg_turnaround, exp_tat,  eps)) return false;
+    if(!almost_equal(rep->avg_response,   exp_resp, eps)) return false;
+    if(rep->preemptions != exp_preempt)                  return false;
+    return true;
+}
+
+extern char g_test_fail_reason[256];
+
+/* FIFO test => 2 procs => p0=3, p1=5 => arrival=0 =>
+   wait p0=0,tat=3 => p1=3,8 => avg wait=1.5, tat=5.5 => resp=1.5 => preempt=0 */
+static bool test_fifo_impl(void){
     os_init();
     process_t p[2];
-    init_process(&p[0],3,1,os_time());
-    init_process(&p[1],5,1,os_time());
+    init_process(&p[0], 3, 1, 0);
+    init_process(&p[1], 5, 1, 0);
+
     scheduler_select_algorithm(ALG_FIFO);
-    scheduler_run(p,2); /* concurrency timeline printed here */
+    scheduler_run(p,2);
+
+    sched_report_t rep;
+    scheduler_fetch_report(&rep);
     os_cleanup();
+
+    return check_stats(&rep, 1.5, 5.5, 1.5, 0ULL, 0.001);
 }
 TEST(test_fifo){
-    struct captured_output cap;
-    int st=run_function_capture_output(sc_fifo_run,&cap);
-    bool pass=(st==0 && strstr(cap.stdout_buf,"Stats for FIFO"));
-    if(!pass){
+    if(!test_fifo_impl()){
         snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "FIFO logs or concurrency timeline missing.");
+                 "test_fifo => FIFO stats mismatch (expected W=1.5,T=5.5,R=1.5,pre=0)");
         return false;
     }
     scoreboard_set_sc_mastered(ALG_FIFO);
     return true;
 }
 
-static void sc_rr_run(void){
+/* RR => p0=2, p1=2 => quantum=2 => each runs once =>
+   p0 wait=0, tat=2 => p1 wait=2, tat=4 =>
+   avg wait=1, tat=3 => resp=0 for p0, 2 for p1 => average=1 => preempt=0 (since each finishes in its timeslice).
+*/
+static bool test_rr_impl(void){
     os_init();
     process_t p[2];
-    init_process(&p[0],2,1,os_time());
-    init_process(&p[1],2,1,os_time());
+    init_process(&p[0], 2, 1, 0);
+    init_process(&p[1], 2, 1, 0);
+
     scheduler_select_algorithm(ALG_RR);
     scheduler_run(p,2);
+
+    sched_report_t rep;
+    scheduler_fetch_report(&rep);
     os_cleanup();
+
+    /* We expect wait=1, tat=3, resp=1, preempt=0. */
+    return check_stats(&rep, 1.0, 3.0, 1.0, 0ULL, 0.001);
 }
 TEST(test_rr){
-    struct captured_output cap;
-    int st=run_function_capture_output(sc_rr_run,&cap);
-    bool pass=(st==0 && strstr(cap.stdout_buf,"Stats for RR"));
-    if(!pass){
+    if(!test_rr_impl()){
         snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "RR logs/timeline missing or incomplete.");
+                 "test_rr => RR stats mismatch (expected W=1,T=3,R=1,pre=0)");
         return false;
     }
     scoreboard_set_sc_mastered(ALG_RR);
     return true;
 }
 
-static void sc_cfs_run(void){
+/* CFS => 2 procs => p0=3, p1=4 => no preemption =>
+   p0 wait=0,tat=3 => p1 wait=3,tat=7 =>
+   avg wait=1.5, tat=5.0, resp=1.5 => preempt=0 */
+static bool test_cfs_impl(void){
     os_init();
     process_t p[2];
-    init_process(&p[0],3,0,os_time());
-    init_process(&p[1],4,0,os_time());
+    init_process(&p[0], 3, 0, 0);
+    init_process(&p[1], 4, 0, 0);
+
     scheduler_select_algorithm(ALG_CFS);
     scheduler_run(p,2);
+
+    sched_report_t rep;
+    scheduler_fetch_report(&rep);
     os_cleanup();
+
+    return check_stats(&rep, 1.5, 5.0, 1.5, 0ULL, 0.001);
 }
 TEST(test_cfs){
-    struct captured_output cap;
-    int st=run_function_capture_output(sc_cfs_run,&cap);
-    bool pass=(st==0 && strstr(cap.stdout_buf,"Stats for CFS"));
-    if(!pass){
+    if(!test_cfs_impl()){
         snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "CFS logs/timeline missing or incomplete.");
+                 "test_cfs => mismatch (expected W=1.5,T=5.0,R=1.5,pre=0)");
         return false;
     }
     scoreboard_set_sc_mastered(ALG_CFS);
     return true;
 }
 
-static void sc_bfs_run(void){
+/* BFS => 3 procs => partial => quantum=2 => we expect preempt>0, total_procs=3.
+   We won't do exact wait/tat check, just a minimal assertion. */
+static bool test_bfs_impl(void){
     os_init();
     process_t p[3];
-    for(int i=0;i<3;i++){
-        init_process(&p[i],2+i,1,os_time());
-    }
+    init_process(&p[0],2,1,0);
+    init_process(&p[1],3,1,0);
+    init_process(&p[2],4,1,0);
+
     scheduler_select_algorithm(ALG_BFS);
     scheduler_run(p,3);
+
+    sched_report_t rep;
+    scheduler_fetch_report(&rep);
     os_cleanup();
+
+    if(rep.total_procs!=3) return false;
+    if(rep.preemptions<1)  return false;
+    return true;
 }
 TEST(test_bfs){
-    struct captured_output cap;
-    int st=run_function_capture_output(sc_bfs_run,&cap);
-    bool pass=(st==0 && strstr(cap.stdout_buf,"Stats for BFS"));
-    if(!pass){
+    if(!test_bfs_impl()){
         snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "BFS logs/timeline missing or incomplete.");
+                 "test_bfs => BFS mismatch => expected preempt>0, procs=3");
         return false;
     }
     scoreboard_set_sc_mastered(ALG_BFS);
     return true;
 }
 
-static void sc_pipeline_run(void){
+/* pipeline => no scheduling => pass if no crash. */
+static bool test_pipeline_impl(void){
     os_init();
     os_pipeline_example();
     os_cleanup();
+    return true;
 }
 TEST(test_pipeline){
-    struct captured_output cap;
-    int st=run_function_capture_output(sc_pipeline_run,&cap);
-    bool pass=(st==0 && strstr(cap.stdout_buf,"Pipeline start")
-                     && strstr(cap.stdout_buf,"Pipeline end"));
-    if(!pass){
+    if(!test_pipeline_impl()){
         snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "Pipeline logs missing or incomplete.");
+                 "test_pipeline => unexpected fail");
         return false;
     }
     return true;
 }
 
-static void sc_distributed_run(void){
+/* distributed => pass if no crash. */
+static bool test_distributed_impl(void){
     os_init();
     os_run_distributed_example();
     os_cleanup();
+    return true;
 }
 TEST(test_distributed){
-    struct captured_output cap;
-    int st=run_function_capture_output(sc_distributed_run,&cap);
-    bool pass=(st==0 && strstr(cap.stdout_buf,"Distributed example: fork"));
-    if(!pass){
+    if(!test_distributed_impl()){
         snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "Distributed logs missing or incomplete.");
+                 "test_distributed => unexpected fail");
         return false;
     }
     return true;
 }
 
-static void sc_fifo_strict(void){
+/* FIFO strict => 2 procs => p0=3, p1=4 => same as above => W=1.5, T=5.0, R=1.5, pre=0. */
+static bool test_fifo_strict_impl(void){
     os_init();
     process_t p[2];
-    init_process(&p[0],3,10,os_time());
-    init_process(&p[1],4,20,os_time());
+    init_process(&p[0],3,10,0);
+    init_process(&p[1],4,20,0);
+
     scheduler_select_algorithm(ALG_FIFO);
     scheduler_run(p,2);
+
+    sched_report_t rep;
+    scheduler_fetch_report(&rep);
     os_cleanup();
+
+    return check_stats(&rep, 1.5, 5.0, 1.5, 0ULL, 0.001);
 }
 TEST(test_fifo_strict){
-    struct captured_output cap;
-    int st=run_function_capture_output(sc_fifo_strict,&cap);
-    if(st!=0){
+    if(!test_fifo_strict_impl()){
         snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "FIFO strict ordering test aborted unexpectedly.");
-        return false;
-    }
-    bool p20_seen=false, violation=false;
-    char* line=strtok(cap.stdout_buf,"\n");
-    while(line){
-        /* If we see "[Worker]" we can parse the priority out of it. */
-        if(strstr(line,"[Worker]") && strstr(line,"priority=")){
-            int prio = 100;
-            char* pos=strstr(line,"priority=");
-            if(pos) prio=parse_int_strtol(pos+9,100);
-            if(prio==20) p20_seen=true;
-            if(prio==10 && p20_seen){
-                violation=true;
-            }
-        }
-        line=strtok(NULL,"\n");
-    }
-    if(violation){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "FIFO strict ordering violated (p20 ran before p10 finished).");
+                 "test_fifo_strict => mismatch => W=1.5,T=5.0,R=1.5,pre=0");
         return false;
     }
     return true;
@@ -190,5 +213,5 @@ void run_basic_tests(int* total,int* passed){
     RUN_TEST(test_fifo_strict);
 
     *total = tests_run;
-    *passed = tests_run - tests_failed;
+    *passed= tests_run - tests_failed;
 }

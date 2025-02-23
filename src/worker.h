@@ -4,8 +4,8 @@
 #include "process.h"
 
 /*
-  simulate_process() => "Full run" = sleeps for burst_time (ms).
-  simulate_process_partial() => "Partial run" for slice ms.
+  Functions that "simulate" the process running, using usleep to show
+  the user some concurrency. Stats are updated in the scheduler's sim_time domain.
 */
 void simulate_process(process_t* p);
 void simulate_process_partial(process_t* p, unsigned long slice_ms);
