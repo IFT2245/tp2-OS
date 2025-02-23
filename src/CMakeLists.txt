@@ -1,11 +1,17 @@
 
 add_executable(main
         os.c
+        os.h
         ready_queue.c
+        ready_queue.h
         worker.c
+        worker.h
         process.c
+        process.h
         scheduler.c
+        scheduler.h
         runner.c
+        runner.h
         safe_calls_library.c
         ../test/basic-test.c
         ../test/normal-test.c

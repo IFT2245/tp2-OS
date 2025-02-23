@@ -1,5 +1,6 @@
 #ifndef SCHEDULER_H
 #define SCHEDULER_H
+
 #include "process.h"
 
 typedef enum {
@@ -18,6 +19,6 @@ typedef enum {
 } scheduler_alg_t;
 
 void scheduler_select_algorithm(scheduler_alg_t a);
-void scheduler_run(process_t* list,int count);
+void scheduler_run(process_t* list, int count);
 
 #endif

@@ -5,6 +5,7 @@
 #include "../src/os.h"
 #include "../src/scoreboard.h"
 #include <string.h>
+#include <stdio.h>
 
 static int tests_run=0, tests_failed=0;
 
@@ -19,10 +20,12 @@ static void sc_sjf_run(void){
     os_cleanup();
 }
 TEST(test_sjf){
-    struct captured_output cap; int st=run_function_capture_output(sc_sjf_run,&cap);
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_sjf_run,&cap);
     bool pass=(st==0 && strstr(cap.stdout_buf,"Stats for SJF"));
     if(!pass){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"SJF logs missing.");
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
+                 "SJF logs/timeline missing or incomplete.");
         return false;
     }
     scoreboard_set_sc_mastered(ALG_SJF);
@@ -39,10 +42,12 @@ static void sc_strf_run(void){
     os_cleanup();
 }
 TEST(test_strf){
-    struct captured_output cap; int st=run_function_capture_output(sc_strf_run,&cap);
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_strf_run,&cap);
     bool pass=(st==0 && strstr(cap.stdout_buf,"Stats for STRF"));
     if(!pass){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"STRF logs missing.");
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
+                 "STRF logs/timeline missing or incomplete.");
         return false;
     }
     scoreboard_set_sc_mastered(ALG_STRF);
@@ -52,16 +57,20 @@ TEST(test_strf){
 static void sc_hrrn_run(void){
     os_init();
     process_t p[3];
-    for(int i=0;i<3;i++){ init_process(&p[i],2+i,1,os_time()); }
+    for(int i=0;i<3;i++){
+        init_process(&p[i],2+i,1,os_time());
+    }
     scheduler_select_algorithm(ALG_HRRN);
     scheduler_run(p,3);
     os_cleanup();
 }
 TEST(test_hrrn){
-    struct captured_output cap; int st=run_function_capture_output(sc_hrrn_run,&cap);
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_hrrn_run,&cap);
     bool pass=(st==0 && strstr(cap.stdout_buf,"Stats for HRRN"));
     if(!pass){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"HRRN logs missing.");
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
+                 "HRRN logs/timeline missing or incomplete.");
         return false;
     }
     scoreboard_set_sc_mastered(ALG_HRRN);
@@ -78,10 +87,12 @@ static void sc_hrrn_rt_run(void){
     os_cleanup();
 }
 TEST(test_hrrn_rt){
-    struct captured_output cap; int st=run_function_capture_output(sc_hrrn_rt_run,&cap);
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_hrrn_rt_run,&cap);
     bool pass=(st==0 && strstr(cap.stdout_buf,"Stats for HRRN-RT"));
     if(!pass){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"HRRN-RT logs missing.");
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
+                 "HRRN-RT logs/timeline missing or incomplete.");
         return false;
     }
     scoreboard_set_sc_mastered(ALG_HRRN_RT);
@@ -99,10 +110,12 @@ static void sc_prio_run(void){
     os_cleanup();
 }
 TEST(test_prio){
-    struct captured_output cap; int st=run_function_capture_output(sc_prio_run,&cap);
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_prio_run,&cap);
     bool pass=(st==0 && strstr(cap.stdout_buf,"Stats for PRIORITY"));
     if(!pass){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"PRIORITY logs missing.");
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
+                 "PRIORITY logs/timeline missing or incomplete.");
         return false;
     }
     scoreboard_set_sc_mastered(ALG_PRIORITY);
@@ -112,16 +125,20 @@ TEST(test_prio){
 static void sc_cfs_srtf_run(void){
     os_init();
     process_t p[3];
-    for(int i=0;i<3;i++){ init_process(&p[i],2+(i*2),1,os_time()); }
+    for(int i=0;i<3;i++){
+        init_process(&p[i],2+(i*2),1,os_time());
+    }
     scheduler_select_algorithm(ALG_CFS_SRTF);
     scheduler_run(p,3);
     os_cleanup();
 }
 TEST(test_cfs_srtf){
-    struct captured_output cap; int st=run_function_capture_output(sc_cfs_srtf_run,&cap);
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_cfs_srtf_run,&cap);
     bool pass=(st==0 && strstr(cap.stdout_buf,"Stats for CFS-SRTF"));
     if(!pass){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"CFS-SRTF logs missing.");
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
+                 "CFS-SRTF logs/timeline missing or incomplete.");
         return false;
     }
     scoreboard_set_sc_mastered(ALG_CFS_SRTF);
@@ -138,23 +155,28 @@ static void sc_sjf_strict(void){
     os_cleanup();
 }
 TEST(test_sjf_strict){
-    struct captured_output cap; int st=run_function_capture_output(sc_sjf_strict,&cap);
+    struct captured_output cap;
+    int st=run_function_capture_output(sc_sjf_strict,&cap);
     if(st!=0){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"SJF strict fail run.");
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
+                 "SJF strict test aborted unexpectedly.");
         return false;
     }
-    bool p10done=false, p20=false;
+    bool p10done=false;
     char* line=strtok(cap.stdout_buf,"\n");
     while(line){
-        if(strstr(line,"[Worker] Partial")||strstr(line,"[Worker] Full")){
-            int prio=0; char* c=strstr(line,"priority=");
-            if(c) prio=atoi(c+9);
-            if(prio==20 && !p10done) p20=true;
-            if(prio==10 && p20){
-                snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),"SJF strict order fail (p10 after p20).");
+        if(strstr(line,"[Worker]")){
+            int prio=0;
+            char* c=strstr(line,"priority=");
+            if(c) prio = parse_int_strtol(c+9,101);
+            if(prio==20 && !p10done){
+                snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
+                         "SJF strict order fail: job with prio=20 began before prio=10 completed.");
                 return false;
             }
-            if(prio==10 && strstr(line,"burst=2")) p10done=true;
+            if(prio==10 && strstr(line,"burst=2")){
+                p10done=true;
+            }
         }
         line=strtok(NULL,"\n");
     }
@@ -162,7 +184,9 @@ TEST(test_sjf_strict){
 }
 
 void run_normal_tests(int* total,int* passed){
-    tests_run=0; tests_failed=0;
+    tests_run=0;
+    tests_failed=0;
+
     RUN_TEST(test_sjf);
     RUN_TEST(test_strf);
     RUN_TEST(test_hrrn);
@@ -170,5 +194,7 @@ void run_normal_tests(int* total,int* passed){
     RUN_TEST(test_prio);
     RUN_TEST(test_cfs_srtf);
     RUN_TEST(test_sjf_strict);
-    *total=tests_run; *passed=tests_run-tests_failed;
+
+    *total  = tests_run;
+    *passed = tests_run - tests_failed;
 }
