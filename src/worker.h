@@ -4,10 +4,21 @@
 #include "process.h"
 
 /*
-  Functions that "simulate" the process running, using usleep to show
-  the user some concurrency. Stats are updated in the scheduler's sim_time domain.
+  Worker simulation => actually "runs" a process for some (partial) timeslice
+  by sleeping that many milliseconds in real time, purely for user-friendly
+  concurrency demonstration. Stats are updated in scheduler code.
+
+  We'll also print an ASCII line describing what's happening for each partial slice.
 */
-void simulate_process(process_t* p);
-void simulate_process_partial(process_t* p, unsigned long slice_ms);
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+  void simulate_process_partial(process_t* p, unsigned long slice_ms, int core_id);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

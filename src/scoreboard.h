@@ -3,6 +3,7 @@
 
 #include "scheduler.h"
 
+
 typedef struct {
     int basic_total,    basic_pass;
     int normal_total,   normal_pass;
@@ -11,9 +12,10 @@ typedef struct {
     int edge_total,     edge_pass;
     int hidden_total,   hidden_pass;
 
+    /* A set of flags indicating which schedulers were 'mastered'. */
     int sc_fifo, sc_rr, sc_cfs, sc_cfs_srtf, sc_bfs;
-    int sc_sjf, sc_strf, sc_hrrn, sc_hrrn_rt;
-    int sc_priority, sc_hpc_over, sc_mlfq;
+    int sc_sjf, sc_strf, sc_hrrn, sc_hrrn_rt, sc_priority;
+    int sc_hpc_over, sc_mlfq;
 
     double basic_percent;
     double normal_percent;
@@ -32,21 +34,29 @@ extern int unlocked_modes;
 extern int unlocked_edge;
 extern int unlocked_hidden;
 
+/* Load/save scoreboard from "scoreboard.json". */
 void scoreboard_init(void);
-void scoreboard_close(void);
 void scoreboard_load(void);
 void scoreboard_save(void);
+void scoreboard_close(void);
 void scoreboard_clear(void);
+
+/* Retrieve the scoreboard state. */
 void get_scoreboard(scoreboard_t* out);
+
+/* Compute overall final score. */
 int  scoreboard_get_final_score(void);
 
+/* Mark a scheduling algorithm as 'mastered'. */
 void scoreboard_set_sc_mastered(scheduler_alg_t alg);
 
+/* Updating each category. */
 void scoreboard_update_basic(int total,int pass);
 void scoreboard_update_normal(int total,int pass);
 void scoreboard_update_external(int total,int pass);
 void scoreboard_update_modes(int total,int pass);
 void scoreboard_update_edge(int total,int pass);
 void scoreboard_update_hidden(int total,int pass);
+
 
 #endif

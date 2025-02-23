@@ -2,9 +2,10 @@
 #define RUNNER_H
 
 /*
-  runner.h => code to run test suites, or concurrency shell commands
-  with chosen scheduling modes.
+  runner.h => code to run entire test suites or concurrency commands
+              with chosen scheduling modes.
 */
+
 
 void run_all_levels(void);
 void run_external_tests_menu(void);

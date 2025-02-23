@@ -1,107 +1,84 @@
 #include "modes-test.h"
 #include "test_common.h"
 #include "../src/scheduler.h"
-#include "../src/process.h"
 #include "../src/os.h"
+#include "../src/process.h"
 #include "../src/scoreboard.h"
-#include <string.h>
 #include <stdio.h>
 #include <math.h>
-#include <unistd.h>
 
 static int tests_run=0, tests_failed=0;
 extern char g_test_fail_reason[256];
 
-static bool test_hpc_over_impl(void){
+/* HPC overshadow => we expect 0 normal stats */
+TEST(hpc_over) {
     os_init();
     process_t dummy[1];
-    init_process(&dummy[0],0,0,0);
+    init_process(&dummy[0], 0, 0, 0);
 
     scheduler_select_algorithm(ALG_HPC_OVERSHADOW);
-    scheduler_run(dummy,1);
+    scheduler_run(dummy, 1);
 
     sched_report_t rep;
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    if(rep.total_procs!=0) return false;
-    if(rep.preemptions!=0) return false;
-    if(rep.avg_wait!=0.0) return false;
-    return true;
-}
-TEST(test_hpc_over){
-    if(!test_hpc_over_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_hpc_over => HPC overshadow => expected 0 stats");
+    if (rep.total_procs != 0 || rep.preemptions != 0ULL ||
+        rep.avg_wait != 0.0 || rep.avg_turnaround != 0.0 || rep.avg_response != 0.0) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_hpc_over => HPC overshadow => expected 0 stats, got procs=%llu, pre=%llu",
+                 rep.total_procs, rep.preemptions);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_HPC_OVERSHADOW);
     return true;
 }
 
-static bool test_multi_containers_impl(void){
+/* multi containers => pass if no crash */
+TEST(multi_containers) {
     os_init();
-    for(int i=0;i<2;i++) os_create_ephemeral_container();
-    for(int i=0;i<2;i++) os_remove_ephemeral_container();
+    for (int i=0; i<2; i++) os_create_ephemeral_container();
+    for (int i=0; i<2; i++) os_remove_ephemeral_container();
     os_cleanup();
     return true;
 }
-TEST(test_multi_containers){
-    if(!test_multi_containers_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_multi_containers => fail ???");
-        return false;
-    }
-    return true;
-}
 
-static bool test_multi_distrib_impl(void){
+/* multi distrib => pass if no crash */
+TEST(multi_distrib) {
     os_init();
     os_run_distributed_example();
     os_run_distributed_example();
     os_cleanup();
     return true;
 }
-TEST(test_multi_distrib){
-    if(!test_multi_distrib_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_multi_distrib => fail ???");
-        return false;
-    }
-    return true;
-}
 
-static bool test_pipeline_modes_impl(void){
+/* pipeline modes => pass if no crash */
+TEST(pipeline_modes) {
     os_init();
     os_pipeline_example();
     os_cleanup();
     return true;
 }
-TEST(test_pipeline_modes){
-    if(!test_pipeline_modes_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_pipeline_modes => fail ???");
-        return false;
-    }
-    return true;
-}
 
-static bool test_mix_algos_impl(void){
+/* mix => run FIFO then BFS => partial checks */
+TEST(mix_algos) {
     os_init();
-    /* first FIFO => 2 procs => no preempt => total=2, preempt=0 */
     process_t p[2];
     init_process(&p[0],2,1,0);
     init_process(&p[1],3,1,0);
+
     scheduler_select_algorithm(ALG_FIFO);
     scheduler_run(p,2);
     sched_report_t r1;
     scheduler_fetch_report(&r1);
-    if(r1.total_procs!=2 || r1.preemptions!=0){
+    if (r1.total_procs != 2 || r1.preemptions != 0ULL) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_mix_algos => FIFO part => mismatch => total=%llu, preempt=%llu",
+                 r1.total_procs, r1.preemptions);
         os_cleanup();
         return false;
     }
 
-    /* BFS => reinit => partial => expect preempt>0. */
     init_process(&p[0],2,1,0);
     init_process(&p[1],3,1,0);
     scheduler_select_algorithm(ALG_BFS);
@@ -110,28 +87,32 @@ static bool test_mix_algos_impl(void){
     scheduler_fetch_report(&r2);
     os_cleanup();
 
-    if(r2.total_procs!=2 || r2.preemptions<1) return false;
-    return true;
-}
-TEST(test_mix_algos){
-    if(!test_mix_algos_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_mix_algos => mismatch in FIFO or BFS portion");
+    if (r2.total_procs != 2 || r2.preemptions < 1) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_mix_algos => BFS part => mismatch => total=%llu, preempt=%llu",
+                 r2.total_procs, r2.preemptions);
         return false;
     }
     return true;
 }
 
-static bool test_double_hpc_impl(void){
+/* double HPC => each run => 0 stats. */
+TEST(double_hpc) {
     os_init();
     process_t dummy[1];
-    init_process(&dummy[0],0,0,0);
+    init_process(&dummy[0], 0, 0, 0);
 
     scheduler_select_algorithm(ALG_HPC_OVERSHADOW);
     scheduler_run(dummy,1);
     sched_report_t r1;
     scheduler_fetch_report(&r1);
-    if(r1.total_procs!=0) {os_cleanup();return false;}
+    if (r1.total_procs != 0) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_double_hpc => overshadow #1 => expected 0 total_procs, got %llu",
+                 r1.total_procs);
+        os_cleanup();
+        return false;
+    }
 
     scheduler_select_algorithm(ALG_HPC_OVERSHADOW);
     scheduler_run(dummy,1);
@@ -139,19 +120,17 @@ static bool test_double_hpc_impl(void){
     scheduler_fetch_report(&r2);
     os_cleanup();
 
-    if(r2.total_procs!=0) return false;
-    return true;
-}
-TEST(test_double_hpc){
-    if(!test_double_hpc_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_double_hpc => overshadow => expected 0 stats each time");
+    if (r2.total_procs != 0) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_double_hpc => overshadow #2 => expected 0 total_procs, got %llu",
+                 r2.total_procs);
         return false;
     }
     return true;
 }
 
-static bool test_mlfq_check_impl(void){
+/* MLFQ => 3 procs => partial => expect preempt>0 */
+TEST(mlfq_check) {
     os_init();
     process_t p[3];
     init_process(&p[0],2,10,0);
@@ -165,33 +144,28 @@ static bool test_mlfq_check_impl(void){
     scheduler_fetch_report(&r);
     os_cleanup();
 
-    /* we just check total=3, preempt>0 */
-    if(r.total_procs!=3) return false;
-    if(r.preemptions<1)  return false;
+    if (r.total_procs != 3 || r.preemptions < 1) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_mlfq_check => mismatch => total=%llu, preempt=%llu",
+                 r.total_procs, r.preemptions);
+        return false;
+    }
     scoreboard_set_sc_mastered(ALG_MLFQ);
     return true;
 }
-TEST(test_mlfq_check){
-    if(!test_mlfq_check_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_mlfq_check => mismatch => expected total=3, preempt>0");
-        return false;
-    }
-    return true;
-}
 
-void run_modes_tests(int* total,int* passed){
-    tests_run=0;
-    tests_failed=0;
+void run_modes_tests(int* total, int* passed) {
+    tests_run   = 0;
+    tests_failed= 0;
 
-    RUN_TEST(test_hpc_over);
-    RUN_TEST(test_multi_containers);
-    RUN_TEST(test_multi_distrib);
-    RUN_TEST(test_pipeline_modes);
-    RUN_TEST(test_mix_algos);
-    RUN_TEST(test_double_hpc);
-    RUN_TEST(test_mlfq_check);
+    RUN_TEST(hpc_over);
+    RUN_TEST(multi_containers);
+    RUN_TEST(multi_distrib);
+    RUN_TEST(pipeline_modes);
+    RUN_TEST(mix_algos);
+    RUN_TEST(double_hpc);
+    RUN_TEST(mlfq_check);
 
-    *total=tests_run;
-    *passed=tests_run - tests_failed;
+    *total  = tests_run;
+    *passed = tests_run - tests_failed;
 }

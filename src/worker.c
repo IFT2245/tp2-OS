@@ -2,22 +2,16 @@
 #include <stdio.h>
 #include <unistd.h>
 
-/* The original full-run is rarely used, but let's keep it. */
-void simulate_process(process_t* p){
-    if(!p) return;
-    printf("[Worker] Full run => priority=%d, burst=%lu ms\n",
-           p->priority,(unsigned long)p->burst_time);
-    /* We do real-time sleep just for user experience. */
-    usleep(p->burst_time * 1000U);
-}
+#define CLR_RESET   "\033[0m"
+#define CLR_BOLD    "\033[1m"
+#define CLR_BLUE    "\033[94m"
+#define CLR_GREEN   "\033[92m"
 
-/*
-  simulate_process_partial(p, slice):
-   - Sleep for 'slice' ms in real time, purely for demonstration.
-*/
-void simulate_process_partial(process_t* p, unsigned long slice_ms){
-    if(!p || !slice_ms) return;
-    printf("[Worker] Partial => priority=%d, slice=%lu ms\n",
-           p->priority, slice_ms);
-    usleep(slice_ms * 1000U);
+void simulate_process_partial(process_t* p, unsigned long slice_ms, int core_id) {
+    if (!p || !slice_ms) return;
+    printf(CLR_BLUE "[Worker] Core=%d => Partial run => priority=%d, slice=%lu ms\n" CLR_RESET,
+           core_id, p->priority, slice_ms);
+    /* Real sleep for user to see concurrency. */
+    usleep(slice_ms * 220000); /* slowed for more visual switching: 1ms sim => 220ms real */
+    /* This multiplier is intentionally large so you can watch the schedule unfold. */
 }
