@@ -8,13 +8,12 @@
 #include <math.h>
 
 static int tests_run=0, tests_failed=0;
-extern char g_test_fail_reason[256];
+static char g_test_fail_reason[256];
 
 static int almost_equal(double a, double b, double eps) {
     return (fabs(a - b) < eps);
 }
 
-/* single proc => extreme long => p0=50 => wait=0,tat=50,resp=0 => pre=0 */
 TEST(extreme_long) {
     os_init();
     process_t p[1];
@@ -44,7 +43,6 @@ TEST(extreme_long) {
     return true;
 }
 
-/* single proc => extreme short => p0=1 => wait=0,tat=1,resp=0 => pre=0 */
 TEST(extreme_short) {
     os_init();
     process_t p[1];
@@ -73,7 +71,6 @@ TEST(extreme_short) {
     return true;
 }
 
-/* high load => 10 procs => run cfs => check total=10 */
 TEST(high_load) {
     os_init();
     process_t arr[10];
@@ -96,7 +93,6 @@ TEST(high_load) {
     return true;
 }
 
-/* HPC overshadow under load => pass if no crash */
 TEST(hpc_under_load) {
     os_init();
     os_run_hpc_overshadow();
@@ -104,7 +100,6 @@ TEST(hpc_under_load) {
     return true;
 }
 
-/* container spam => pass if no crash */
 TEST(container_spam) {
     os_init();
     for (int i=0;i<3;i++) {
@@ -117,7 +112,6 @@ TEST(container_spam) {
     return true;
 }
 
-/* pipeline edge => pass if no crash */
 TEST(pipeline_edge) {
     os_init();
     os_pipeline_example();
@@ -125,7 +119,6 @@ TEST(pipeline_edge) {
     return true;
 }
 
-/* multi distrib => pass if no crash */
 TEST(multi_distrib) {
     os_init();
     for (int i=0;i<3;i++) {
@@ -135,7 +128,7 @@ TEST(multi_distrib) {
     return true;
 }
 
-void run_edge_tests(int* total,int* passed) {
+void run_edge_tests(int* total,int* passed){
     tests_run=0;
     tests_failed=0;
 
@@ -147,6 +140,10 @@ void run_edge_tests(int* total,int* passed) {
     RUN_TEST(pipeline_edge);
     RUN_TEST(multi_distrib);
 
-    *total = tests_run;
-    *passed= tests_run - tests_failed;
+    *total=tests_run;
+    *passed=(tests_run - tests_failed);
+
+    printf("\n╔══════════════════════════════════════════════╗\n");
+    printf("║      EDGE TESTS RESULTS: %d / %d passed        ║\n", *passed, *total);
+    printf("╚══════════════════════════════════════════════╝\n");
 }

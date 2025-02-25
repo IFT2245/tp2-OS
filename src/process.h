@@ -6,13 +6,12 @@
 /*
   Single "process" (or "task") in our scheduler.
   Fields for original burst_time, priority, arrival_time,
-  plus scheduling fields: vruntime, remaining_time, start_time, end_time, etc.
+  plus scheduling fields: vruntime, remaining_time, etc.
 */
-
 
 typedef struct process_s {
     uint64_t burst_time;       /* total CPU time needed (ms) */
-    int      priority;         /* smaller => higher priority (in some algs) */
+    int      priority;         /* smaller => higher priority (some algs) */
     uint64_t vruntime;         /* used by CFS / CFS-SRTF */
     uint64_t arrival_time;     /* simulation "arrival" time */
     uint64_t remaining_time;   /* how many ms remain for this process */
@@ -28,6 +27,5 @@ typedef struct process_s {
 
 /* Initialize a process with the given burst, priority, arrival_time. */
 void init_process(process_t* p, uint64_t burst, int priority, uint64_t arrival);
-
 
 #endif

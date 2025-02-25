@@ -6,14 +6,14 @@
 #include "scheduler.h"
 
 /*
-  Our "ready queue" data structure, with a policy determined by the chosen scheduler algorithm.
-  It's thread-safe with mutex + cond.
+  "ready_queue" data structure, with policy determined by scheduler_alg_t.
+  Thread-safe with mutex + cond.
 */
 
-void       ready_queue_init_policy(scheduler_alg_t alg);
-void       ready_queue_destroy(void);
-void       ready_queue_push(process_t* proc);
+void   ready_queue_init_policy(scheduler_alg_t alg);
+void   ready_queue_destroy(void);
+void   ready_queue_push(process_t* proc);
 process_t* ready_queue_pop(void);
-size_t     ready_queue_size(void);
+size_t ready_queue_size(void);
 
 #endif

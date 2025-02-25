@@ -24,8 +24,10 @@ static struct {
 static pthread_mutex_t* pm(void) { return &gQ.m; }
 static pthread_cond_t*  pc(void) { return &gQ.c; }
 
-/* For non-MLFQ, we store processes in the sentinel->next chain. */
+/* External from scheduler for HRRN calculations: */
+extern uint64_t get_global_sim_time(void);
 
+/* Helpers: pop from sentinel->next. */
 static process_t* pop_head(void) {
     node_t* head = gQ.sentinel.next;
     if (!head) return NULL;
@@ -49,7 +51,7 @@ static void push_tail(process_t* p) {
 }
 
 static void push_priority(process_t* p) {
-    /* smaller priority => earlier in list */
+    /* smaller priority => earlier */
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
     n->next = NULL;
@@ -79,7 +81,7 @@ static void push_cfs(process_t* p) {
 }
 
 static void push_sjf(process_t* p) {
-    /* sorted by burst_time ascending => if tie, first come first serve */
+    /* sorted by burst_time ascending */
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
     n->next = NULL;
@@ -93,18 +95,15 @@ static void push_sjf(process_t* p) {
     gQ.size++;
 }
 
-/* We do HRRN by ratio = (waiting + remaining)/remaining => bigger ratio => schedule first.
-   We'll implement "descending" order of that ratio. */
-extern uint64_t get_global_sim_time(void);
-
+/* HRRN ratio => (waiting + remain)/remain => bigger => earlier. */
 static uint64_t hrrn_val(process_t* p, uint64_t now) {
     uint64_t wait = (now > p->arrival_time) ? (now - p->arrival_time) : 0ULL;
     uint64_t remain = (p->remaining_time > 0) ? p->remaining_time : 1ULL;
-    /* ratio = (wait + remain)/remain => effectively wait+remain. We just compare scaled. */
     return (wait + remain);
 }
 
 static void push_hrrn(process_t* p, int preemptive) {
+    (void)preemptive; /* same insertion logic, preempt handled differently in runner. */
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
     n->next = NULL;
@@ -115,8 +114,6 @@ static void push_hrrn(process_t* p, int preemptive) {
     node_t* cur = &gQ.sentinel;
     while (cur->next) {
         uint64_t c_ratio = hrrn_val(cur->next->proc, now);
-        /* For normal HRRN => bigger ratio => earlier. */
-        /* For HRRN-RT => also partial, but let's handle the same approach. */
         if (new_ratio > c_ratio) {
             break;
         }
@@ -127,7 +124,7 @@ static void push_hrrn(process_t* p, int preemptive) {
     gQ.size++;
 }
 
-/* MLFQ => multiple queues, pop from highest-priority queue that is non-empty. */
+/* MLFQ => multiple queues, pop from highest non-empty queue. */
 static process_t* pop_mlfq(void) {
     for (int i=0; i<MLFQ_MAX_QUEUES; i++) {
         if (gQ.ml_queues[i].next) {
@@ -144,7 +141,7 @@ static process_t* pop_mlfq(void) {
 
 static void push_mlfq(process_t* p) {
     int level = p->mlfq_level;
-    if (level < 0) level = 0;
+    if (level < 0) level=0;
     if (level >= MLFQ_MAX_QUEUES) level = MLFQ_MAX_QUEUES - 1;
 
     node_t* n = (node_t*)malloc(sizeof(node_t));
@@ -162,7 +159,7 @@ static void push_mlfq(process_t* p) {
 /* function pointers for push/pop. */
 static process_t* (*f_pop)(void) = NULL;
 static void       (*f_push)(process_t*) = NULL;
-static int        g_preemptive = 0; /* helper flag for ready_queue to know if we do partial preempts. */
+static int        g_preemptive = 0;
 
 void ready_queue_init_policy(scheduler_alg_t alg) {
     memset(&gQ, 0, sizeof(gQ));
@@ -178,52 +175,59 @@ void ready_queue_init_policy(scheduler_alg_t alg) {
         f_pop  = pop_head;
         g_preemptive = (alg == ALG_RR || alg == ALG_BFS) ? 1 : 0;
         break;
+
     case ALG_PRIORITY:
         f_push = push_priority;
         f_pop  = pop_head;
         g_preemptive = 0;
         break;
+
     case ALG_CFS:
         f_push = push_cfs;
         f_pop  = pop_head;
         g_preemptive = 0;
         break;
+
     case ALG_CFS_SRTF:
         f_push = push_cfs;
         f_pop  = pop_head;
         g_preemptive = 1;
         break;
+
     case ALG_SJF:
         f_push = push_sjf;
         f_pop  = pop_head;
         g_preemptive = 0;
         break;
+
     case ALG_STRF:
         f_push = push_sjf;
         f_pop  = pop_head;
         g_preemptive = 1;
         break;
+
     case ALG_HRRN:
         f_push = (void (*)(process_t*))push_hrrn;
         f_pop  = (process_t* (*)(void))pop_head;
-        f_pop  = pop_head;
         g_preemptive = 0;
         break;
+
     case ALG_HRRN_RT:
-        /* preempt => bigger ratio => earlier */
         f_push = (void (*)(process_t*))push_hrrn;
         f_pop  = (process_t* (*)(void))pop_head;
         g_preemptive = 1;
         break;
+
     case ALG_MLFQ:
         f_push = (void (*)(process_t*))push_mlfq;
         f_pop  = (process_t* (*)(void))pop_mlfq;
-        g_preemptive = 1; /* typically MLFQ is preemptive */
+        g_preemptive = 1; /* typical MLFQ is preemptive */
         break;
+
     default:
         /* HPC overshadow or unknown => just tail. HPC overshadow is handled outside. */
-        f_push = (void (*)(process_t*))push_tail;
-        f_pop  = (process_t* (*)(void))pop_head;
+        f_push = push_tail;
+        f_pop  = pop_head;
         g_preemptive = 0;
         break;
     }
@@ -237,9 +241,12 @@ void ready_queue_destroy(void) {
 
 void ready_queue_push(process_t* p) {
     pthread_mutex_lock(pm());
-    /* if p==NULL => used to wake threads so they can exit */
     if (p) {
-        f_push(p);
+        if (gQ.alg == ALG_HRRN || gQ.alg == ALG_HRRN_RT) {
+            push_hrrn(p, (gQ.alg==ALG_HRRN_RT)?1:0);
+        } else {
+            f_push(p);
+        }
     }
     pthread_cond_broadcast(pc());
     pthread_mutex_unlock(pm());
@@ -247,13 +254,12 @@ void ready_queue_push(process_t* p) {
 
 process_t* ready_queue_pop(void) {
     pthread_mutex_lock(pm());
-    while (1) {
-        if (gQ.size > 0) {
+    while(1) {
+        if(gQ.size>0) {
             process_t* r = f_pop();
             pthread_mutex_unlock(pm());
             return r;
         }
-        /* else wait */
         pthread_cond_wait(pc(), pm());
     }
     /* never reached */

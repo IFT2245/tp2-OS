@@ -2,9 +2,14 @@
 #define MODES_TEST_H
 
 /*
-  run_modes_tests():
-    Tests HPC overshadow, multi containers, BFS, MLFQ, and previous.
+  Modes test: HPC overshadow, BFS, MLFQ, pipeline, containers, etc.
 */
+
 void run_modes_tests(int* total,int* passed);
+
+/* For single-test picking. */
+int         modes_test_get_count(void);
+const char* modes_test_get_name(int index);
+int         modes_test_run_single(int index);
 
 #endif

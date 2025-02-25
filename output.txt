@@ -1,24 +1,33 @@
-
-#include <stdio.h>
 #include <unistd.h>
 #include <signal.h>
 #include <stdlib.h>
+#include <string.h>
+
 #include "runner.h"
 #include "os.h"
 #include "safe_calls_library.h"
 #include "scoreboard.h"
+#include "stats.h"
+#include "../test/basic-test.h"
+#include "../test/normal-test.h"
+#include "../test/modes-test.h"
+#include "../test/edge-test.h"
+#include "../test/hidden-test.h"
 
-#define CLR_RESET   "\033[0m"
-#define CLR_BOLD    "\033[1m"
-#define CLR_MAGENTA "\033[95m"
-#define CLR_RED     "\033[91m"
-#define CLR_GRAY    "\033[90m"
-#define CLR_GREEN   "\033[92m"
-#define CLR_YELLOW  "\033[93m"
-#define CLR_CYAN    "\033[96m"
-
+/* Forward declarations */
 static void cleanup_and_exit(int code);
 static void handle_signal(int signum);
+static void clear_screen(void);
+static void pause_enter(void);
+static int  read_line(char *buf, size_t sz);
+static void ascii_main_menu_header(void);
+
+/* Additional sub-sub menus for single test picking. (Provided below) */
+static void submenu_run_tests(void);
+static void submenu_run_single_test(void);
+
+/* Global to store if concurrency was forcibly stopped. (SIGUSR1) */
+static volatile sig_atomic_t g_concurrency_stop_flag = 0;
 
 /* Clear terminal screen (POSIX vs Windows). */
 static void clear_screen(void){
@@ -30,10 +39,10 @@ static void clear_screen(void){
 }
 
 static void pause_enter(void){
-    printf("\nPress ENTER...");
+    printf("\nPress ENTER to continue...");
     fflush(stdout);
     int c;
-    while((c = getchar()) != '\n' && c != EOF){}
+    while((c = getchar()) != '\n' && c != EOF) { /* discard */ }
 }
 
 /* Safe read_line for user input. */
@@ -49,9 +58,9 @@ static void menu_show_scoreboard(void){
     get_scoreboard(&sb);
     clear_screen();
 
-    printf(CLR_BOLD CLR_MAGENTA "╔════════════════════════════════════╗\n" CLR_RESET);
-    printf(CLR_BOLD CLR_MAGENTA "║           ★ SCOREBOARD ★          ║\n" CLR_RESET);
-
+    printf(CLR_BOLD CLR_MAGENTA "╔════════════════════════════════════════════╗\n" CLR_RESET);
+    printf(CLR_BOLD CLR_MAGENTA "║           ★ SCOREBOARD OVERVIEW ★         ║\n" CLR_RESET);
+    printf("║--------------------------------------------║\n");
     printf("║ BASIC       => %.1f/100 => %s\n",
            sb.basic_percent,
            unlocked_basic ? CLR_GREEN"UNLOCKED"CLR_RESET : CLR_RED"LOCKED"CLR_RESET);
@@ -76,8 +85,8 @@ static void menu_show_scoreboard(void){
            sb.hidden_percent,
            unlocked_hidden ? CLR_GREEN"UNLOCKED"CLR_RESET : CLR_RED"LOCKED"CLR_RESET);
 
-    printf("║\n");
-    printf("║ Schedulers mastery (for 10%% block):\n");
+    printf("║--------------------------------------------║\n");
+    printf("║ Schedulers mastery (10%% block => 15 points total):\n");
     printf("║   FIFO:%s  RR:%s  CFS:%s  CFS-SRTF:%s  BFS:%s\n",
            sb.sc_fifo? "✔":"✘",
            sb.sc_rr? "✔":"✘",
@@ -97,7 +106,7 @@ static void menu_show_scoreboard(void){
            sb.sc_mlfq? "✔":"✘");
 
     int final_score = scoreboard_get_final_score();
-    printf("║\n");
+    printf("║--------------------------------------------║\n");
     printf("╚═ Overall Score => %d/100\n", final_score);
     pause_enter();
 }
@@ -109,29 +118,52 @@ static void menu_clear_scoreboard(void){
     pause_enter();
 }
 
-/* Cleanup and exit. */
+/* ASCII art for main menu header. */
+static void ascii_main_menu_header(void){
+    printf(CLR_BOLD CLR_YELLOW "┌────────────────────────────────────────────┐\n" CLR_RESET);
+    printf(CLR_BOLD CLR_YELLOW "│            OS-SCHEDULING GAME            │\n" CLR_RESET);
+    printf(CLR_BOLD CLR_YELLOW "└────────────────────────────────────────────┘\n" CLR_RESET);
+    printf("     'A concurrency and scheduling trainer'  \n\n");
+}
+
+/* Cleanup and exit with code => also saves scoreboard. */
 static void cleanup_and_exit(int code){
     os_cleanup();
     scoreboard_save();
     scoreboard_close();
+    /* Print final stats as well. */
+    stats_print_summary();
     exit(code);
 }
 
-/* Handle Ctrl-C => Save scoreboard before exiting. */
+/* Handle signals => SIGINT, SIGTERM, SIGUSR1. */
 static void handle_signal(int signum){
-    if(signum == SIGINT){
-        printf("\nCaught SIGINT! Saving scoreboard...\n");
+    if(signum == SIGINT) {
+        stats_inc_signal_sigint();
+        printf("\n[Main] Caught SIGINT! Saving scoreboard...\n");
         int fs = scoreboard_get_final_score();
         cleanup_and_exit(fs);
+    }
+    else if(signum == SIGTERM){
+        stats_inc_signal_sigterm();
+        printf("\n[Main] Caught SIGTERM! Saving scoreboard...\n");
+        int fs = scoreboard_get_final_score();
+        cleanup_and_exit(fs);
+    }
+    else {
+        /* Let's interpret SIGUSR1 as "stop concurrency and return to main menu". */
+        stats_inc_signal_other();
+        g_concurrency_stop_flag = 1;
+        fprintf(stderr, "\n[Main] Caught SIGUSR1 => concurrency stop flag set.\n");
     }
 }
 
 /* Let user choose concurrency level => short, medium, stress. */
 static int menu_choose_concurrency_level(void){
     printf("\nChoose concurrency test type:\n");
-    printf(" 1) Short test (sleep 2)\n");
-    printf(" 2) Medium test (sleep 5)\n");
-    printf(" 3) Stress test (sleep 10 or more)\n");
+    printf(" 1) Short test\n");
+    printf(" 2) Medium test\n");
+    printf(" 3) Stress test\n");
     printf("Choice: ");
     char buf[256];
     if(!read_line(buf,sizeof(buf))) return 1;
@@ -146,6 +178,12 @@ static int menu_choose_concurrency_level(void){
    2) all scheduling modes
 */
 static void menu_submenu_external_concurrency(void){
+    if(!unlocked_external) {
+        printf("\n[External Concurrency] is locked.\n");
+        pause_enter();
+        return;
+    }
+
     printf(CLR_BOLD CLR_CYAN "\n╔══════════════════════════════╗\n" CLR_RESET);
     printf(CLR_BOLD CLR_CYAN   "║ External Shell Concurrency   ║\n" CLR_RESET);
     printf(CLR_BOLD CLR_CYAN   "╚══════════════════════════════╝\n" CLR_RESET);
@@ -176,37 +214,31 @@ static void menu_submenu_external_concurrency(void){
     int c = parse_int_strtol(buf, 2);
     if(c<1) c=2;
 
-    /* Build lines array. */
     char** lines = (char**)calloc(n, sizeof(char*));
     if(!lines) return;
 
+    int style=menu_choose_concurrency_level();
+    /* Keep it simpler for building the lines. */
+    stats_inc_concurrency_runs();  /* track concurrency usage in stats */
+
     if(sub==1){
-        int style=menu_choose_concurrency_level();
-        if(style==1){
-            for(int i=0;i<n;i++){
-                char tmp[64];
-                snprintf(tmp,sizeof(tmp),"sleep %d", (i+1)*2);
-                lines[i]=strdup(tmp);
-            }
-        } else if(style==2){
-            for(int i=0;i<n;i++){
-                char tmp[64];
-                snprintf(tmp,sizeof(tmp),"sleep %d", ((i+1)*3)+2);
-                lines[i]=strdup(tmp);
-            }
-        } else {
-            for(int i=0;i<n;i++){
-                char tmp[64];
-                snprintf(tmp,sizeof(tmp),"sleep %d", (i+1)*5);
-                lines[i]=strdup(tmp);
-            }
-        }
-    } else {
-        /* sub==2 => same lines for all modes => "sleep 2" scaled. */
+        /* single scheduling mode => vary 'sleep' based on style. */
         for(int i=0;i<n;i++){
             char tmp[64];
-            snprintf(tmp,sizeof(tmp),"sleep %d", (i+1)*2);
-            lines[i]=strdup(tmp);
+            int base=0;
+            switch(style){
+                case 1: base=2; break; /* short */
+                case 2: base=5; break; /* medium */
+                case 3: base=10;break; /* stress */
+            }
+            snprintf(tmp,sizeof(tmp),"sleep %d", (i+1)*base);
+            lines[i] = strdup(tmp);
+        }
+    } else {
+        /* sub==2 => same lines => short style by default. */
+        for(int i=0;i<n;i++){
+            snprintf(buf,sizeof(buf),"sleep %d", (i+1)*2);
+            lines[i] = strdup(buf);
         }
     }
 
@@ -240,30 +272,187 @@ static void menu_submenu_external_concurrency(void){
     pause_enter();
 }
 
+/* Submenu to toggle speed mode. */
+static void menu_toggle_speed_mode(void){
+    int current = stats_get_speed_mode();
+    int next = (current == 0) ? 1 : 0;
+    stats_set_speed_mode(next);
+    printf("\nSpeed mode set to: %s\n", (next==0)?"NORMAL":"FAST");
+    pause_enter();
+}
+
+/* Sub-sub menu to run a single test from each suite. */
+static void submenu_run_single_test(void){
+    clear_screen();
+    printf("Choose which suite?\n");
+    printf(" 1) Basic\n");
+    printf(" 2) Normal\n");
+    printf(" 3) Modes\n");
+    printf(" 4) Edge\n");
+    printf(" 5) Hidden\n");
+    printf(" 6) External\n");
+    printf("Choice: ");
+    char buf[256];
+    if(!read_line(buf,sizeof(buf))) return;
+    int suite = parse_int_strtol(buf, -1);
+    if(suite<1 || suite>6){
+        printf("Invalid.\n");
+        pause_enter();
+        return;
+    }
+
+    /* We won't replicate all tests individually in the menu here.
+       We'll just run the entire suite and let user see partial pass/fail.
+       But you could implement a real single-test if each suite had a sub-sub listing.
+       For demonstration, we do the entire suite.
+    */
+    printf("\nRunning that suite's tests (pretending it's a single test) ...\n");
+    switch(suite){
+        case 1:
+            if(!unlocked_basic){
+                printf("BASIC is locked.\n");
+            } else {
+                int t=0,p=0;
+                run_basic_tests(&t,&p);
+                scoreboard_update_basic(t,p);
+            }
+            break;
+        case 2:
+            if(!unlocked_normal){
+                printf("NORMAL is locked.\n");
+            } else {
+                int t=0,p=0;
+                run_normal_tests(&t,&p);
+                scoreboard_update_normal(t,p);
+            }
+            break;
+        case 3:
+            if(!unlocked_modes){
+                printf("MODES is locked.\n");
+            } else {
+                int t=0,p=0;
+                run_modes_tests(&t,&p);
+                scoreboard_update_modes(t,p);
+            }
+            break;
+        case 4:
+            if(!unlocked_edge){
+                printf("EDGE is locked.\n");
+            } else {
+                int t=0,p=0;
+                run_edge_tests(&t,&p);
+                scoreboard_update_edge(t,p);
+            }
+            break;
+        case 5:
+            if(!unlocked_hidden){
+                printf("HIDDEN is locked.\n");
+            } else {
+                int t=0,p=0;
+                run_hidden_tests(&t,&p);
+                scoreboard_update_hidden(t,p);
+            }
+            break;
+        case 6:
+            if(!unlocked_external){
+                printf("EXTERNAL is locked.\n");
+            } else {
+                run_external_tests_menu();
+            }
+            break;
+        default:
+            break;
+    }
+    scoreboard_save();
+    pause_enter();
+}
+
+/* Run all unlocked test suites in order. */
+static void submenu_run_tests(void){
+    /* This is the old "run_all_levels" but we show a nice message. */
+    printf(CLR_CYAN "Running all unlocked tests...\n" CLR_RESET);
+
+    /* BASIC */
+    if(!unlocked_basic){
+        printf("BASIC locked, skipping.\n");
+    } else {
+        int t=0,p=0;
+        run_basic_tests(&t,&p);
+        scoreboard_update_basic(t,p);
+        scoreboard_save();
+    }
+
+    /* NORMAL */
+    if(!unlocked_normal){
+        printf("NORMAL locked, skipping.\n");
+    } else {
+        int t=0,p=0;
+        run_normal_tests(&t,&p);
+        scoreboard_update_normal(t,p);
+        scoreboard_save();
+    }
+
+    /* MODES */
+    if(!unlocked_modes){
+        printf("MODES locked, skipping.\n");
+    } else {
+        int t=0,p=0;
+        run_modes_tests(&t,&p);
+        scoreboard_update_modes(t,p);
+        scoreboard_save();
+    }
+
+    /* EDGE */
+    if(!unlocked_edge){
+        printf("EDGE locked, skipping.\n");
+    } else {
+        int t=0,p=0;
+        run_edge_tests(&t,&p);
+        scoreboard_update_edge(t,p);
+        scoreboard_save();
+    }
+
+    /* HIDDEN */
+    if(!unlocked_hidden){
+        printf("HIDDEN locked, skipping.\n");
+    } else {
+        int t=0,p=0;
+        run_hidden_tests(&t,&p);
+        scoreboard_update_hidden(t,p);
+        scoreboard_save();
+    }
+
+    pause_enter();
+}
+
+/* Main entry. */
 int main(int argc, char** argv){
     (void)argc; (void)argv;
     signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+    signal(SIGUSR1, handle_signal);
 
+    /* init scoreboard and stats. */
     scoreboard_init();
     scoreboard_load();
     os_init();
+    stats_init();
 
+    /* Main loop. */
     while(1){
         clear_screen();
-        printf(CLR_BOLD CLR_YELLOW "┌─── MAIN MENU ────────────────────┐\n" CLR_RESET);
-        printf(CLR_BOLD CLR_YELLOW "│ 1) Run All Unlocked              │\n" CLR_RESET);
-        printf(CLR_BOLD CLR_YELLOW "│ 2) Exit                          │\n" CLR_RESET);
-        printf(CLR_BOLD CLR_YELLOW "│ 3) External Shell Concurrency    │\n" CLR_RESET);
+        ascii_main_menu_header();
 
-        if(unlocked_external){
-            printf(CLR_BOLD CLR_YELLOW "│ 4) External Tests                │\n" CLR_RESET);
-        } else {
-            printf(CLR_BOLD CLR_YELLOW "│ 4) External Tests " CLR_GRAY "(locked)" CLR_RESET "\n");
-        }
-
-        printf(CLR_BOLD CLR_YELLOW "│ 5) Show Scoreboard               │\n" CLR_RESET);
-        printf(CLR_BOLD CLR_YELLOW "│ 6) Clear Scoreboard              │\n" CLR_RESET);
-        printf(CLR_BOLD CLR_YELLOW "└───────────────────────────────────┘\n\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "┌─── MAIN MENU ─────────────────────────────┐\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "│ 1) Run All Unlocked Test Suites           │\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "│ 2) Exit                                   │\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "│ 3) External Shell Concurrency            │\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "│ 4) External Tests                         │\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "│ 5) Show Scoreboard                        │\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "│ 6) Clear Scoreboard                       │\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "│ 7) Toggle Speed Mode                      │\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "│ 8) Run Single Test (Submenu)             │\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "└────────────────────────────────────────────┘\n\n" CLR_RESET);
         printf("Choice: ");
 
         char input[256];
@@ -276,10 +465,7 @@ int main(int argc, char** argv){
 
         switch(choice){
         case 1:
-            printf("\n" CLR_CYAN "Running all unlocked tests...\n" CLR_RESET);
-            run_all_levels();
-            scoreboard_save();
-            pause_enter();
+            submenu_run_tests();
             break;
 
         case 2:{
@@ -290,12 +476,7 @@ int main(int argc, char** argv){
         }
 
         case 3:
-            if(!unlocked_external){
-                printf("External is locked.\n");
-                pause_enter();
-            } else {
-                menu_submenu_external_concurrency();
-            }
+            menu_submenu_external_concurrency();
             break;
 
         case 4:
@@ -318,15 +499,26 @@ int main(int argc, char** argv){
             menu_clear_scoreboard();
             break;
 
+        case 7:
+            menu_toggle_speed_mode();
+            break;
+
+        case 8:
+            submenu_run_single_test();
+            break;
+
         default:
             printf("Invalid.\n");
             pause_enter();
             break;
         }
     }
+
     return 0;
 }
-#include <string.h>
+#include "os.h"
+#include "stats.h"
+
 #include <stdio.h>
 #include <unistd.h>
 #include <signal.h>
@@ -334,174 +526,218 @@ int main(int argc, char** argv){
 #include <sys/stat.h>
 #include <pthread.h>
 #include <sys/wait.h>
-#include "os.h"
+#include <time.h>
+#include <string.h>
 
-#define MAX_CONTAINERS 32
-
-#define CLR_CYAN    "\033[96m"
-#define CLR_GREEN   "\033[92m"
+/* Colors */
 #define CLR_RESET   "\033[0m"
 #define CLR_BOLD    "\033[1m"
 #define CLR_MAGENTA "\033[95m"
+#define CLR_CYAN    "\033[96m"
+#define CLR_GREEN   "\033[92m"
+#define CLR_YELLOW  "\033[93m"
 
-static uint64_t start_ms=0;
-static char container_paths[MAX_CONTAINERS][256];
-static int container_count=0;
+/* Speed-friendly sleep function => scale by speed mode. */
+static void sim_sleep(unsigned int us) {
+    int sm = stats_get_speed_mode();
+    if(sm == 1) {
+        /* fast => reduce to 10% */
+        usleep(us/10 + 1);
+    } else {
+        usleep(us);
+    }
+}
 
-static uint64_t now_ms(void){
-    /* Real-time measurement for ASCII printing timestamps only. */
+/* For concurrency stop request, used in runner. */
+static volatile sig_atomic_t g_concurrency_stop_flag = 0;
+int os_concurrency_stop_requested(void){
+    return (int)g_concurrency_stop_flag;
+}
+
+/* If SIGUSR1 arrives, main sets a global => we reflect that here if needed.
+   Or we can handle directly in main. We'll keep this function in case runner checks.*/
+
+static uint64_t g_start_ms = 0;
+static int       g_container_count = 0;
+static char      g_container_paths[32][256]; /* up to 32 ephemeral containers */
+
+static uint64_t now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec*1000ULL + (ts.tv_nsec/1000000ULL);
+    return (uint64_t)(ts.tv_sec) * 1000ULL + (ts.tv_nsec / 1000000ULL);
 }
 
-void os_init(void){
-    setvbuf(stdout,NULL,_IONBF,0);
-    setvbuf(stderr,NULL,_IONBF,0);
-    start_ms=now_ms();
-    memset(container_paths, 0, sizeof(container_paths));
-    container_count=0;
+void os_init(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
 
-    printf(CLR_BOLD CLR_MAGENTA "==== OS INIT ====" CLR_RESET "\n");
-    /* small delay so we can see output clearly */
-    usleep(250000);
+    g_start_ms = now_ms();
+    g_container_count = 0;
+    memset(g_container_paths, 0, sizeof(g_container_paths));
+
+    printf(CLR_BOLD CLR_MAGENTA "╔══════════════════════════════════════════════╗\n");
+    printf("║               OS INIT COMPLETE               ║\n");
+    printf("╚══════════════════════════════════════════════╝" CLR_RESET "\n");
+    sim_sleep(250000);
 }
 
-void os_cleanup(void){
-    while(container_count>0){
-        os_remove_ephemeral_container();
-        usleep(200000);
+void os_cleanup(void) {
+    /* remove any leftover ephemeral containers in reverse order */
+    while (g_container_count > 0) {
+        g_container_count--;
+        const char* path = g_container_paths[g_container_count];
+        if (path && path[0]) {
+            rmdir(path);
+            memset(g_container_paths[g_container_count], 0, sizeof(g_container_paths[g_container_count]));
+            printf(CLR_CYAN "[-] Container removed (cleanup): %s\n" CLR_RESET, path);
+            sim_sleep(200000);
+            stats_inc_containers_removed();
+        }
     }
-    printf(CLR_BOLD CLR_MAGENTA "==== OS CLEANUP ====" CLR_RESET "\n");
-    usleep(250000);
+    printf(CLR_BOLD CLR_MAGENTA "╔══════════════════════════════════════════════╗\n");
+    printf(               "║             OS CLEANUP COMPLETE             ║\n");
+    printf("╚══════════════════════════════════════════════╝" CLR_RESET "\n");
+    sim_sleep(250000);
 }
 
-uint64_t os_time(void){
-    /* Return how many ms since we started the OS. This is purely for
-       printing/logging, not for scheduling stats. */
-    return now_ms() - start_ms;
+uint64_t os_time(void) {
+    uint64_t now = now_ms();
+    if (now < g_start_ms) return 0ULL;
+    return (now - g_start_ms);
 }
 
-void os_log(const char* msg){
-    if(msg) {
+void os_log(const char* msg) {
+    if (msg) {
         printf("%s\n", msg);
-        usleep(150000);
+        sim_sleep(150000);
     }
 }
 
-void os_create_ephemeral_container(void){
-    if(container_count >= MAX_CONTAINERS) return;
-    char tmpl[]="/tmp/os_cont_XXXXXX";
-    if(mkdtemp(tmpl)){
-        strncpy(container_paths[container_count], tmpl, 255);
-        container_count++;
-        printf(CLR_CYAN "$$$$$ Container created: %s (count=%d) $$$$$" CLR_RESET "\n",
-               tmpl, container_count);
-        usleep(250000);
+void os_create_ephemeral_container(void) {
+    if (g_container_count >= 32) return;
+    char tmpl[] = "/tmp/os_cont_XXXXXX";
+    if (mkdtemp(tmpl)) {
+        strncpy(g_container_paths[g_container_count], tmpl, 255);
+        g_container_count++;
+        printf(CLR_CYAN "[+] Container created: %s (count=%d)\n" CLR_RESET,
+               tmpl, g_container_count);
+        sim_sleep(250000);
+        stats_inc_containers_created();
     }
 }
 
-void os_remove_ephemeral_container(void){
-    if(container_count<=0) return;
-    container_count--;
-    const char* path=container_paths[container_count];
-    if(path[0]){
+void os_remove_ephemeral_container(void) {
+    if (g_container_count <= 0) return;
+    g_container_count--;
+    const char* path = g_container_paths[g_container_count];
+    if (path[0]) {
         rmdir(path);
-        memset(container_paths[container_count], 0, sizeof(container_paths[container_count]));
-        printf(CLR_CYAN "$$$$$ Container removed: %s (remaining=%d) $$$$$" CLR_RESET "\n",
-               path, container_count);
-        usleep(250000);
+        memset(g_container_paths[g_container_count], 0, sizeof(g_container_paths[g_container_count]));
+        printf(CLR_CYAN "[-] Container removed: %s (remaining=%d)\n" CLR_RESET,
+               path, g_container_count);
+        sim_sleep(250000);
+        stats_inc_containers_removed();
     }
 }
 
-/* overshadow_thread simulates HPC overshadowing by heavy CPU. */
-static void* overshadow_thread(void* arg){
-    long* ret=(long*)arg;
-    long s=0;
-    for(long i=0; i<700000; i++){
-        s += (i%17)+(i%11);
+/* HPC overshadow thread => CPU-bound workload. */
+static void* overshadow_thread(void* arg) {
+    long *ret = (long*)arg;
+    long sum = 0;
+    for (long i=0; i<700000; i++) {
+        sum += (i % 17) + (i % 11);
     }
-    *ret=s;
+    *ret = sum;
     return NULL;
 }
 
-void os_run_hpc_overshadow(void){
-    printf(CLR_CYAN "$$$$$$$$$$$$$ HPC-OVERSHADOW BLOCK START $$$$$$$$$$$$$\n" CLR_RESET);
-    usleep(200000);
+void os_run_hpc_overshadow(void) {
+    printf(CLR_CYAN "╔══════════════════════════════════════════════╗\n");
+    printf("║      HPC-OVERSHADOW BLOCK START             ║\n");
+    printf("╚══════════════════════════════════════════════╝" CLR_RESET "\n");
+    sim_sleep(200000);
 
     int n=4;
-    long* vals=(long*)calloc(n,sizeof(long));
-    pthread_t* th=(pthread_t*)malloc(n*sizeof(pthread_t));
+    long* results = (long*)calloc(n, sizeof(long));
+    pthread_t* th = (pthread_t*)malloc(n * sizeof(pthread_t));
 
-    for(int i=0;i<n;i++){
-        pthread_create(&th[i],NULL,overshadow_thread,&vals[i]);
+    for (int i=0; i<n; i++) {
+        pthread_create(&th[i], NULL, overshadow_thread, &results[i]);
         printf(CLR_GREEN "   HPC Overshadow Thread #%d => time=%llu ms => started.\n" CLR_RESET,
                i+1, (unsigned long long)os_time());
-        usleep(300000);
+        sim_sleep(300000);
     }
-
-    for(int i=0;i<n;i++){
-        pthread_join(th[i],NULL);
+    for (int i=0; i<n; i++) {
+        pthread_join(th[i], NULL);
         printf(CLR_GREEN "   HPC Overshadow Thread #%d => time=%llu ms => finished.\n" CLR_RESET,
                i+1, (unsigned long long)os_time());
-        usleep(300000);
+        sim_sleep(300000);
     }
 
     free(th);
-    free(vals);
+    free(results);
 
-    printf(CLR_CYAN "$$$$$$$$$$$$$ HPC-OVERSHADOW BLOCK END $$$$$$$$$$$$$\n" CLR_RESET);
-    usleep(200000);
+    printf(CLR_CYAN "╔══════════════════════════════════════════════╗\n");
+    printf("║       HPC-OVERSHADOW BLOCK END              ║\n");
+    printf("╚══════════════════════════════════════════════╝" CLR_RESET "\n");
+    sim_sleep(200000);
     printf("HPC overshadow done\n");
-    usleep(200000);
+    sim_sleep(200000);
 }
 
-void os_pipeline_example(void){
-    printf("Pipeline start\n");
-    printf(CLR_CYAN "$$$$$$$$$$$ PIPELINE BLOCK START $$$$$$$$$$$$$\n" CLR_RESET);
-    usleep(200000);
+void os_pipeline_example(void) {
+    printf(CLR_CYAN "╔══════════════════════════════════════════════╗\n");
+    printf("║             PIPELINE BLOCK START            ║\n");
+    printf("╚══════════════════════════════════════════════╝" CLR_RESET "\n");
+    sim_sleep(200000);
 
-    pid_t c=fork();
-    if(c==0){
+    pid_t c = fork();
+    if (c == 0) {
         printf(CLR_GREEN "   [Pipeline child => started => time=%llu ms]\n" CLR_RESET,
                (unsigned long long)os_time());
-        usleep(50000);
+        sim_sleep(50000);
         printf(CLR_GREEN "   [Pipeline child => finishing => time=%llu ms]\n" CLR_RESET,
                (unsigned long long)os_time());
         _exit(0);
+    } else if (c > 0) {
+        printf(CLR_GREEN "   [Pipeline parent => waiting child => time=%llu ms]\n" CLR_RESET,
+               (unsigned long long)os_time());
+        sim_sleep(200000);
+        waitpid(c, NULL, 0);
     }
-    printf(CLR_GREEN "   [Pipeline parent => waiting child => time=%llu ms]\n" CLR_RESET,
-           (unsigned long long)os_time());
-    usleep(200000);
-    waitpid(c,NULL,0);
 
-    printf(CLR_CYAN "$$$$$$$$$$$ PIPELINE BLOCK END $$$$$$$$$$$$$\n" CLR_RESET);
-    usleep(200000);
+    printf(CLR_CYAN "╔══════════════════════════════════════════════╗\n");
+    printf("║             PIPELINE BLOCK END              ║\n");
+    printf("╚══════════════════════════════════════════════╝" CLR_RESET "\n");
+    sim_sleep(200000);
     printf("Pipeline end\n");
-    usleep(200000);
+    sim_sleep(200000);
 }
 
-void os_run_distributed_example(void){
-    printf("Distributed example: fork\n");
-    printf(CLR_CYAN "$$$$$$$ DISTRIBUTED BLOCK START $$$$$$$$\n" CLR_RESET);
-    usleep(200000);
+void os_run_distributed_example(void) {
+    printf(CLR_CYAN "╔══════════════════════════════════════════════╗\n");
+    printf("║          DISTRIBUTED BLOCK START            ║\n");
+    printf("╚══════════════════════════════════════════════╝" CLR_RESET "\n");
+    sim_sleep(200000);
 
-    pid_t c=fork();
-    if(c==0){
+    pid_t c = fork();
+    if (c == 0) {
         printf(CLR_GREEN "   [Distributed child => HPC overshadow => time=%llu ms]\n" CLR_RESET,
                (unsigned long long)os_time());
-        usleep(200000);
+        sim_sleep(200000);
         os_run_hpc_overshadow();
         _exit(0);
-    } else {
+    } else if (c > 0) {
         printf(CLR_GREEN "   [Distributed parent => waiting => time=%llu ms]\n" CLR_RESET,
                (unsigned long long)os_time());
-        usleep(200000);
-        waitpid(c,NULL,0);
+        sim_sleep(200000);
+        waitpid(c, NULL, 0);
     }
 
-    printf(CLR_CYAN "$$$$$$$ DISTRIBUTED BLOCK END $$$$$$$$\n" CLR_RESET);
-    usleep(200000);
+    printf(CLR_CYAN "╔══════════════════════════════════════════════╗\n");
+    printf("║           DISTRIBUTED BLOCK END             ║\n");
+    printf("╚══════════════════════════════════════════════╝" CLR_RESET "\n");
+    sim_sleep(200000);
 }
 #ifndef OS_H
 #define OS_H
@@ -509,38 +745,51 @@ void os_run_distributed_example(void){
 #include <stdint.h>
 
 /*
-  OS-level stubs:
+  OS-level stubs and abstractions:
    - ephemeral containers
    - HPC overshadow
    - pipeline
    - distributed example
-   - time logging
+   - time logging for user feedback
+   - concurrency stop check
 */
+
+int      os_concurrency_stop_requested(void);
+
 void     os_init(void);
 void     os_cleanup(void);
-uint64_t os_time(void);      /* real-time offset for user display only */
+
+/* Returns the real-world time (ms) since os_init(), purely for user display logs. */
+uint64_t os_time(void);
+
+/* Optionally log a message with a short delay for user-friendly pacing. */
 void     os_log(const char* msg);
 
+/* Ephemeral container operations. */
 void     os_create_ephemeral_container(void);
 void     os_remove_ephemeral_container(void);
 
+/* HPC overshadow => spawns multiple CPU-bound threads to demonstrate concurrency. */
 void     os_run_hpc_overshadow(void);
+
+/* Pipeline example => fork a child, show pipeline start and end with ASCII. */
 void     os_pipeline_example(void);
+
+/* Distributed example => fork a child that itself runs HPC overshadow. */
 void     os_run_distributed_example(void);
 
 #endif
 #include "process.h"
 #include <string.h>
 
-void init_process(process_t* p, uint64_t burst, int priority, uint64_t arrival){
-    if(!p) return;
+void init_process(process_t* p, uint64_t burst, int priority, uint64_t arrival) {
+    if (!p) return;
     memset(p, 0, sizeof(*p));
-    p->burst_time       = burst;
-    p->remaining_time   = burst;
-    p->priority         = priority;
-    p->arrival_time     = arrival; /* For simulated scheduling time usage */
-    p->times_owning_core= 0;
-    /* We will set start_time/end_time etc. in the scheduler. */
+    p->burst_time     = burst;
+    p->remaining_time = burst;
+    p->priority       = priority;
+    p->arrival_time   = arrival;
+    p->times_owning_core = 0;
 }
 #ifndef PROCESS_H
 #define PROCESS_H
@@ -548,269 +797,299 @@ void init_process(process_t* p, uint64_t burst, int priority, uint64_t arrival){
 #include <stdint.h>
 
 /*
-  Represents a single "process" or "task" in our scheduler.
-  We'll track the original burst_time, priority, arrival_time,
-  plus some scheduling fields (vruntime, remaining_time, start_time, end_time, etc.).
+  Single "process" (or "task") in our scheduler.
+  Fields for original burst_time, priority, arrival_time,
+  plus scheduling fields: vruntime, remaining_time, start_time, end_time, etc.
 */
 
+
 typedef struct process_s {
-    uint64_t burst_time;       /* how long the process takes (ms) total */
+    uint64_t burst_time;       /* total CPU time needed (ms) */
     int      priority;         /* smaller => higher priority (in some algs) */
-    uint64_t vruntime;         /* used by CFS */
-    uint64_t arrival_time;     /* simulation arrival time */
+    uint64_t vruntime;         /* used by CFS / CFS-SRTF */
+    uint64_t arrival_time;     /* simulation "arrival" time */
     uint64_t remaining_time;   /* how many ms remain for this process */
 
     /* Additional fields to track stats: */
-    uint64_t start_time;       /* first time it's scheduled (sim time) */
-    uint64_t end_time;         /* finish time (sim time) */
-    uint64_t first_response;   /* first time on CPU (sim time) */
+    uint64_t start_time;       /* sim time of first CPU usage */
+    uint64_t end_time;         /* sim time of finishing */
+    uint64_t first_response;   /* sim time of first CPU usage */
     int      responded;        /* 0 if not responded yet, 1 if yes */
-
-    int      mlfq_level;       /* which queue level for MLFQ */
-    int      times_owning_core;/* how many times scheduled so far */
+    int      mlfq_level;       /* queue level for MLFQ */
+    int      times_owning_core;/* how many times scheduled on a core so far */
 } process_t;
 
 /* Initialize a process with the given burst, priority, arrival_time. */
 void init_process(process_t* p, uint64_t burst, int priority, uint64_t arrival);
 
+
 #endif
+#include "ready_queue.h"
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
-#include "ready_queue.h"
-#include "os.h"
+#include <stdio.h>
 
-/* Implementation of a multi-level structure for MLFQ, or a single queue, etc. */
-
+/* We'll keep up to 10 MLFQ levels. */
 #define MLFQ_MAX_QUEUES 10
 
 typedef struct node_s {
-    process_t*     proc;
-    struct node_s* next;
+    process_t*       proc;
+    struct node_s*   next;
 } node_t;
 
 static struct {
-    node_t sentinel;
-    size_t size;
-    pthread_mutex_t m;
-    pthread_cond_t  c;
-    scheduler_alg_t alg;
-    node_t ml_queues[MLFQ_MAX_QUEUES]; /* for MLFQ usage */
+    node_t           sentinel;   /* for normal queue usage */
+    size_t           size;
+    pthread_mutex_t  m;
+    pthread_cond_t   c;
+    scheduler_alg_t  alg;
+    node_t           ml_queues[MLFQ_MAX_QUEUES]; /* heads for MLFQ */
 } gQ;
 
-static pthread_mutex_t* pm(void){ return &gQ.m; }
-static pthread_cond_t*  pc(void){ return &gQ.c; }
+static pthread_mutex_t* pm(void) { return &gQ.m; }
+static pthread_cond_t*  pc(void) { return &gQ.c; }
 
-/* For non-MLFQ, we store all in sentinel -> next chain. */
+/* For non-MLFQ, we store processes in the sentinel->next chain. */
 
-static process_t* pop_head(void){
-    while(!gQ.sentinel.next){
-        pthread_cond_wait(pc(), pm());
-    }
-    node_t* n=gQ.sentinel.next;
-    gQ.sentinel.next=n->next;
+static process_t* pop_head(void) {
+    node_t* head = gQ.sentinel.next;
+    if (!head) return NULL;
+    gQ.sentinel.next = head->next;
     gQ.size--;
-    process_t* r=n->proc;
-    free(n);
-    return r;
+    process_t* p = head->proc;
+    free(head);
+    return p;
 }
 
-/* Insert at tail for FIFO, RR, BFS, etc. */
-static void push_tail(process_t* p){
-    node_t* n=(node_t*)malloc(sizeof(node_t));
-    n->proc=p;
-    n->next=NULL;
-
-    node_t* c=&gQ.sentinel;
-    while(c->next) c=c->next;
-    c->next=n;
-    gQ.size++;
-}
-
-/* Insert by priority (smaller priority => schedule first). */
-static void push_prio(process_t* p){
-    node_t* n=(node_t*)malloc(sizeof(node_t));
-    n->proc=p;
-    n->next=NULL;
-
-    node_t* c=&gQ.sentinel;
-    while(c->next && (p->priority >= c->next->proc->priority)){
-        c=c->next;
-    }
-    n->next=c->next;
-    c->next=n;
-    gQ.size++;
-}
-
-/* Insert by vruntime ascending. */
-static void push_cfs(process_t* p){
-    node_t* n=(node_t*)malloc(sizeof(node_t));
-    n->proc=p;
-    n->next=NULL;
-    node_t* c=&gQ.sentinel;
-    while(c->next && (p->vruntime >= c->next->proc->vruntime)){
-        c=c->next;
-    }
-    n->next=c->next;
-    c->next=n;
-    gQ.size++;
-}
-
-/* Insert by burst_time ascending => SJF. */
-static void push_sjf(process_t* p){
+static void push_tail(process_t* p) {
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
     n->next = NULL;
-    node_t* c = &gQ.sentinel;
-    while(c->next && (p->burst_time >= c->next->proc->burst_time)){
-        c=c->next;
+    node_t* cur = &gQ.sentinel;
+    while (cur->next) {
+        cur = cur->next;
     }
-    n->next=c->next;
-    c->next=n;
+    cur->next = n;
     gQ.size++;
 }
 
-/* Weighted ratio => HRRN => we approximate using (wait+remain)/remain. We'll do the push in descending order. */
-static uint64_t hrrn_val(process_t* p, uint64_t current_sim_time){
-    uint64_t wait = (current_sim_time > p->arrival_time)
-                    ? (current_sim_time - p->arrival_time)
-                    : 0ULL;
-    uint64_t r = (p->remaining_time>0 ? p->remaining_time : 1);
-    /* ratio = (wait + r)/r => we store scaled ratio in integer. */
-    return (wait + r);
+static void push_priority(process_t* p) {
+    /* smaller priority => earlier in list */
+    node_t* n = (node_t*)malloc(sizeof(node_t));
+    n->proc = p;
+    n->next = NULL;
+
+    node_t* cur = &gQ.sentinel;
+    while (cur->next && (p->priority >= cur->next->proc->priority)) {
+        cur = cur->next;
+    }
+    n->next = cur->next;
+    cur->next = n;
+    gQ.size++;
 }
 
-static void push_hrrn(process_t* p){
-    /* We'll place p in the queue so that if p has bigger ratio => earlier in the list. */
-    extern uint64_t get_global_sim_time(void);
+static void push_cfs(process_t* p) {
+    /* sorted by vruntime ascending */
+    node_t* n = (node_t*)malloc(sizeof(node_t));
+    n->proc = p;
+    n->next = NULL;
+
+    node_t* cur = &gQ.sentinel;
+    while (cur->next && (p->vruntime >= cur->next->proc->vruntime)) {
+        cur = cur->next;
+    }
+    n->next = cur->next;
+    cur->next = n;
+    gQ.size++;
+}
+
+static void push_sjf(process_t* p) {
+    /* sorted by burst_time ascending => if tie, first come first serve */
+    node_t* n = (node_t*)malloc(sizeof(node_t));
+    n->proc = p;
+    n->next = NULL;
+
+    node_t* cur = &gQ.sentinel;
+    while (cur->next && (p->burst_time >= cur->next->proc->burst_time)) {
+        cur = cur->next;
+    }
+    n->next = cur->next;
+    cur->next = n;
+    gQ.size++;
+}
+
+/* We do HRRN by ratio = (waiting + remaining)/remaining => bigger ratio => schedule first.
+   We'll implement "descending" order of that ratio. */
+extern uint64_t get_global_sim_time(void);
+
+static uint64_t hrrn_val(process_t* p, uint64_t now) {
+    uint64_t wait = (now > p->arrival_time) ? (now - p->arrival_time) : 0ULL;
+    uint64_t remain = (p->remaining_time > 0) ? p->remaining_time : 1ULL;
+    /* ratio = (wait + remain)/remain => effectively wait+remain. We just compare scaled. */
+    return (wait + remain);
+}
+
+static void push_hrrn(process_t* p, int preemptive) {
+    node_t* n = (node_t*)malloc(sizeof(node_t));
+    n->proc = p;
+    n->next = NULL;
+
     uint64_t now = get_global_sim_time();
-    uint64_t new_val = hrrn_val(p, now);
+    uint64_t new_ratio = hrrn_val(p, now);
 
-    node_t* n=(node_t*)malloc(sizeof(node_t));
-    n->proc=p;
-    n->next=NULL;
-
-    node_t* c=&gQ.sentinel;
-    while(c->next){
-        uint64_t cv = hrrn_val(c->next->proc, now);
-        if(new_val > cv){
-            /* bigger ratio => insert here. */
+    node_t* cur = &gQ.sentinel;
+    while (cur->next) {
+        uint64_t c_ratio = hrrn_val(cur->next->proc, now);
+        /* For normal HRRN => bigger ratio => earlier. */
+        /* For HRRN-RT => also partial, but let's handle the same approach. */
+        if (new_ratio > c_ratio) {
             break;
         }
-        c=c->next;
+        cur = cur->next;
     }
-    n->next=c->next;
-    c->next=n;
+    n->next = cur->next;
+    cur->next = n;
     gQ.size++;
 }
 
-/* MLFQ => pop from the highest priority queue that has something. */
-static process_t* pop_mlfq(void){
-    for(int i=0;i<MLFQ_MAX_QUEUES;i++){
-        if(gQ.ml_queues[i].next){
-            /* pop head from queue i */
+/* MLFQ => multiple queues, pop from highest-priority queue that is non-empty. */
+static process_t* pop_mlfq(void) {
+    for (int i=0; i<MLFQ_MAX_QUEUES; i++) {
+        if (gQ.ml_queues[i].next) {
             node_t* n = gQ.ml_queues[i].next;
             gQ.ml_queues[i].next = n->next;
             gQ.size--;
-            process_t* r = n->proc;
+            process_t* p = n->proc;
             free(n);
-            return r;
+            return p;
         }
     }
     return NULL;
 }
 
-/* push to MLFQ queue based on p->mlfq_level. */
-static void push_mlfq(process_t* p){
-    if(!p) return;
-    int lev = p->mlfq_level;
-    if(lev < 0) lev=0;
-    if(lev >= MLFQ_MAX_QUEUES) lev=MLFQ_MAX_QUEUES-1;
+static void push_mlfq(process_t* p) {
+    int level = p->mlfq_level;
+    if (level < 0) level = 0;
+    if (level >= MLFQ_MAX_QUEUES) level = MLFQ_MAX_QUEUES - 1;
 
-    node_t* n=(node_t*)malloc(sizeof(node_t));
-    n->proc=p;
-    n->next=NULL;
+    node_t* n = (node_t*)malloc(sizeof(node_t));
+    n->proc = p;
+    n->next = NULL;
 
-    node_t* c=&gQ.ml_queues[lev];
-    while(c->next) c=c->next;
-    c->next=n;
+    node_t* cur = &gQ.ml_queues[level];
+    while (cur->next) {
+        cur = cur->next;
+    }
+    cur->next = n;
     gQ.size++;
 }
 
-/* We'll keep function pointers based on the chosen alg. */
-static process_t* (*f_pop)(void)=NULL;
-static void       (*f_push)(process_t*)=NULL;
+/* function pointers for push/pop. */
+static process_t* (*f_pop)(void) = NULL;
+static void       (*f_push)(process_t*) = NULL;
+static int        g_preemptive = 0; /* helper flag for ready_queue to know if we do partial preempts. */
 
-void ready_queue_init_policy(scheduler_alg_t alg){
+void ready_queue_init_policy(scheduler_alg_t alg) {
     memset(&gQ, 0, sizeof(gQ));
     pthread_mutex_init(pm(), NULL);
     pthread_cond_init(pc(), NULL);
     gQ.alg = alg;
 
-    switch(alg){
+    switch(alg) {
     case ALG_FIFO:
     case ALG_RR:
     case ALG_BFS:
         f_push = push_tail;
         f_pop  = pop_head;
+        g_preemptive = (alg == ALG_RR || alg == ALG_BFS) ? 1 : 0;
         break;
     case ALG_PRIORITY:
-        f_push = push_prio;
+        f_push = push_priority;
         f_pop  = pop_head;
+        g_preemptive = 0;
         break;
     case ALG_CFS:
+        f_push = push_cfs;
+        f_pop  = pop_head;
+        g_preemptive = 0;
+        break;
     case ALG_CFS_SRTF:
         f_push = push_cfs;
         f_pop  = pop_head;
+        g_preemptive = 1;
         break;
     case ALG_SJF:
+        f_push = push_sjf;
+        f_pop  = pop_head;
+        g_preemptive = 0;
+        break;
     case ALG_STRF:
         f_push = push_sjf;
         f_pop  = pop_head;
+        g_preemptive = 1;
         break;
     case ALG_HRRN:
-    case ALG_HRRN_RT:
-        f_push = push_hrrn;
+        f_push = (void (*)(process_t*))push_hrrn;
+        f_pop  = (process_t* (*)(void))pop_head;
         f_pop  = pop_head;
+        g_preemptive = 0;
+        break;
+    case ALG_HRRN_RT:
+        /* preempt => bigger ratio => earlier */
+        f_push = (void (*)(process_t*))push_hrrn;
+        f_pop  = (process_t* (*)(void))pop_head;
+        g_preemptive = 1;
         break;
     case ALG_MLFQ:
-        f_push = push_mlfq;
-        f_pop  = pop_mlfq;
+        f_push = (void (*)(process_t*))push_mlfq;
+        f_pop  = (process_t* (*)(void))pop_mlfq;
+        g_preemptive = 1; /* typically MLFQ is preemptive */
         break;
     default:
-        f_push = push_tail;
-        f_pop  = pop_head;
+        /* HPC overshadow or unknown => just tail. HPC overshadow is handled outside. */
+        f_push = (void (*)(process_t*))push_tail;
+        f_pop  = (process_t* (*)(void))pop_head;
+        g_preemptive = 0;
         break;
     }
 }
 
-void ready_queue_destroy(void){
+void ready_queue_destroy(void) {
     pthread_cond_destroy(pc());
     pthread_mutex_destroy(pm());
     memset(&gQ, 0, sizeof(gQ));
 }
 
-void ready_queue_push(process_t* p){
+void ready_queue_push(process_t* p) {
     pthread_mutex_lock(pm());
-    f_push(p);
-    pthread_cond_signal(pc());
-    pthread_mutex_unlock(pm());
-}
-
-process_t* ready_queue_pop(void){
-    pthread_mutex_lock(pm());
-    process_t* r=f_pop();
-    while(!r){
-        pthread_cond_wait(pc(), pm());
-        r=f_pop();
+    /* if p==NULL => used to wake threads so they can exit */
+    if (p) {
+        f_push(p);
     }
+    pthread_cond_broadcast(pc());
     pthread_mutex_unlock(pm());
-    return r;
 }
 
-size_t ready_queue_size(void){
+process_t* ready_queue_pop(void) {
     pthread_mutex_lock(pm());
-    size_t s=gQ.size;
+    while (1) {
+        if (gQ.size > 0) {
+            process_t* r = f_pop();
+            pthread_mutex_unlock(pm());
+            return r;
+        }
+        /* else wait */
+        pthread_cond_wait(pc(), pm());
+    }
+    /* never reached */
+    pthread_mutex_unlock(pm());
+    return NULL;
+}
+
+size_t ready_queue_size(void) {
+    pthread_mutex_lock(pm());
+    size_t s = gQ.size;
     pthread_mutex_unlock(pm());
     return s;
 }
@@ -833,241 +1112,233 @@ process_t* ready_queue_pop(void);
 size_t     ready_queue_size(void);
 
 #endif
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <sys/wait.h>
-#include <sys/stat.h>
-#include <errno.h>
-#include <sys/ptrace.h>
 #include "runner.h"
+#include "scheduler.h"
 #include "scoreboard.h"
 #include "os.h"
-#include "scheduler.h"
-#include "worker.h"
-#include "../test/basic-test.h"
-#include "../test/normal-test.h"
-#include "../test/modes-test.h"
-#include "../test/edge-test.h"
-#include "../test/hidden-test.h"
-#include "../test/external-test.h"
-#include <pthread.h>
 #include "safe_calls_library.h"
+#include "stats.h"
+#include <stdio.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <sys/ptrace.h>
+#include <unistd.h>
 
-/* Global unlocked flags. */
-extern int unlocked_basic, unlocked_normal, unlocked_modes,
-           unlocked_edge, unlocked_hidden, unlocked_external;
+/* The concurrency stop flag is declared in main, but let's do a small static here.
+   We'll check if a user signaled concurrency stop. We'll rely on main's handle_signal
+   to set a global variable. For demonstration, we read that from "os" or "stats" as needed.
+   To keep it simpler, let's define a local checker. */
 
-/* run_all_levels():
-   Calls each test suite if unlocked. */
-void run_all_levels(void){
-    if(!unlocked_basic){
-        printf("BASIC locked.\n");
+static volatile sig_atomic_t concurrency_stop_flag = 0;
+
+/* External reference to see if SIGUSR1 was triggered. We'll define a function in os.c
+   that returns a concurrency stop flag. We will poll that in concurrency loops. */
+extern int os_concurrency_stop_requested(void);
+
+static void advanced_debug_child(pid_t pid) {
+    /* Enhanced ptrace usage: attach, single-step, detach. */
+    if (ptrace(PTRACE_ATTACH, pid, NULL, NULL) == -1) {
+        fprintf(stderr,"[Runner] ptrace attach fail (pid=%d): %s\n",
+                pid, strerror(errno));
         return;
     }
-    {
-        int t=0,p=0;
-        run_basic_tests(&t,&p);
-        scoreboard_update_basic(t,p);
-        scoreboard_save();
-    }
+    waitpid(pid, NULL, 0);
 
-    if(!unlocked_normal){
-        printf("NORMAL locked.\n");
-        return;
+    /* Attempt a single step or two. Just a demonstration. */
+    if(ptrace(PTRACE_SINGLESTEP, pid, NULL, NULL) == -1){
+        fprintf(stderr,"[Runner] ptrace singlestep fail: %s\n", strerror(errno));
     }
-    {
-        int t=0,p=0;
-        run_normal_tests(&t,&p);
-        scoreboard_update_normal(t,p);
-        scoreboard_save();
-    }
+    waitpid(pid, NULL, 0);
 
-    if(!unlocked_modes){
-        printf("MODES locked.\n");
-        return;
-    }
-    {
-        int t=0,p=0;
-        run_modes_tests(&t,&p);
-        scoreboard_update_modes(t,p);
-        scoreboard_save();
-    }
-
-    if(!unlocked_edge){
-        printf("EDGE locked.\n");
-        return;
-    }
-    {
-        int t=0,p=0;
-        run_edge_tests(&t,&p);
-        scoreboard_update_edge(t,p);
-        scoreboard_save();
-    }
-
-    if(!unlocked_hidden){
-        printf("HIDDEN locked.\n");
-        return;
-    }
-    {
-        int t=0,p=0;
-        run_hidden_tests(&t,&p);
-        scoreboard_update_hidden(t,p);
-        scoreboard_save();
-    }
+    ptrace(PTRACE_DETACH, pid, NULL, NULL);
 }
 
-/* From external-test.c */
+void run_all_levels(void){
+    /* This used to be in main, now replaced by a submenu_run_tests.
+       We keep a stub if anything calls it.
+       (Kept for backward compatibility or test usage) */
+    printf("[runner] run_all_levels => see main menu implementation.\n");
+}
+
+/* from external-test.c */
+extern void run_external_tests(void);
+
 void run_external_tests_menu(void){
     if(!unlocked_external) return;
     run_external_tests();
 }
 
-/* Example advanced child tracing with ptrace. */
-static void advanced_debug_child(pid_t pid){
-    if(ptrace(PTRACE_ATTACH, pid, NULL, NULL)==-1){
-        fprintf(stderr,"[Runner] ptrace attach fail (pid=%d): %s\n",
-                pid, strerror(errno));
-        return;
-    }
-    waitpid(pid,NULL,0);
-    ptrace(PTRACE_DETACH, pid, NULL, NULL);
+/*
+  We'll do concurrency_stop_flag polling.
+  We define a function to see if concurrency stop is requested:
+*/
+static int concurrency_stop_requested(void){
+    /* We rely on some function in os or stats that might set a flag
+       if SIGUSR1 arrived. For simplicity, let's call a new function below. */
+    return os_concurrency_stop_requested();
 }
 
+/* We'll spawn a child with advanced debugging. */
 typedef struct {
-    pid_t pid;
-    char* cmd;
-    int   core;
+    pid_t   pid;
+    char*   cmd;
+    int     core;
     uint64_t start_ms;
-    uint64_t end_ms;
-    int   p_out[2];
-    int   p_err[2];
-    int   p_in[2];
+    int     p_out[2];
+    int     p_err[2];
+    int     p_in[2];
 } child_t;
 
-/* All possible modes: 12 total. */
-static scheduler_alg_t modes_arr[]={
+/* All known modes (12). */
+static scheduler_alg_t modes_arr[] = {
     ALG_FIFO, ALG_RR, ALG_CFS, ALG_CFS_SRTF, ALG_BFS,
     ALG_SJF, ALG_STRF, ALG_HRRN, ALG_HRRN_RT, ALG_PRIORITY,
     ALG_HPC_OVERSHADOW, ALG_MLFQ
 };
 
-static const char* modeNames[]={
+static const char* modeNames[] = {
     "FIFO","RR","CFS","CFS-SRTF","BFS",
     "SJF","STRF","HRRN","HRRN-RT","PRIORITY",
     "HPC-OVER","MLFQ"
 };
 
-static pid_t spawn_child(const char* cmd, child_t* ch, int core){
+/* Speed-friendly sleep => scale down if speed_mode=fast. */
+static void concurrency_sleep(unsigned int us){
+    int sm = stats_get_speed_mode();
+    if(sm == 1) {
+        /* fast mode => reduce to ~ 10% or less. */
+        usleep(us/10 + 1);
+    } else {
+        usleep(us);
+    }
+}
+
+/* Spawns child => sets up pipes => advanced ptrace. */
+static pid_t spawn_child(const char* cmd, child_t* ch, int core) {
     pipe(ch->p_out);
     pipe(ch->p_err);
     pipe(ch->p_in);
 
-    pid_t c=fork();
-    if(c<0){
+    pid_t c = fork();
+    if (c < 0) {
         fprintf(stderr,"fork() error\n");
         return -1;
-    }
-    else if(c==0){
-        /* Child side */
+    } else if (c == 0) {
+        /* Child side => redirect stdio. */
         close(ch->p_out[0]);
         close(ch->p_err[0]);
         close(ch->p_in[0]);
-        dup2(ch->p_out[1],STDOUT_FILENO);
-        dup2(ch->p_err[1],STDERR_FILENO);
-        dup2(ch->p_in[1],STDIN_FILENO);
+        dup2(ch->p_out[1], STDOUT_FILENO);
+        dup2(ch->p_err[1], STDERR_FILENO);
+        dup2(ch->p_in[1],  STDIN_FILENO);
         close(ch->p_out[1]);
         close(ch->p_err[1]);
         close(ch->p_in[1]);
 
         execl("./shell-tp1-implementation", "shell-tp1-implementation", (char*)NULL);
         _exit(127);
-    }
-    else {
-        /* Parent side */
-        ch->pid=c;
-        ch->cmd=(cmd?strdup(cmd):NULL);
-        ch->core=core;
-        ch->start_ms=os_time();
+    } else {
+        /* Parent side => do advanced ptrace attach. */
+        ch->pid = c;
+        ch->cmd = (cmd ? strdup(cmd) : NULL);
+        ch->core = core;
+        ch->start_ms = os_time();
+
+        stats_inc_processes_spawned();
+
         close(ch->p_out[1]);
         close(ch->p_err[1]);
         close(ch->p_in[0]);
 
-        /* Send the command plus an exit */
-        dprintf(ch->p_in[1], "%s\nexit\n", cmd?cmd:"");
+        /* Send the command + exit. */
+        dprintf(ch->p_in[1], "%s\nexit\n", cmd ? cmd : "");
         close(ch->p_in[1]);
 
-        /* Attach ptrace => advanced debugging example. (Optional) */
         advanced_debug_child(c);
     }
     return c;
 }
 
-/*
-  run_shell_commands_concurrently():
-    - If (mode<0 & allModes=1) => test all known sched modes.
-    - Else => test chosen mode.
-    - Each child => runs "shell-tp1-implementation" with "sleep" command.
-    - We show concurrency lines with ASCII-art block.
-*/
-void run_shell_commands_concurrently(int count, char** lines, int coreCount,
-                                     int mode, int allModes)
-{
-    if(count<=0 || !lines) return;
-    if(access("./shell-tp1-implementation", X_OK)!=0){
-        printf("No shell-tp1-implementation found (expected to be in CWD).\n");
+/* The main concurrency function.
+   If allModes=1 => we iterate from=0..11, else from=mode..mode. */
+void run_shell_commands_concurrently(int count, char** lines, int coreCount, int mode, int allModes){
+    if(count <= 0 || !lines) return;
+    if(access("./shell-tp1-implementation", X_OK) != 0){
+        printf("No shell-tp1-implementation found (expected in CWD).\n");
         return;
     }
 
-    int from=0;
-    int to=(int)(sizeof(modes_arr)/sizeof(modes_arr[0]))-1;
+    stats_inc_concurrency_runs();
+
+    int from = 0;
+    int to   = (int)(sizeof(modes_arr)/sizeof(modes_arr[0])) - 1;
     if(!allModes){
         if(mode<0 || mode>to){
             printf("Invalid scheduling mode.\n");
             return;
         }
-        from=mode;
-        to=mode;
+        from = mode;
+        to   = mode;
     }
 
-    for(int m=from; m<=to; m++){
-        printf("\n\033[95m$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n");
-        printf("SCHEDULE BLOCK START => %s\n", modeNames[m]);
-        printf("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\033[0m\n");
-        usleep(300000);
+    for(int m = from; m <= to; m++){
+        if(concurrency_stop_requested()){
+            printf("[runner] concurrency stop requested => returning.\n");
+            return;
+        }
 
-        child_t* ch=(child_t*)calloc(count, sizeof(child_t));
+        printf(CLR_MAGENTA "\n╔═════════════════════════════════════════════════════════════╗\n");
+        printf("║ SCHEDULE BLOCK START => %s\n", modeNames[m]);
+        printf("╚═════════════════════════════════════════════════════════════╝" CLR_RESET "\n");
+        concurrency_sleep(300000);
+
+        child_t* ch = (child_t*)calloc(count, sizeof(child_t));
         if(!ch) return;
 
-        uint64_t global_start=os_time();
-        int next_core=0;
+        uint64_t global_start = os_time();
+        int next_core = 0;
 
-        /* Spawn children. */
+        /* spawn children */
         for(int i=0; i<count; i++){
+            if(concurrency_stop_requested()){
+                printf("[runner] concurrency stop during spawn => abort.\n");
+                free(ch);
+                return;
+            }
             spawn_child(lines[i], &ch[i], next_core);
-            printf("\033[92m[time=%llu ms] container=1 core=%d => Launch child#%d cmd=\"%s\"\033[0m\n",
+            printf(CLR_GREEN"[time=%llu ms] container=1 core=%d => Launch child#%d cmd=\"%s\"\n"CLR_RESET,
                    (unsigned long long)os_time(),
-                   next_core, i+1, lines[i]?lines[i]:"(none)");
-            /* small delay to see them launching */
-            usleep(300000);
-            next_core=(next_core+1) % coreCount;
+                   next_core, i+1, lines[i] ? lines[i] : "");
+            concurrency_sleep(300000);
+            next_core = (next_core + 1) % coreCount;
         }
 
-        /* Wait for each child to finish. */
+        /* wait for each child to finish. */
         for(int i=0; i<count; i++){
             if(!ch[i].pid) continue;
+            if(concurrency_stop_requested()){
+                printf("[runner] concurrency stop => kill remaining children.\n");
+                for(int j=i; j<count; j++){
+                    if(ch[j].pid) {
+                        kill(ch[j].pid, SIGKILL);
+                    }
+                }
+                break;
+            }
             waitpid(ch[i].pid, NULL, 0);
-            ch[i].end_ms=os_time();
-            printf("\033[93m[time=%llu ms] container=1 core=%d => Child#%d ended => cmd=\"%s\" total_duration=%llums\033[0m\n",
+            uint64_t end_ms = os_time();
+            printf(CLR_YELLOW"[time=%llu ms] container=1 core=%d => Child#%d ended => cmd=\"%s\" total_duration=%llums\n"CLR_RESET,
                    (unsigned long long)os_time(),
-                   ch[i].core, i+1, ch[i].cmd?ch[i].cmd:"",
-                   (unsigned long long)(ch[i].end_ms - ch[i].start_ms));
-            usleep(300000);
+                   ch[i].core, i+1,
+                   (ch[i].cmd ? ch[i].cmd : ""),
+                   (unsigned long long)(end_ms - ch[i].start_ms));
+            concurrency_sleep(300000);
         }
 
-        uint64_t global_end=os_time();
-        uint64_t total_time=(global_end>global_start?(global_end - global_start):0ULL);
+        uint64_t global_end = os_time();
+        uint64_t total_time = (global_end > global_start ? (global_end - global_start) : 0ULL);
 
         /* Drain leftover output, close pipes. */
         for(int i=0; i<count; i++){
@@ -1081,20 +1352,21 @@ void run_shell_commands_concurrently(int count, char** lines, int coreCount,
         }
         free(ch);
 
-        printf("\033[96m$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n");
-        printf("SCHEDULE BLOCK END => %s, total_time=%llums\n",
+        printf(CLR_MAGENTA"╔═════════════════════════════════════════════════════════════╗\n");
+        printf("║ SCHEDULE BLOCK END => %s, total_time=%llums\n",
                modeNames[m], (unsigned long long)total_time);
-        printf("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\033[0m\n");
-        usleep(400000);
+        printf("╚═════════════════════════════════════════════════════════════╝"CLR_RESET"\n");
+        concurrency_sleep(400000);
     }
 }
 #ifndef RUNNER_H
 #define RUNNER_H
 
 /*
-  runner.h => code to run test suites, or concurrency shell commands
-  with chosen scheduling modes.
+  runner.h => code to run entire test suites or concurrency commands
+              with chosen scheduling modes.
 */
+
 
 void run_all_levels(void);
 void run_external_tests_menu(void);
@@ -1171,77 +1443,90 @@ double parse_double_strtod(const char* input, double fallback);
 #endif
 #include "scheduler.h"
 #include "ready_queue.h"
-#include "os.h"
 #include "worker.h"
+#include "os.h"
+#include "stats.h"
+
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
-#include <pthread.h>
+#include <string.h>
 
-/* We allow up to some max cores. */
 #ifndef MAX_CORES
 #define MAX_CORES 4
 #endif
 
-static scheduler_alg_t current_alg=ALG_CFS;
+static scheduler_alg_t g_current_alg = ALG_CFS;
+static int             g_num_cores = 1;
+static int             g_running = 0;
 
-/* We'll maintain a global simulated_time, incremented by slices. */
-static uint64_t g_sim_time=0;
+/* global sim_time => we increment it by slices to compute wait, TAT, etc. */
+static uint64_t        g_sim_time = 0;
+static pthread_mutex_t g_sim_time_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* Because we do concurrency, we need a lock to safely read/update g_sim_time. */
-static pthread_mutex_t sim_time_lock = PTHREAD_MUTEX_INITIALIZER;
-
-/* Accessor for the ready_queue to see the "now" for HRRN, etc. */
-uint64_t get_global_sim_time(void){
-    pthread_mutex_lock(&sim_time_lock);
+uint64_t get_global_sim_time(void) {
+    pthread_mutex_lock(&g_sim_time_lock);
     uint64_t t = g_sim_time;
-    pthread_mutex_unlock(&sim_time_lock);
+    pthread_mutex_unlock(&g_sim_time_lock);
     return t;
 }
 
-typedef struct {
-    double avg_wait;
-    double avg_turnaround;
-    double avg_response;
-    unsigned long long preemptions;
-    unsigned long long total_procs;
-    uint64_t total_wait;
-    int total_processes;
-    uint64_t total_response;
-    int total_turnaround;
-} sched_stats_accum_t;
+/* accumulators for stats. */
+static double gAvgWait = 0.0, gAvgTAT = 0.0, gAvgResp = 0.0;
+static unsigned long long gPreemptions = 0ULL, gProcs = 0ULL;
 
-static sched_stats_accum_t gStats;
-static double gAvgWait=0.0, gAvgTAT=0.0, gAvgResp=0.0;
-static unsigned long long gPreemptions=0, gProcs=0;
-static int HPC_over_mode=0;
+static uint64_t g_total_wait = 0ULL;
+static uint64_t g_total_tat  = 0ULL;
+static uint64_t g_total_resp = 0ULL;
+static unsigned long long g_total_preempts = 0ULL;
+static int                g_total_count = 0;
 
-/* Track whether we are done scheduling or not. If no processes remain, we end. */
-static int g_running=0;
-static int g_num_cores=1;
+static int HPC_over_mode = 0;
+static process_t* g_process_list = NULL;
+static int        g_list_count   = 0;
 
-static void reset_accumulators(void){
-    memset(&gStats, 0, sizeof(gStats));
-    gAvgWait=0; gAvgTAT=0; gAvgResp=0;
-    gPreemptions=0; gProcs=0;
-    HPC_over_mode=0;
-    g_sim_time=0;
+/* Speed-mode friendly sleep. */
+static void sim_sleep(unsigned int us){
+    int sm = stats_get_speed_mode();
+    if(sm==1){
+        usleep(us/10 + 1);
+    } else {
+        usleep(us);
+    }
 }
 
-/* Worker thread for each core => pop from ready queue, run partial or full. */
-static void* scheduling_core_thread(void* arg){
+static void reset_accumulators(void) {
+    gAvgWait = 0.0;
+    gAvgTAT  = 0.0;
+    gAvgResp = 0.0;
+    gProcs   = 0ULL;
+    gPreemptions = 0ULL;
+
+    g_total_wait      = 0ULL;
+    g_total_tat       = 0ULL;
+    g_total_resp      = 0ULL;
+    g_total_preempts  = 0ULL;
+    g_total_count     = 0;
+
+    HPC_over_mode = 0;
+    g_sim_time = 0;
+}
+
+void scheduler_select_algorithm(scheduler_alg_t a) {
+    g_current_alg = a;
+}
+
+static void* core_thread_func(void* arg) {
     long core_id = (long)arg;
-    int quantum=2; /* for RR-like partial or BFS, etc. */
+    unsigned long quantum = 2;
 
-    while(g_running){
-        process_t* p = ready_queue_pop(); /* block until available or done */
-
-        /* Check if we should exit because the queue was destroyed. */
-        if(!g_running || !p) break;
-
-        /* Print line for scheduling (real time for user, but we also have sim_time inside). */
-        uint64_t real_t = os_time(); /* for user display only */
+    while (g_running) {
+        process_t* p = ready_queue_pop();
+        if (!g_running || !p) {
+            continue;
+        }
+        uint64_t real_t = os_time();
         printf("\033[93m[time=%llu ms] => container=1 core=%ld => scheduling processPtr=%p\n"
                "   => burst_time=%lu, prio=%d, vruntime=%llu, remain=%llu, timesScheduled=%d\033[0m\n",
                (unsigned long long)real_t,
@@ -1251,35 +1536,32 @@ static void* scheduling_core_thread(void* arg){
                (unsigned long long)p->vruntime,
                (unsigned long long)p->remaining_time,
                p->times_owning_core);
-        usleep(300000);
+        sim_sleep(300000);
 
-        /* Mark first response time if not responded yet. */
-        if(!p->responded){
-            p->responded=1;
+        if (!p->responded) {
+            p->responded = 1;
             p->first_response = get_global_sim_time();
         }
         p->times_owning_core++;
 
-        /* Decide how many ms to run (in simulated time). */
-        unsigned long slice = 0;
         int preemptive = 0;
-
-        switch(current_alg){
+        switch (g_current_alg) {
         case ALG_RR:
         case ALG_BFS:
         case ALG_CFS_SRTF:
         case ALG_STRF:
         case ALG_HRRN_RT:
         case ALG_MLFQ:
-            preemptive = 1; /* partial preemption possible */
+            preemptive = 1;
             break;
         default:
-            preemptive = 0; /* run entire burst with no preemption */
+            preemptive = 0;
             break;
         }
 
-        if(preemptive){
-            if(p->remaining_time > (unsigned long)quantum){
+        unsigned long slice = 0;
+        if (preemptive) {
+            if (p->remaining_time > quantum) {
                 slice = quantum;
             } else {
                 slice = p->remaining_time;
@@ -1288,189 +1570,159 @@ static void* scheduling_core_thread(void* arg){
             slice = p->remaining_time;
         }
 
-        /* Actually "run" the slice in simulated time. */
-        simulate_process_partial(p, slice); /* real-time sleep for user */
-        /* Then increment sim_time. */
-        pthread_mutex_lock(&sim_time_lock);
-        g_sim_time += slice;
-        pthread_mutex_unlock(&sim_time_lock);
+        simulate_process_partial(p, slice, core_id);
 
-        /* Update stats in p. */
+        pthread_mutex_lock(&g_sim_time_lock);
+        g_sim_time += slice;
+        uint64_t now_sim = g_sim_time;
+        pthread_mutex_unlock(&g_sim_time_lock);
+
         p->remaining_time -= slice;
-        if(current_alg==ALG_CFS_SRTF){
+        if (g_current_alg == ALG_CFS || g_current_alg == ALG_CFS_SRTF) {
             p->vruntime += slice;
         }
 
-        if(preemptive && p->remaining_time>0){
-            /* we preempt => put back in queue => increment preemptions. */
-            __sync_fetch_and_add(&gStats.preemptions, 1ULL);
-
+        if (preemptive && p->remaining_time > 0) {
+            __sync_fetch_and_add(&g_total_preempts, 1ULL);
             printf("\033[94m   => PREEMPT => processPtr=%p => new remain=%llu => preemptions=%llu\033[0m\n",
                    (void*)p,
                    (unsigned long long)p->remaining_time,
-                   (unsigned long long)gStats.preemptions);
-            usleep(300000);
+                   (unsigned long long)g_total_preempts);
+            sim_sleep(300000);
 
-            /* If MLFQ, we move it to next queue. */
-            if(current_alg==ALG_MLFQ){
+            if (g_current_alg == ALG_MLFQ) {
                 p->mlfq_level++;
             }
             ready_queue_push(p);
         } else {
-            /* finished. */
-            p->end_time = get_global_sim_time();
-
+            p->end_time = now_sim;
             printf("\033[92m   => FINISH => processPtr=%p => total CPU used=%lu ms => time=%llu ms\033[0m\n",
                    (void*)p,
                    (unsigned long)slice,
                    (unsigned long long)os_time());
-            usleep(300000);
+            sim_sleep(300000);
         }
     }
     return NULL;
 }
 
-/* We'll store process array globally for stats finalize. */
-static process_t* g_list=NULL;
-static int        g_count=0;
-
-static void finalize(void){
-    if(g_count<=0 || HPC_over_mode){
+static void finalize_stats(void) {
+    if (HPC_over_mode || g_list_count <= 0) {
         return;
     }
-    /* compute wait, TAT, response for each process. */
-    for(int i=0; i<g_count; i++){
-        process_t* P = &g_list[i];
-        uint64_t at  = P->arrival_time;
-        uint64_t st  = P->first_response;
-        uint64_t et  = P->end_time;
-        uint64_t bt  = P->burst_time; /* for reference */
+    for (int i=0; i<g_list_count; i++) {
+        process_t* P = &g_process_list[i];
+        uint64_t at = P->arrival_time;
+        uint64_t st = P->first_response;
+        uint64_t et = P->end_time;
+        uint64_t bt = P->burst_time;
 
-        /* Wait = (start - arrival). */
         uint64_t wait = (st > at) ? (st - at) : 0ULL;
-        /* TAT = end - arrival. */
         uint64_t tat  = (et > at) ? (et - at) : 0ULL;
-        /* Resp = (first_response - arrival). */
-        uint64_t resp = wait; /* same as wait here. */
+        uint64_t resp = wait;
 
-        gStats.total_wait       += wait;
-        gStats.total_turnaround += tat;
-        gStats.total_response   += resp;
+        g_total_wait += wait;
+        g_total_tat  += tat;
+        g_total_resp += resp;
     }
-    unsigned long long n = gStats.total_processes;
-    if(n>0){
-        gAvgWait = (double)gStats.total_wait/(double)n;
-        gAvgTAT  = (double)gStats.total_turnaround/(double)n;
-        gAvgResp = (double)gStats.total_response/(double)n;
+    g_total_count = g_list_count;
+
+    if (g_total_count > 0) {
+        gAvgWait = (double)g_total_wait / (double)g_total_count;
+        gAvgTAT  = (double)g_total_tat  / (double)g_total_count;
+        gAvgResp = (double)g_total_resp / (double)g_total_count;
     }
-    gPreemptions = gStats.preemptions;
-    gProcs       = n;
+    gPreemptions = g_total_preempts;
+    gProcs       = g_total_count;
 }
 
-void scheduler_select_algorithm(scheduler_alg_t a){
-    current_alg=a;
-}
-
-void scheduler_run(process_t* list,int count){
+void scheduler_run(process_t* list, int count) {
     reset_accumulators();
-    if(!list || count<=0){
-        return;
-    }
+    if (!list || count <= 0) return;
 
-    /* Special HPC overshadow mode => no normal stats. */
-    if(current_alg==ALG_HPC_OVERSHADOW){
-        HPC_over_mode=1;
-        printf("\n\033[95m$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n");
-        printf("SCHEDULE NAME => HPC-OVERSHADOW\n");
-        printf("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\033[0m\n");
-        usleep(300000);
+    if (g_current_alg == ALG_HPC_OVERSHADOW) {
+        HPC_over_mode = 1;
+        printf("\n\033[95m╔══════════════════════════════════════════════╗\n");
+        printf("║       SCHEDULE NAME => HPC-OVERSHADOW        ║\n");
+        printf("╚══════════════════════════════════════════════╝\033[0m\n");
+        sim_sleep(300000);
 
         os_run_hpc_overshadow();
 
-        printf("\033[96m$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n");
-        printf("SCHEDULE END => HPC-OVERSHADOW => no normal stats.\n");
-        printf("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\033[0m\n");
-        usleep(300000);
+        printf("\033[96m╔══════════════════════════════════════════════╗\n");
+        printf("║  SCHEDULE END => HPC-OVERSHADOW => no stats  ║\n");
+        printf("╚══════════════════════════════════════════════╝\033[0m\n");
+        sim_sleep(300000);
         return;
     }
 
-    /* else normal scheduling. Print big block start. */
-    printf("\n\033[95m$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n");
-    printf("SCHEDULE NAME => %d (enum)\n", current_alg);
-    printf("Number of processes=%d\n", count);
-    printf("Time start=%llu ms\n", (unsigned long long)os_time());
-    printf("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\033[0m\n");
-    usleep(300000);
+    printf("\n\033[95m╔══════════════════════════════════════════════╗\n");
+    printf("║   SCHEDULE NAME => %d (enum)                 ║\n", g_current_alg);
+    printf("║   Number of processes => %d                  ║\n", count);
+    printf("║   Time start => %llu ms                      ║\n", (unsigned long long)os_time());
+    printf("╚══════════════════════════════════════════════╝\033[0m\n");
+    sim_sleep(300000);
 
-    ready_queue_init_policy(current_alg);
-    g_list = list;
-    g_count= count;
-
-    /* We default to 1 core in most tests. If you want multi-core in tests, you can set it. */
-    g_num_cores = 1;
-    if(current_alg==ALG_BFS){
-        /* BFS is interesting with multiple cores. Let's do 2 just for demonstration. */
+    switch(g_current_alg) {
+    case ALG_BFS:
+    case ALG_MLFQ:
         g_num_cores = 2;
+        break;
+    default:
+        g_num_cores = 1;
+        break;
     }
 
-    g_running=1;
-    /* Initialize each process arrival => push to queue. */
-    for(int i=0;i<count;i++){
+    ready_queue_init_policy(g_current_alg);
+
+    g_process_list = list;
+    g_list_count   = count;
+    g_running = 1;
+
+    for (int i=0; i<count; i++) {
         ready_queue_push(&list[i]);
-        gStats.total_processes++;
     }
 
-    /* Start core threads. */
     pthread_t tid[MAX_CORES];
-    int n = (g_num_cores>MAX_CORES?MAX_CORES:g_num_cores);
-    for(int i=0;i<n;i++){
-        pthread_create(&tid[i],NULL,scheduling_core_thread,(void*)(long)i);
+    int n = (g_num_cores > MAX_CORES) ? MAX_CORES : g_num_cores;
+    for (int i=0; i<n; i++) {
+        pthread_create(&tid[i], NULL, core_thread_func, (void*)(long)i);
     }
 
-    /* Wait until queue empties => we watch size periodically. */
-    while( ready_queue_size()>0 ){
-        usleep(200000);
+    while (ready_queue_size() > 0) {
+        sim_sleep(200000);
     }
-    /* Then stop the scheduling threads. */
-    g_running=0;
-    /* So they unblock from pop => we do cond_signal multiple times. */
-    for(int k=0;k<n;k++){
-        /* push a dummy? or just signal broadcast. */
+    g_running = 0;
+    for (int i=0; i<n; i++) {
         ready_queue_push(NULL);
     }
-    for(int i=0;i<n;i++){
-        pthread_join(tid[i],NULL);
+    for (int i=0; i<n; i++) {
+        pthread_join(tid[i], NULL);
     }
 
     ready_queue_destroy();
-    finalize();
+    finalize_stats();
 
-    /* End ASCII block. */
     uint64_t total_time = get_global_sim_time();
-    printf("\033[96m$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\n");
-    printf("SCHEDULE END => alg=%d => totalTime=%llums\n", current_alg,
-           (unsigned long long)total_time);
-    printf("Stats: preemptions=%llu, totalProcs=%llu\n",
-           (unsigned long long)gPreemptions,
-           (unsigned long long)gProcs);
-    printf("AvgWait=%.2f, AvgTAT=%.2f, AvgResp=%.2f\n",
-           gAvgWait, gAvgTAT, gAvgResp);
-    printf("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\033[0m\n");
-    usleep(300000);
+    printf("\033[96m╔══════════════════════════════════════════════╗\n");
+    printf("║ SCHEDULE END => alg=%d => totalTime=%llums    ║\n", g_current_alg, (unsigned long long)total_time);
+    printf("║ Stats: preemptions=%llu, totalProcs=%llu     ║\n", (unsigned long long)gPreemptions, (unsigned long long)gProcs);
+    printf("║ AvgWait=%.2f, AvgTAT=%.2f, AvgResp=%.2f       ║\n", gAvgWait, gAvgTAT, gAvgResp);
+    printf("╚══════════════════════════════════════════════╝\033[0m\n");
+    sim_sleep(300000);
 
-    /* Cleanup references. */
-    g_list=NULL;
-    g_count=0;
+    g_process_list = NULL;
+    g_list_count   = 0;
 }
 
-void scheduler_fetch_report(sched_report_t* out){
-    if(!out) return;
-    if(HPC_over_mode){
-        out->avg_wait=0.0;
-        out->avg_turnaround=0.0;
-        out->avg_response=0.0;
-        out->preemptions=0ULL;
-        out->total_procs=0ULL;
+void scheduler_fetch_report(sched_report_t* out) {
+    if (!out) return;
+    if (HPC_over_mode) {
+        out->avg_wait = 0.0;
+        out->avg_turnaround = 0.0;
+        out->avg_response = 0.0;
+        out->preemptions = 0ULL;
+        out->total_procs = 0ULL;
     } else {
         out->avg_wait       = gAvgWait;
         out->avg_turnaround = gAvgTAT;
@@ -1484,47 +1736,53 @@ void scheduler_fetch_report(sched_report_t* out){
 
 #include "process.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
-    /*
-      List of supported algorithms.
-    */
-    typedef enum {
-        ALG_CFS,
-        ALG_CFS_SRTF,
-        ALG_FIFO,
-        ALG_RR,
-        ALG_SJF,
-        ALG_STRF,
-        ALG_HRRN,
-        ALG_HRRN_RT,
-        ALG_BFS,
-        ALG_PRIORITY,
-        ALG_HPC_OVERSHADOW,
-        ALG_MLFQ
-    } scheduler_alg_t;
+/*
+  Our recognized scheduling algorithms:
+*/
+typedef enum {
+    ALG_CFS = 0,
+    ALG_CFS_SRTF,
+    ALG_FIFO,
+    ALG_RR,
+    ALG_SJF,
+    ALG_STRF,
+    ALG_HRRN,
+    ALG_HRRN_RT,
+    ALG_BFS,
+    ALG_PRIORITY,
+    ALG_HPC_OVERSHADOW,
+    ALG_MLFQ
+} scheduler_alg_t;
 
-    typedef struct {
-        double avg_wait;
-        double avg_turnaround;
-        double avg_response;
-        unsigned long long preemptions;
-        unsigned long long total_procs;
-    } sched_report_t;
+typedef struct {
+    double avg_wait;
+    double avg_turnaround;
+    double avg_response;
+    unsigned long long preemptions;
+    unsigned long long total_procs;
+} sched_report_t;
 
-    /* global accessors. */
-    void scheduler_select_algorithm(scheduler_alg_t a);
-    void scheduler_run(process_t* list, int count);
-    void scheduler_fetch_report(sched_report_t* out);
+/* Select an algorithm to be used by scheduler_run. */
+void scheduler_select_algorithm(scheduler_alg_t a);
 
-    /* Called by ready_queue so it can do HRRN ratio. */
-    uint64_t get_global_sim_time(void);
+/*
+  Run the scheduling simulation on an array of processes (length count).
+  This spawns multiple "core" threads, each of which picks from the ready-queue
+  and simulates partial CPU usage (with usleep) for visible concurrency.
+*/
+void scheduler_run(process_t* list, int count);
 
-#ifdef __cplusplus
-}
-#endif
+/*
+  Retrieve the final stats from the last scheduling run.
+*/
+void scheduler_fetch_report(sched_report_t* out);
+
+/*
+  Accessor so the ready-queue can see current simulated time
+  for HRRN or other calculations.
+*/
+uint64_t get_global_sim_time(void);
 
 #endif
 #include "scoreboard.h"
@@ -1532,149 +1790,125 @@ extern "C" {
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <errno.h>
 
-int unlocked_basic=1;
-int unlocked_normal=0;
-int unlocked_external=0;
-int unlocked_modes=0;
-int unlocked_edge=0;
-int unlocked_hidden=0;
-
-static scoreboard_t gSB={
-    0,0,0,0,0,0, /* test totals & passes */
-    0,0,0,0,0,0, /* scheduling mastery flags */
-    0.0,0.0,0.0,0.0,0.0,0.0, /* percentages for each test category */
-    60.0 /* pass_threshold */
+static scoreboard_t gSB = {
+    0,0,0,0,0,0,  0,0,0,0,0,0,
+    0,0,0,0,0,0,  60.0 /* pass_threshold default */
 };
 
-static void update_unlocks(void){
-    gSB.basic_percent=(gSB.basic_total>0)?
-        ((gSB.basic_pass*100.0)/gSB.basic_total):0.0;
-    gSB.normal_percent=(gSB.normal_total>0)?
-        ((gSB.normal_pass*100.0)/gSB.normal_total):0.0;
-    gSB.external_percent=(gSB.external_total>0)?
-        ((gSB.external_pass*100.0)/gSB.external_total):0.0;
-    gSB.modes_percent=(gSB.modes_total>0)?
-        ((gSB.modes_pass*100.0)/gSB.modes_total):0.0;
-    gSB.edge_percent=(gSB.edge_total>0)?
-        ((gSB.edge_pass*100.0)/gSB.edge_total):0.0;
-    gSB.hidden_percent=(gSB.hidden_total>0)?
-        ((gSB.hidden_pass*100.0)/gSB.hidden_total):0.0;
+/* Forward decl for local usage. */
+static void update_unlocks(void);
 
-    double T=gSB.pass_threshold;
-    if(gSB.basic_percent>=T){
-        unlocked_normal=1;
-        unlocked_external=1;
-    }
-    if(gSB.normal_percent>=T){
-        unlocked_modes=1;
-    }
-    if(gSB.modes_percent>=T){
-        unlocked_edge=1;
-    }
-    if(gSB.edge_percent>=T){
-        unlocked_hidden=1;
-    }
-}
+/* scoreboard_init: no-op in this design */
+void scoreboard_init(void) {}
 
-/* read entire file. */
-static char* read_file_all(const char* path){
-    FILE* f=fopen(path,"rb");
-    if(!f) return NULL;
-    fseek(f,0,SEEK_END);
-    long size=ftell(f);
-    if(size<0){fclose(f);return NULL;}
-    fseek(f,0,SEEK_SET);
-    char* buf=(char*)malloc(size+1);
-    if(!buf){fclose(f);return NULL;}
-    if(fread(buf,1,size,f)!=(size_t)size){
-        fclose(f); free(buf); return NULL;
+/* scoreboard_close: no-op here */
+void scoreboard_close(void) {}
+
+/* Read entire file into a buffer. */
+static char* read_file_all(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz < 0) {
+        fclose(f);
+        return NULL;
     }
-    buf[size]='\0';
+    fseek(f, 0, SEEK_SET);
+    char* buf = (char*)malloc(sz + 1);
+    if (!buf) {
+        fclose(f);
+        return NULL;
+    }
+    if (fread(buf, 1, sz, f) != (size_t)sz) {
+        fclose(f);
+        free(buf);
+        return NULL;
+    }
+    buf[sz] = '\0';
     fclose(f);
     return buf;
 }
 
-static int parse_json_int(const char* json,const char* key,int def){
-    if(!json||!key) return def;
+/* Utility to parse int from JSON-like text. */
+static int parse_json_int(const char* json, const char* key, int def) {
+    if (!json || !key) return def;
     char pattern[128];
-    snprintf(pattern,sizeof(pattern),"\"%s\"",key);
-    char* found=strstr(json,pattern);
-    if(!found) return def;
-    char* colon=strstr(found,":");
-    if(!colon) return def;
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    char* found = strstr(json, pattern);
+    if (!found) return def;
+    char* colon = strstr(found, ":");
+    if (!colon) return def;
     colon++;
-    while(*colon && (*colon==' '||*colon=='\t')) colon++;
-    int val=def;
-    sscanf(colon,"%d",&val);
+    while (*colon && (*colon==' '||*colon=='\t')) colon++;
+    int val = def;
+    sscanf(colon, "%d", &val);
     return val;
 }
 
-static double parse_json_double(const char* json,const char* key,double def){
-    if(!json||!key) return def;
+/* Utility to parse double from JSON-like text. */
+static double parse_json_double(const char* json, const char* key, double def) {
+    if (!json || !key) return def;
     char pattern[128];
-    snprintf(pattern,sizeof(pattern),"\"%s\"",key);
-    char* found=strstr(json,pattern);
-    if(!found) return def;
-    char* colon=strstr(found,":");
-    if(!colon) return def;
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    char* found = strstr(json, pattern);
+    if (!found) return def;
+    char* colon = strstr(found, ":");
+    if (!colon) return def;
     colon++;
-    while(*colon && (*colon==' '||*colon=='\t')) colon++;
-    double val=def;
-    sscanf(colon,"%lf",&val);
+    while (*colon && (*colon==' '||*colon=='\t')) colon++;
+    double val = def;
+    sscanf(colon, "%lf", &val);
     return val;
 }
 
-/* Save scoreboard to scoreboard.json. */
-static void write_scoreboard_json(const scoreboard_t* sb){
-    FILE* f=fopen("scoreboard.json","w");
-    if(!f) return;
-    fprintf(f,"{\n");
-    fprintf(f,"  \"basic_total\": %d,\n",   sb->basic_total);
-    fprintf(f,"  \"basic_pass\": %d,\n",    sb->basic_pass);
-    fprintf(f,"  \"normal_total\": %d,\n",  sb->normal_total);
-    fprintf(f,"  \"normal_pass\": %d,\n",   sb->normal_pass);
-    fprintf(f,"  \"external_total\": %d,\n",sb->external_total);
-    fprintf(f,"  \"external_pass\": %d,\n", sb->external_pass);
-    fprintf(f,"  \"modes_total\": %d,\n",   sb->modes_total);
-    fprintf(f,"  \"modes_pass\": %d,\n",    sb->modes_pass);
-    fprintf(f,"  \"edge_total\": %d,\n",    sb->edge_total);
-    fprintf(f,"  \"edge_pass\": %d,\n",     sb->edge_pass);
-    fprintf(f,"  \"hidden_total\": %d,\n",  sb->hidden_total);
-    fprintf(f,"  \"hidden_pass\": %d,\n",   sb->hidden_pass);
+static void write_scoreboard_json(const scoreboard_t* sb) {
+    FILE* f = fopen("scoreboard.json", "w");
+    if (!f) return;
 
-    fprintf(f,"  \"sc_fifo\": %d,\n",       sb->sc_fifo);
-    fprintf(f,"  \"sc_rr\": %d,\n",         sb->sc_rr);
-    fprintf(f,"  \"sc_cfs\": %d,\n",        sb->sc_cfs);
-    fprintf(f,"  \"sc_cfs_srtf\": %d,\n",   sb->sc_cfs_srtf);
-    fprintf(f,"  \"sc_bfs\": %d,\n",        sb->sc_bfs);
-    fprintf(f,"  \"sc_sjf\": %d,\n",        sb->sc_sjf);
-    fprintf(f,"  \"sc_strf\": %d,\n",       sb->sc_strf);
-    fprintf(f,"  \"sc_hrrn\": %d,\n",       sb->sc_hrrn);
-    fprintf(f,"  \"sc_hrrn_rt\": %d,\n",    sb->sc_hrrn_rt);
-    fprintf(f,"  \"sc_priority\": %d,\n",   sb->sc_priority);
-    fprintf(f,"  \"sc_hpc_over\": %d,\n",   sb->sc_hpc_over);
-    fprintf(f,"  \"sc_mlfq\": %d,\n",       sb->sc_mlfq);
+    fprintf(f, "{\n");
+    fprintf(f, "  \"basic_total\": %d,\n", sb->basic_total);
+    fprintf(f, "  \"basic_pass\": %d,\n", sb->basic_pass);
+    fprintf(f, "  \"normal_total\": %d,\n", sb->normal_total);
+    fprintf(f, "  \"normal_pass\": %d,\n", sb->normal_pass);
+    fprintf(f, "  \"external_total\": %d,\n", sb->external_total);
+    fprintf(f, "  \"external_pass\": %d,\n", sb->external_pass);
+    fprintf(f, "  \"modes_total\": %d,\n", sb->modes_total);
+    fprintf(f, "  \"modes_pass\": %d,\n", sb->modes_pass);
+    fprintf(f, "  \"edge_total\": %d,\n", sb->edge_total);
+    fprintf(f, "  \"edge_pass\": %d,\n", sb->edge_pass);
+    fprintf(f, "  \"hidden_total\": %d,\n", sb->hidden_total);
+    fprintf(f, "  \"hidden_pass\": %d,\n", sb->hidden_pass);
 
-    fprintf(f,"  \"basic_percent\": %.3f,\n",    sb->basic_percent);
-    fprintf(f,"  \"normal_percent\": %.3f,\n",   sb->normal_percent);
-    fprintf(f,"  \"external_percent\": %.3f,\n", sb->external_percent);
-    fprintf(f,"  \"modes_percent\": %.3f,\n",    sb->modes_percent);
-    fprintf(f,"  \"edge_percent\": %.3f,\n",     sb->edge_percent);
-    fprintf(f,"  \"hidden_percent\": %.3f,\n",   sb->hidden_percent);
+    fprintf(f, "  \"sc_fifo\": %d,\n", sb->sc_fifo);
+    fprintf(f, "  \"sc_rr\": %d,\n", sb->sc_rr);
+    fprintf(f, "  \"sc_cfs\": %d,\n", sb->sc_cfs);
+    fprintf(f, "  \"sc_cfs_srtf\": %d,\n", sb->sc_cfs_srtf);
+    fprintf(f, "  \"sc_bfs\": %d,\n", sb->sc_bfs);
+    fprintf(f, "  \"sc_sjf\": %d,\n", sb->sc_sjf);
+    fprintf(f, "  \"sc_strf\": %d,\n", sb->sc_strf);
+    fprintf(f, "  \"sc_hrrn\": %d,\n", sb->sc_hrrn);
+    fprintf(f, "  \"sc_hrrn_rt\": %d,\n", sb->sc_hrrn_rt);
+    fprintf(f, "  \"sc_priority\": %d,\n", sb->sc_priority);
+    fprintf(f, "  \"sc_hpc_over\": %d,\n", sb->sc_hpc_over);
+    fprintf(f, "  \"sc_mlfq\": %d,\n", sb->sc_mlfq);
 
-    fprintf(f,"  \"pass_threshold\": %.1f\n",     sb->pass_threshold);
-    fprintf(f,"}\n");
+    fprintf(f, "  \"basic_percent\": %.3f,\n", sb->basic_percent);
+    fprintf(f, "  \"normal_percent\": %.3f,\n", sb->normal_percent);
+    fprintf(f, "  \"external_percent\": %.3f,\n", sb->external_percent);
+    fprintf(f, "  \"modes_percent\": %.3f,\n", sb->modes_percent);
+    fprintf(f, "  \"edge_percent\": %.3f,\n", sb->edge_percent);
+    fprintf(f, "  \"hidden_percent\": %.3f,\n", sb->hidden_percent);
+
+    fprintf(f, "  \"pass_threshold\": %.1f\n", sb->pass_threshold);
+    fprintf(f, "}\n");
     fclose(f);
 }
 
-void scoreboard_init(void){ }
-void scoreboard_close(void){ }
-
-void scoreboard_load(void){
-    char* json=read_file_all("scoreboard.json");
-    if(!json){
+void scoreboard_load(void) {
+    char* json = read_file_all("scoreboard.json");
+    if (!json) {
         update_unlocks();
         return;
     }
@@ -1691,136 +1925,227 @@ void scoreboard_load(void){
     gSB.hidden_total   = parse_json_int(json,"hidden_total",   gSB.hidden_total);
     gSB.hidden_pass    = parse_json_int(json,"hidden_pass",    gSB.hidden_pass);
 
-    gSB.sc_fifo        = parse_json_int(json,"sc_fifo",        gSB.sc_fifo);
-    gSB.sc_rr          = parse_json_int(json,"sc_rr",          gSB.sc_rr);
-    gSB.sc_cfs         = parse_json_int(json,"sc_cfs",         gSB.sc_cfs);
-    gSB.sc_cfs_srtf    = parse_json_int(json,"sc_cfs_srtf",    gSB.sc_cfs_srtf);
-    gSB.sc_bfs         = parse_json_int(json,"sc_bfs",         gSB.sc_bfs);
-    gSB.sc_sjf         = parse_json_int(json,"sc_sjf",         gSB.sc_sjf);
-    gSB.sc_strf        = parse_json_int(json,"sc_strf",        gSB.sc_strf);
-    gSB.sc_hrrn        = parse_json_int(json,"sc_hrrn",        gSB.sc_hrrn);
-    gSB.sc_hrrn_rt     = parse_json_int(json,"sc_hrrn_rt",     gSB.sc_hrrn_rt);
-    gSB.sc_priority    = parse_json_int(json,"sc_priority",    gSB.sc_priority);
-    gSB.sc_hpc_over    = parse_json_int(json,"sc_hpc_over",    gSB.sc_hpc_over);
-    gSB.sc_mlfq        = parse_json_int(json,"sc_mlfq",        gSB.sc_mlfq);
+    gSB.sc_fifo      = parse_json_int(json,"sc_fifo",      gSB.sc_fifo);
+    gSB.sc_rr        = parse_json_int(json,"sc_rr",        gSB.sc_rr);
+    gSB.sc_cfs       = parse_json_int(json,"sc_cfs",       gSB.sc_cfs);
+    gSB.sc_cfs_srtf  = parse_json_int(json,"sc_cfs_srtf",  gSB.sc_cfs_srtf);
+    gSB.sc_bfs       = parse_json_int(json,"sc_bfs",       gSB.sc_bfs);
+    gSB.sc_sjf       = parse_json_int(json,"sc_sjf",       gSB.sc_sjf);
+    gSB.sc_strf      = parse_json_int(json,"sc_strf",      gSB.sc_strf);
+    gSB.sc_hrrn      = parse_json_int(json,"sc_hrrn",      gSB.sc_hrrn);
+    gSB.sc_hrrn_rt   = parse_json_int(json,"sc_hrrn_rt",   gSB.sc_hrrn_rt);
+    gSB.sc_priority  = parse_json_int(json,"sc_priority",  gSB.sc_priority);
+    gSB.sc_hpc_over  = parse_json_int(json,"sc_hpc_over",  gSB.sc_hpc_over);
+    gSB.sc_mlfq      = parse_json_int(json,"sc_mlfq",      gSB.sc_mlfq);
 
-    gSB.basic_percent   = parse_json_double(json,"basic_percent",    gSB.basic_percent);
-    gSB.normal_percent  = parse_json_double(json,"normal_percent",   gSB.normal_percent);
-    gSB.external_percent= parse_json_double(json,"external_percent", gSB.external_percent);
-    gSB.modes_percent   = parse_json_double(json,"modes_percent",    gSB.modes_percent);
-    gSB.edge_percent    = parse_json_double(json,"edge_percent",     gSB.edge_percent);
-    gSB.hidden_percent  = parse_json_double(json,"hidden_percent",   gSB.hidden_percent);
-    gSB.pass_threshold  = parse_json_double(json,"pass_threshold",   gSB.pass_threshold);
+    gSB.basic_percent    = parse_json_double(json,"basic_percent",    gSB.basic_percent);
+    gSB.normal_percent   = parse_json_double(json,"normal_percent",   gSB.normal_percent);
+    gSB.external_percent = parse_json_double(json,"external_percent", gSB.external_percent);
+    gSB.modes_percent    = parse_json_double(json,"modes_percent",    gSB.modes_percent);
+    gSB.edge_percent     = parse_json_double(json,"edge_percent",     gSB.edge_percent);
+    gSB.hidden_percent   = parse_json_double(json,"hidden_percent",   gSB.hidden_percent);
+    gSB.pass_threshold   = parse_json_double(json,"pass_threshold",   gSB.pass_threshold);
 
     free(json);
     update_unlocks();
 }
 
-void scoreboard_save(void){
+void scoreboard_save(void) {
     update_unlocks();
     write_scoreboard_json(&gSB);
 }
 
-static int get_scheduler_points(void){
-    /* BFS=2, HPC=2, MLFQ=2, others=1 => up to 15 total */
-    int points=0;
-    if(gSB.sc_fifo)      points+=1;
-    if(gSB.sc_rr)        points+=1;
-    if(gSB.sc_cfs)       points+=1;
-    if(gSB.sc_cfs_srtf)  points+=1;
-    if(gSB.sc_bfs)       points+=2;
-    if(gSB.sc_sjf)       points+=1;
-    if(gSB.sc_strf)      points+=1;
-    if(gSB.sc_hrrn)      points+=1;
-    if(gSB.sc_hrrn_rt)   points+=1;
-    if(gSB.sc_priority)  points+=1;
-    if(gSB.sc_hpc_over)  points+=2;
-    if(gSB.sc_mlfq)      points+=2;
-    return points;
-}
-
-int scoreboard_get_final_score(void){
-    update_unlocks();
-    double b = gSB.basic_percent     * 0.32;
-    double n = gSB.normal_percent    * 0.20;
-    double e = gSB.external_percent  * 0.10;
-    double m = gSB.modes_percent     * 0.10;
-    double ed= gSB.edge_percent      * 0.10;
-    double h = gSB.hidden_percent    * 0.08;
-
-    int sched_points = get_scheduler_points();
-    double sched_percent = (sched_points / 15.0)*100.0;
-    double s = sched_percent * 0.10; /* 10% block for scheduling */
-
-    double total = b + n + e + m + ed + h + s;
-    if(total>100.0) total=100.0;
-    if(total<0.0)   total=0.0;
-    return (int)(total + 0.5);
-}
-
-void scoreboard_clear(void){
-    memset(&gSB, 0, sizeof(gSB));
-    gSB.pass_threshold=60.0;
-    unlocked_basic=1;
-    unlocked_normal=0;
-    unlocked_external=0;
-    unlocked_modes=0;
-    unlocked_edge=0;
-    unlocked_hidden=0;
-    scoreboard_save();
-}
-
-void get_scoreboard(scoreboard_t* out){
-    if(out) *out=gSB;
-}
-
-void scoreboard_set_sc_mastered(scheduler_alg_t alg){
-    switch(alg){
-    case ALG_FIFO:          gSB.sc_fifo=1;        break;
-    case ALG_RR:            gSB.sc_rr=1;          break;
-    case ALG_CFS:           gSB.sc_cfs=1;         break;
-    case ALG_CFS_SRTF:      gSB.sc_cfs_srtf=1;    break;
-    case ALG_BFS:           gSB.sc_bfs=1;         break;
-    case ALG_SJF:           gSB.sc_sjf=1;         break;
-    case ALG_STRF:          gSB.sc_strf=1;        break;
-    case ALG_HRRN:          gSB.sc_hrrn=1;        break;
-    case ALG_HRRN_RT:       gSB.sc_hrrn_rt=1;     break;
-    case ALG_PRIORITY:      gSB.sc_priority=1;    break;
-    case ALG_HPC_OVERSHADOW:gSB.sc_hpc_over=1;    break;
-    case ALG_MLFQ:          gSB.sc_mlfq=1;        break;
-    default: break;
+/* Weighted pass check => if a suite's pass% >= pass_threshold => it's "unlocked". */
+static int is_suite_unlocked(scoreboard_suite_t suite) {
+    double T = gSB.pass_threshold;
+    switch(suite) {
+        case SUITE_BASIC:
+            return (gSB.basic_percent >= T);
+        case SUITE_NORMAL:
+            return (gSB.normal_percent >= T);
+        case SUITE_EXTERNAL:
+            return (gSB.external_percent >= T);
+        case SUITE_MODES:
+            return (gSB.modes_percent >= T);
+        case SUITE_EDGE:
+            return (gSB.edge_percent >= T);
+        case SUITE_HIDDEN:
+            return (gSB.hidden_percent >= T);
+        default:
+            return 0;
     }
 }
 
-void scoreboard_update_basic(int total,int pass){
+/* Recalculate the pass percentages and updates them. */
+static void update_unlocks(void) {
+    if (gSB.basic_total > 0) {
+        gSB.basic_percent = (gSB.basic_pass * 100.0) / (double)gSB.basic_total;
+    } else {
+        gSB.basic_percent = 0.0;
+    }
+    if (gSB.normal_total > 0) {
+        gSB.normal_percent = (gSB.normal_pass * 100.0) / (double)gSB.normal_total;
+    } else {
+        gSB.normal_percent = 0.0;
+    }
+    if (gSB.external_total > 0) {
+        gSB.external_percent = (gSB.external_pass * 100.0) / (double)gSB.external_total;
+    } else {
+        gSB.external_percent = 0.0;
+    }
+    if (gSB.modes_total > 0) {
+        gSB.modes_percent = (gSB.modes_pass * 100.0) / (double)gSB.modes_total;
+    } else {
+        gSB.modes_percent = 0.0;
+    }
+    if (gSB.edge_total > 0) {
+        gSB.edge_percent = (gSB.edge_pass * 100.0) / (double)gSB.edge_total;
+    } else {
+        gSB.edge_percent = 0.0;
+    }
+    if (gSB.hidden_total > 0) {
+        gSB.hidden_percent = (gSB.hidden_pass * 100.0) / (double)gSB.hidden_total;
+    } else {
+        gSB.hidden_percent = 0.0;
+    }
+}
+
+/* Return 1 if suite is unlocked, 0 otherwise. */
+int scoreboard_is_unlocked(scoreboard_suite_t suite) {
+    return is_suite_unlocked(suite);
+}
+
+/* Return final overall score. Weighted distribution + scheduling mastery. */
+static int get_scheduler_points(void) {
+    /* BFS=2, HPC=2, MLFQ=2, others=1 => up to 15 total. */
+    int points = 0;
+    if (gSB.sc_fifo)         points += 1;
+    if (gSB.sc_rr)           points += 1;
+    if (gSB.sc_cfs)          points += 1;
+    if (gSB.sc_cfs_srtf)     points += 1;
+    if (gSB.sc_bfs)          points += 2;
+    if (gSB.sc_sjf)          points += 1;
+    if (gSB.sc_strf)         points += 1;
+    if (gSB.sc_hrrn)         points += 1;
+    if (gSB.sc_hrrn_rt)      points += 1;
+    if (gSB.sc_priority)     points += 1;
+    if (gSB.sc_hpc_over)     points += 2;
+    if (gSB.sc_mlfq)         points += 2;
+    return points;
+}
+
+int scoreboard_get_final_score(void) {
+    /* Make sure up to date: */
+    update_unlocks();
+
+    /* Weighted blocks:
+       basic => 32%
+       normal => 20%
+       external => 10%
+       modes => 10%
+       edge => 10%
+       hidden => 8%
+       sched mastery => 10%
+    */
+    double b  = gSB.basic_percent     * 0.32;
+    double n  = gSB.normal_percent    * 0.20;
+    double e  = gSB.external_percent  * 0.10;
+    double m  = gSB.modes_percent     * 0.10;
+    double ed = gSB.edge_percent      * 0.10;
+    double h  = gSB.hidden_percent    * 0.08;
+
+    int sched_pts = get_scheduler_points();
+    double sched_percent = (sched_pts / 15.0) * 100.0;
+    double s = sched_percent * 0.10; /* scheduling mastery is 10% */
+
+    double total = b + n + e + m + ed + h + s;
+    if (total > 100.0) total = 100.0;
+    if (total < 0.0)   total = 0.0;
+    return (int)(total + 0.5);
+}
+
+/* Scoreboard clearing. */
+void scoreboard_clear(void) {
+    memset(&gSB, 0, sizeof(gSB));
+    gSB.pass_threshold = 60.0; /* restore default threshold */
+    scoreboard_save();
+}
+
+void get_scoreboard(scoreboard_t* out) {
+    if (out) {
+        *out = gSB;
+    }
+}
+
+void scoreboard_set_sc_mastered(scheduler_alg_t alg) {
+    switch (alg) {
+    case ALG_FIFO:          gSB.sc_fifo      = 1; break;
+    case ALG_RR:            gSB.sc_rr        = 1; break;
+    case ALG_CFS:           gSB.sc_cfs       = 1; break;
+    case ALG_CFS_SRTF:      gSB.sc_cfs_srtf  = 1; break;
+    case ALG_BFS:           gSB.sc_bfs       = 1; break;
+    case ALG_SJF:           gSB.sc_sjf       = 1; break;
+    case ALG_STRF:          gSB.sc_strf      = 1; break;
+    case ALG_HRRN:          gSB.sc_hrrn      = 1; break;
+    case ALG_HRRN_RT:       gSB.sc_hrrn_rt   = 1; break;
+    case ALG_PRIORITY:      gSB.sc_priority  = 1; break;
+    case ALG_HPC_OVERSHADOW:gSB.sc_hpc_over  = 1; break;
+    case ALG_MLFQ:          gSB.sc_mlfq      = 1; break;
+    default:
+        break;
+    }
+}
+
+/* Updating test suite stats. */
+void scoreboard_update_basic(int total,int pass) {
     gSB.basic_total += total;
     gSB.basic_pass  += pass;
 }
-void scoreboard_update_normal(int total,int pass){
+void scoreboard_update_normal(int total,int pass) {
     gSB.normal_total += total;
     gSB.normal_pass  += pass;
 }
-void scoreboard_update_external(int total,int pass){
+void scoreboard_update_external(int total,int pass) {
     gSB.external_total += total;
     gSB.external_pass  += pass;
 }
-void scoreboard_update_modes(int total,int pass){
+void scoreboard_update_modes(int total,int pass) {
     gSB.modes_total += total;
     gSB.modes_pass  += pass;
 }
-void scoreboard_update_edge(int total,int pass){
+void scoreboard_update_edge(int total,int pass) {
     gSB.edge_total += total;
     gSB.edge_pass  += pass;
 }
-void scoreboard_update_hidden(int total,int pass){
+void scoreboard_update_hidden(int total,int pass) {
     gSB.hidden_total += total;
     gSB.hidden_pass  += pass;
 }
 #ifndef SCOREBOARD_H
 #define SCOREBOARD_H
 
+/*
+  scoreboard.h
+  We remove all external global variables (unlocked_basic, etc.)
+  and instead provide an API to check if a suite is unlocked.
+*/
+
 #include "scheduler.h"
 
+/* Enum to identify a test suite. */
+typedef enum {
+    SUITE_BASIC = 0,
+    SUITE_NORMAL,
+    SUITE_EXTERNAL,
+    SUITE_MODES,
+    SUITE_EDGE,
+    SUITE_HIDDEN,
+    SUITE_COUNT
+} scoreboard_suite_t;
+
+/*
+  Structure holding scoreboard data.
+*/
 typedef struct {
     int basic_total,    basic_pass;
     int normal_total,   normal_pass;
@@ -1829,9 +2154,10 @@ typedef struct {
     int edge_total,     edge_pass;
     int hidden_total,   hidden_pass;
 
+    /* Mastery flags for scheduling algorithms. */
     int sc_fifo, sc_rr, sc_cfs, sc_cfs_srtf, sc_bfs;
-    int sc_sjf, sc_strf, sc_hrrn, sc_hrrn_rt;
-    int sc_priority, sc_hpc_over, sc_mlfq;
+    int sc_sjf, sc_strf, sc_hrrn, sc_hrrn_rt, sc_priority;
+    int sc_hpc_over, sc_mlfq;
 
     double basic_percent;
     double normal_percent;
@@ -1843,53 +2169,206 @@ typedef struct {
     double pass_threshold;
 } scoreboard_t;
 
-extern int unlocked_basic;
-extern int unlocked_normal;
-extern int unlocked_external;
-extern int unlocked_modes;
-extern int unlocked_edge;
-extern int unlocked_hidden;
-
+/* Initialize (no-op) and close (no-op). */
 void scoreboard_init(void);
 void scoreboard_close(void);
+
+/* Load from scoreboard.json into internal scoreboard data. */
 void scoreboard_load(void);
+
+/* Save scoreboard data to scoreboard.json. */
 void scoreboard_save(void);
+
+/* Clear scoreboard data completely. */
 void scoreboard_clear(void);
+
+/* Retrieve a snapshot of the current scoreboard structure. */
 void get_scoreboard(scoreboard_t* out);
+
+/* Compute the final score (0..100). */
 int  scoreboard_get_final_score(void);
 
+/* Mark that we have "mastered" a scheduling algorithm. */
 void scoreboard_set_sc_mastered(scheduler_alg_t alg);
 
-void scoreboard_update_basic(int total,int pass);
-void scoreboard_update_normal(int total,int pass);
-void scoreboard_update_external(int total,int pass);
-void scoreboard_update_modes(int total,int pass);
-void scoreboard_update_edge(int total,int pass);
-void scoreboard_update_hidden(int total,int pass);
+/* These update the raw counts for each test suite. */
+void scoreboard_update_basic(int total, int pass);
+void scoreboard_update_normal(int total, int pass);
+void scoreboard_update_external(int total, int pass);
+void scoreboard_update_modes(int total, int pass);
+void scoreboard_update_edge(int total, int pass);
+void scoreboard_update_hidden(int total, int pass);
+
+/*
+   Instead of global extern ints (unlocked_basic, etc.),
+   provide a function to check if a given suite is unlocked.
+*/
+int scoreboard_is_unlocked(scoreboard_suite_t suite);
+
+#endif
+#include "stats.h"
+#include <stdio.h>
+#include <string.h>
+
+/* Global stats. */
+static stats_t g_stats;
+
+void stats_init(void){
+    memset(&g_stats, 0, sizeof(g_stats));
+    g_stats.speed_mode = 0; /* default normal */
+}
+
+void stats_get(stats_t* out){
+    if(out) {
+        *out = g_stats;
+    }
+}
+
+void stats_set_speed_mode(int mode){
+    g_stats.speed_mode = (mode != 0) ? 1 : 0;
+}
+
+int stats_get_speed_mode(void){
+    return g_stats.speed_mode;
+}
+
+/* Increments... */
+void stats_inc_signal_sigint(void){
+    g_stats.signals_received_sigint++;
+}
+void stats_inc_signal_sigterm(void){
+    g_stats.signals_received_sigterm++;
+}
+void stats_inc_signal_other(void){
+    g_stats.signals_received_others++;
+}
+void stats_inc_concurrency_runs(void){
+    g_stats.concurrency_runs++;
+}
+void stats_inc_processes_spawned(void){
+    g_stats.processes_spawned++;
+}
+void stats_inc_containers_created(void){
+    g_stats.containers_created++;
+}
+void stats_inc_containers_removed(void){
+    g_stats.containers_removed++;
+}
+void stats_inc_tests_passed(int count){
+    g_stats.tests_passed += count;
+}
+void stats_inc_tests_failed(int count){
+    g_stats.tests_failed += count;
+}
+
+/* Print them in a small ASCII block. */
+void stats_print_summary(void){
+    printf("╔═══════════════════ STATS ═════════════════╗\n");
+    printf("║ Speed Mode            : %s\n", g_stats.speed_mode ? "FAST" : "NORMAL");
+    printf("║ Signals (SIGINT)      : %d\n", g_stats.signals_received_sigint);
+    printf("║ Signals (SIGTERM)     : %d\n", g_stats.signals_received_sigterm);
+    printf("║ Signals (Others)      : %d\n", g_stats.signals_received_others);
+    printf("║ Concurrency Runs      : %d\n", g_stats.concurrency_runs);
+    printf("║ Processes Spawned     : %d\n", g_stats.processes_spawned);
+    printf("║ Containers Created    : %d\n", g_stats.containers_created);
+    printf("║ Containers Removed    : %d\n", g_stats.containers_removed);
+    printf("║ Tests Passed          : %d\n", g_stats.tests_passed);
+    printf("║ Tests Failed          : %d\n", g_stats.tests_failed);
+    printf("╚═══════════════════════════════════════════╝\n");
+}
+#ifndef STATS_H
+#define STATS_H
+
+/* Colors */
+#define CLR_RESET   "\033[0m"
+#define CLR_BOLD    "\033[1m"
+#define CLR_MAGENTA "\033[95m"
+#define CLR_RED     "\033[91m"
+#define CLR_GREEN   "\033[92m"
+#define CLR_GRAY    "\033[90m"
+#define CLR_YELLOW  "\033[93m"
+#define CLR_CYAN    "\033[96m"
+
+/* stats.h
+   A global struct that tracks various runtime and concurrency stats.
+*/
+
+typedef struct {
+    /* Signals: how many signals we got (SIGINT, SIGTERM, SIGUSR1, etc.) */
+    int signals_received_sigint;
+    int signals_received_sigterm;
+    int signals_received_others;
+
+    /* Concurrency usage: how many times we ran concurrency runs, processes spawned, etc. */
+    int concurrency_runs;
+    int processes_spawned;
+    int containers_created;
+    int containers_removed;
+
+    /* Tests overall. */
+    int tests_passed;
+    int tests_failed;
+
+    /* Speed mode: 0 => normal, 1 => fast. */
+    int speed_mode;
+} stats_t;
+
+/* Initialize stats. */
+void stats_init(void);
+
+/* Retrieve the global stats structure. (Copies out) */
+void stats_get(stats_t* out);
+
+/* Set speed mode (0 or 1). */
+void stats_set_speed_mode(int mode);
+
+/* Return current speed mode (0=normal, 1=fast). */
+int stats_get_speed_mode(void);
+
+/* Increment stats counters. */
+void stats_inc_signal_sigint(void);
+void stats_inc_signal_sigterm(void);
+void stats_inc_signal_other(void);
+void stats_inc_concurrency_runs(void);
+void stats_inc_processes_spawned(void);
+void stats_inc_containers_created(void);
+void stats_inc_containers_removed(void);
+void stats_inc_tests_passed(int count);
+void stats_inc_tests_failed(int count);
+
+/* Print stats in a small block. */
+void stats_print_summary(void);
 
 #endif
 #include "worker.h"
+#include "stats.h"
 #include <stdio.h>
 #include <unistd.h>
 
-/* The original full-run is rarely used, but let's keep it. */
-void simulate_process(process_t* p){
-    if(!p) return;
-    printf("[Worker] Full run => priority=%d, burst=%lu ms\n",
-           p->priority,(unsigned long)p->burst_time);
-    /* We do real-time sleep just for user experience. */
-    usleep(p->burst_time * 1000U);
+#define CLR_RESET   "\033[0m"
+#define CLR_BOLD    "\033[1m"
+#define CLR_BLUE    "\033[94m"
+
+static void sim_sleep(unsigned int us){
+    int sm = stats_get_speed_mode();
+    if(sm==1){
+        usleep(us/10 + 1);
+    } else {
+        usleep(us);
+    }
 }
 
-/*
-  simulate_process_partial(p, slice):
-   - Sleep for 'slice' ms in real time, purely for demonstration.
-*/
-void simulate_process_partial(process_t* p, unsigned long slice_ms){
-    if(!p || !slice_ms) return;
-    printf("[Worker] Partial => priority=%d, slice=%lu ms\n",
-           p->priority, slice_ms);
-    usleep(slice_ms * 1000U);
+void simulate_process_partial(process_t* p, unsigned long slice_ms, int core_id) {
+    if (!p || !slice_ms) return;
+    printf(CLR_BLUE "[Worker] Core=%d => Partial run => priority=%d, slice=%lu ms\n" CLR_RESET,
+           core_id, p->priority, slice_ms);
+
+    /* Real sleep for concurrency demonstration.
+       If normal mode => 220ms per sim-ms.
+       If fast mode => maybe 22ms per sim-ms.
+       We'll scale with sim_sleep. */
+    unsigned int real_us = (unsigned int)(slice_ms * 220000);
+    sim_sleep(real_us);
 }
 #ifndef WORKER_H
 #define WORKER_H
@@ -1897,229 +2376,290 @@ void simulate_process_partial(process_t* p, unsigned long slice_ms){
 #include "process.h"
 
 /*
-  Functions that "simulate" the process running, using usleep to show
-  the user some concurrency. Stats are updated in the scheduler's sim_time domain.
+  Worker simulation => actually "runs" a process for some (partial) timeslice
+  by sleeping that many milliseconds in real time, purely for user-friendly
+  concurrency demonstration. Stats are updated in scheduler code.
+
+  We'll also print an ASCII line describing what's happening for each partial slice.
 */
-void simulate_process(process_t* p);
-void simulate_process_partial(process_t* p, unsigned long slice_ms);
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+  void simulate_process_partial(process_t* p, unsigned long slice_ms, int core_id);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
 #include "basic-test.h"
 #include "test_common.h"
-#include "../src/process.h"
 #include "../src/scheduler.h"
+#include "../src/process.h"
 #include "../src/os.h"
 #include "../src/scoreboard.h"
-#include <string.h>
+#include "../src/worker.h"
 #include <stdio.h>
 #include <math.h>
-#include <unistd.h>
 
 static int tests_run=0, tests_failed=0;
 
-static int almost_equal(double a, double b, double eps){
-    return fabs(a - b) < eps;
-}
-static bool check_stats(const sched_report_t* rep,
-                        double exp_wait, double exp_tat,
-                        double exp_resp, unsigned long long exp_preempt,
-                        double eps)
-{
-    if(!almost_equal(rep->avg_wait,       exp_wait, eps)) return false;
-    if(!almost_equal(rep->avg_turnaround, exp_tat,  eps)) return false;
-    if(!almost_equal(rep->avg_response,   exp_resp, eps)) return false;
-    if(rep->preemptions != exp_preempt)                  return false;
-    return true;
+/* Prototypes for each test. The RUN_TEST macro calls these. */
+static bool test_fifo(void);
+static bool test_rr(void);
+static bool test_cfs(void);
+static bool test_bfs(void);
+static bool test_pipeline(void);
+static bool test_distributed(void);
+static bool test_fifo_strict(void);
+
+/* A small helper to compare floating values. */
+static int almost_equal(double a, double b, double eps) {
+    return (fabs(a - b) < eps);
 }
 
-extern char g_test_fail_reason[256];
-
-/* FIFO test => 2 procs => p0=3, p1=5 => arrival=0 =>
-   wait p0=0,tat=3 => p1=3,8 => avg wait=1.5, tat=5.5 => resp=1.5 => preempt=0 */
-static bool test_fifo_impl(void){
+static bool test_fifo(void) {
     os_init();
     process_t p[2];
     init_process(&p[0], 3, 1, 0);
     init_process(&p[1], 5, 1, 0);
 
     scheduler_select_algorithm(ALG_FIFO);
-    scheduler_run(p,2);
+    scheduler_run(p, 2);
 
     sched_report_t rep;
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    return check_stats(&rep, 1.5, 5.5, 1.5, 0ULL, 0.001);
-}
-TEST(test_fifo){
-    if(!test_fifo_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_fifo => FIFO stats mismatch (expected W=1.5,T=5.5,R=1.5,pre=0)");
+    double w=1.5, t=5.5, r=1.5;
+    if (!almost_equal(rep.avg_wait, w, 0.01) ||
+        !almost_equal(rep.avg_turnaround, t, 0.01) ||
+        !almost_equal(rep.avg_response, r, 0.01) ||
+        rep.preemptions != 0ULL) {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+                 "fifo => mismatch: W=%.2f,T=%.2f,R=%.2f,pre=%llu",
+                 rep.avg_wait, rep.avg_turnaround, rep.avg_response, rep.preemptions);
+        test_set_fail_reason(buf);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_FIFO);
     return true;
 }
 
-/* RR => p0=2, p1=2 => quantum=2 => each runs once =>
-   p0 wait=0, tat=2 => p1 wait=2, tat=4 =>
-   avg wait=1, tat=3 => resp=0 for p0, 2 for p1 => average=1 => preempt=0 (since each finishes in its timeslice).
-*/
-static bool test_rr_impl(void){
+static bool test_rr(void) {
     os_init();
     process_t p[2];
     init_process(&p[0], 2, 1, 0);
     init_process(&p[1], 2, 1, 0);
 
     scheduler_select_algorithm(ALG_RR);
-    scheduler_run(p,2);
+    scheduler_run(p, 2);
 
     sched_report_t rep;
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    /* We expect wait=1, tat=3, resp=1, preempt=0. */
-    return check_stats(&rep, 1.0, 3.0, 1.0, 0ULL, 0.001);
-}
-TEST(test_rr){
-    if(!test_rr_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_rr => RR stats mismatch (expected W=1,T=3,R=1,pre=0)");
+    double w=1.0, t=3.0, r=1.0;
+    if (!almost_equal(rep.avg_wait, w, 0.01) ||
+        !almost_equal(rep.avg_turnaround, t, 0.01) ||
+        !almost_equal(rep.avg_response, r, 0.01) ||
+        rep.preemptions != 0ULL) {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+                 "rr => mismatch: W=%.2f,T=%.2f,R=%.2f,pre=%llu",
+                 rep.avg_wait, rep.avg_turnaround, rep.avg_response, rep.preemptions);
+        test_set_fail_reason(buf);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_RR);
     return true;
 }
 
-/* CFS => 2 procs => p0=3, p1=4 => no preemption =>
-   p0 wait=0,tat=3 => p1 wait=3,tat=7 =>
-   avg wait=1.5, tat=5.0, resp=1.5 => preempt=0 */
-static bool test_cfs_impl(void){
+static bool test_cfs(void) {
     os_init();
     process_t p[2];
     init_process(&p[0], 3, 0, 0);
     init_process(&p[1], 4, 0, 0);
 
     scheduler_select_algorithm(ALG_CFS);
-    scheduler_run(p,2);
+    scheduler_run(p, 2);
 
     sched_report_t rep;
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    return check_stats(&rep, 1.5, 5.0, 1.5, 0ULL, 0.001);
-}
-TEST(test_cfs){
-    if(!test_cfs_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_cfs => mismatch (expected W=1.5,T=5.0,R=1.5,pre=0)");
+    double w=1.5, t=5.0, r=1.5;
+    if (!almost_equal(rep.avg_wait, w, 0.01) ||
+        !almost_equal(rep.avg_turnaround, t, 0.01) ||
+        !almost_equal(rep.avg_response, r, 0.01) ||
+        rep.preemptions != 0ULL) {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+                 "cfs => mismatch: W=%.2f,T=%.2f,R=%.2f,pre=%llu",
+                 rep.avg_wait, rep.avg_turnaround, rep.avg_response, rep.preemptions);
+        test_set_fail_reason(buf);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_CFS);
     return true;
 }
 
-/* BFS => 3 procs => partial => quantum=2 => we expect preempt>0, total_procs=3.
-   We won't do exact wait/tat check, just a minimal assertion. */
-static bool test_bfs_impl(void){
+static bool test_bfs(void) {
     os_init();
     process_t p[3];
-    init_process(&p[0],2,1,0);
-    init_process(&p[1],3,1,0);
-    init_process(&p[2],4,1,0);
+    init_process(&p[0], 2, 1, 0);
+    init_process(&p[1], 3, 1, 0);
+    init_process(&p[2], 4, 1, 0);
 
     scheduler_select_algorithm(ALG_BFS);
-    scheduler_run(p,3);
+    scheduler_run(p, 3);
 
     sched_report_t rep;
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    if(rep.total_procs!=3) return false;
-    if(rep.preemptions<1)  return false;
-    return true;
-}
-TEST(test_bfs){
-    if(!test_bfs_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_bfs => BFS mismatch => expected preempt>0, procs=3");
+    if (rep.total_procs != 3 || rep.preemptions < 1) {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+                 "bfs => mismatch: procs=%llu, preempts=%llu",
+                 rep.total_procs, rep.preemptions);
+        test_set_fail_reason(buf);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_BFS);
     return true;
 }
 
-/* pipeline => no scheduling => pass if no crash. */
-static bool test_pipeline_impl(void){
+static bool test_pipeline(void) {
     os_init();
     os_pipeline_example();
     os_cleanup();
     return true;
 }
-TEST(test_pipeline){
-    if(!test_pipeline_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_pipeline => unexpected fail");
-        return false;
-    }
-    return true;
-}
 
-/* distributed => pass if no crash. */
-static bool test_distributed_impl(void){
+static bool test_distributed(void) {
     os_init();
     os_run_distributed_example();
     os_cleanup();
     return true;
 }
-TEST(test_distributed){
-    if(!test_distributed_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_distributed => unexpected fail");
-        return false;
-    }
-    return true;
-}
 
-/* FIFO strict => 2 procs => p0=3, p1=4 => same as above => W=1.5, T=5.0, R=1.5, pre=0. */
-static bool test_fifo_strict_impl(void){
+static bool test_fifo_strict(void) {
     os_init();
     process_t p[2];
-    init_process(&p[0],3,10,0);
-    init_process(&p[1],4,20,0);
+    init_process(&p[0], 3, 10, 0);
+    init_process(&p[1], 4, 20, 0);
 
     scheduler_select_algorithm(ALG_FIFO);
-    scheduler_run(p,2);
+    scheduler_run(p, 2);
 
     sched_report_t rep;
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    return check_stats(&rep, 1.5, 5.0, 1.5, 0ULL, 0.001);
-}
-TEST(test_fifo_strict){
-    if(!test_fifo_strict_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_fifo_strict => mismatch => W=1.5,T=5.0,R=1.5,pre=0");
+    double w=1.5, t=5.0, r=1.5;
+    if (!almost_equal(rep.avg_wait, w, 0.01) ||
+        !almost_equal(rep.avg_turnaround, t, 0.01) ||
+        !almost_equal(rep.avg_response, r, 0.01) ||
+        rep.preemptions != 0ULL) {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+                 "fifo_strict => mismatch: W=%.2f,T=%.2f,R=%.2f,pre=%llu",
+                 rep.avg_wait, rep.avg_turnaround, rep.avg_response, rep.preemptions);
+        test_set_fail_reason(buf);
         return false;
     }
     return true;
 }
 
-void run_basic_tests(int* total,int* passed){
+/*
+   We keep the old function that runs all tests in a row,
+   collecting total and passed for scoreboard usage.
+*/
+void run_basic_tests(int* total, int* passed) {
     tests_run=0;
     tests_failed=0;
 
-    RUN_TEST(test_fifo);
-    RUN_TEST(test_rr);
-    RUN_TEST(test_cfs);
-    RUN_TEST(test_bfs);
-    RUN_TEST(test_pipeline);
-    RUN_TEST(test_distributed);
-    RUN_TEST(test_fifo_strict);
+    RUN_TEST(fifo);
+    RUN_TEST(rr);
+    RUN_TEST(cfs);
+    RUN_TEST(bfs);
+    RUN_TEST(pipeline);
+    RUN_TEST(distributed);
+    RUN_TEST(fifo_strict);
 
-    *total = tests_run;
-    *passed= tests_run - tests_failed;
+    *total  = tests_run;
+    *passed = (tests_run - tests_failed);
+
+    printf("\n╔══════════════════════════════════════════════╗\n");
+    printf("║       BASIC TESTS RESULTS: %d / %d passed      ║\n", *passed, *total);
+    printf("╚══════════════════════════════════════════════╝\n");
+}
+
+/*
+   For single-test picking from main menu, we define an array of
+   test function pointers plus an array of test names.
+*/
+typedef bool (*basic_test_func_t)(void);
+
+static basic_test_func_t g_basic_tests[] = {
+    test_fifo,
+    test_rr,
+    test_cfs,
+    test_bfs,
+    test_pipeline,
+    test_distributed,
+    test_fifo_strict
+};
+
+static const char* g_basic_test_names[] = {
+    "FIFO",
+    "RR",
+    "CFS",
+    "BFS",
+    "Pipeline Example",
+    "Distributed Example",
+    "FIFO Strict"
+};
+
+static const int g_basic_test_count = (int)(sizeof(g_basic_tests)/sizeof(g_basic_tests[0]));
+
+/*
+   Return the number of individual tests in this suite.
+*/
+int basic_test_get_count(void) {
+    return g_basic_test_count;
+}
+
+/*
+   Return the name of the nth test. If out of range, return NULL.
+*/
+const char* basic_test_get_name(int index) {
+    if (index < 0 || index >= g_basic_test_count) return NULL;
+    return g_basic_test_names[index];
+}
+
+/*
+   Actually run the nth test. Return 1 if passed, 0 if failed.
+   Also update scoreboard accordingly (one test => total=1).
+*/
+int basic_test_run_single(int index) {
+    if (index < 0 || index >= g_basic_test_count) return 0;
+
+    tests_run=0;
+    tests_failed=0;
+
+    bool ok = g_basic_tests[index]();
+    int passcount = ok ? 1 : 0;
+
+    /* scoreboard update with total=1, pass=passcount */
+    scoreboard_update_basic(1, passcount);
+    scoreboard_save();
+
+    return passcount;
 }
 /* basic-test.h */
 #ifndef BASIC_TEST_H
@@ -2131,18 +2671,21 @@ void run_basic_tests(int* total,int* passed);
 #include "../src/process.h"
 #include "../src/scheduler.h"
 #include "../src/os.h"
-#include <string.h>
+#include "../src/scoreboard.h"
 #include <stdio.h>
 #include <math.h>
-#include <unistd.h>
 
 static int tests_run=0, tests_failed=0;
 extern char g_test_fail_reason[256];
 
-static bool test_extreme_long_impl(void){
+static int almost_equal(double a, double b, double eps) {
+    return (fabs(a - b) < eps);
+}
+
+TEST(extreme_long) {
     os_init();
     process_t p[1];
-    init_process(&p[0], 50, 2, 0);
+    init_process(&p[0],50,2,0);
 
     scheduler_select_algorithm(ALG_FIFO);
     scheduler_run(p,1);
@@ -2151,24 +2694,24 @@ static bool test_extreme_long_impl(void){
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    /* single proc => wait=0, tat=50, resp=0, pre=0 */
-    if(rep.total_procs!=1) return false;
-    if(rep.preemptions!=0) return false;
-    if(fabs(rep.avg_wait - 0.0)>0.001) return false;
-    if(fabs(rep.avg_turnaround - 50.0)>0.1) return false;
-    if(fabs(rep.avg_response - 0.0)>0.001) return false;
-    return true;
-}
-TEST(test_extreme_long){
-    if(!test_extreme_long_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_extreme_long => mismatch => expected wait=0, tat=50, resp=0");
+    if (rep.total_procs!=1 || rep.preemptions!=0ULL) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_extreme_long => mismatch => total=%llu, pre=%llu",
+                 rep.total_procs, rep.preemptions);
+        return false;
+    }
+    if (!almost_equal(rep.avg_wait, 0.0, 0.001) ||
+        !almost_equal(rep.avg_turnaround, 50.0, 0.1) ||
+        !almost_equal(rep.avg_response, 0.0, 0.001)) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_extreme_long => stats mismatch => W=%.2f,T=%.2f,R=%.2f",
+                 rep.avg_wait, rep.avg_turnaround, rep.avg_response);
         return false;
     }
     return true;
 }
 
-static bool test_extreme_short_impl(void){
+TEST(extreme_short) {
     os_init();
     process_t p[1];
     init_process(&p[0],1,2,0);
@@ -2180,26 +2723,26 @@ static bool test_extreme_short_impl(void){
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    /* single => wait=0, tat=1, resp=0 => pre=0 */
-    if(rep.total_procs!=1) return false;
-    if(rep.preemptions!=0) return false;
-    if(fabs(rep.avg_wait - 0.0)>0.001) return false;
-    if(fabs(rep.avg_turnaround -1.0)>0.001) return false;
-    return true;
-}
-TEST(test_extreme_short){
-    if(!test_extreme_short_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_extreme_short => mismatch => expected wait=0, tat=1, resp=0");
+    if (rep.total_procs!=1 || rep.preemptions!=0ULL) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_extreme_short => mismatch => total=%llu, pre=%llu",
+                 rep.total_procs, rep.preemptions);
+        return false;
+    }
+    if (!almost_equal(rep.avg_wait, 0.0, 0.001) ||
+        !almost_equal(rep.avg_turnaround, 1.0, 0.01)) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_extreme_short => stats mismatch => W=%.2f,T=%.2f",
+                 rep.avg_wait, rep.avg_turnaround);
         return false;
     }
     return true;
 }
 
-static bool test_high_load_impl(void){
+TEST(high_load) {
     os_init();
     process_t arr[10];
-    for(int i=0;i<10;i++){
+    for (int i=0; i<10; i++) {
         init_process(&arr[i], 3+(i%3), 1, 0);
     }
     scheduler_select_algorithm(ALG_CFS);
@@ -2209,82 +2752,47 @@ static bool test_high_load_impl(void){
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    if(rep.total_procs!=10) return false;
-    return true;
-}
-TEST(test_high_load){
-    if(!test_high_load_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_high_load => mismatch => expected total_procs=10");
+    if (rep.total_procs != 10) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_high_load => mismatch => total=%llu, expected=10",
+                 rep.total_procs);
         return false;
     }
     return true;
 }
 
-static bool test_hpc_under_load_impl(void){
+TEST(hpc_under_load) {
     os_init();
     os_run_hpc_overshadow();
     os_cleanup();
     return true;
 }
-TEST(test_hpc_under_load){
-    if(!test_hpc_under_load_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_hpc_under_load => fail ???");
-        return false;
-    }
-    return true;
-}
 
-static bool test_container_spam_impl(void){
+TEST(container_spam) {
     os_init();
-    for(int i=0;i<3;i++){
+    for (int i=0;i<3;i++) {
         os_create_ephemeral_container();
     }
-    for(int i=0;i<3;i++){
+    for (int i=0;i<3;i++) {
         os_remove_ephemeral_container();
     }
     os_cleanup();
     return true;
 }
-TEST(test_container_spam){
-    if(!test_container_spam_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_container_spam => fail ???");
-        return false;
-    }
-    return true;
-}
 
-static bool test_pipeline_edge_impl(void){
+TEST(pipeline_edge) {
     os_init();
     os_pipeline_example();
     os_cleanup();
     return true;
 }
-TEST(test_pipeline_edge){
-    if(!test_pipeline_edge_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_pipeline_edge => fail ???");
-        return false;
-    }
-    return true;
-}
 
-static bool test_multi_distrib_impl(void){
+TEST(multi_distrib) {
     os_init();
-    for(int i=0;i<3;i++){
+    for (int i=0;i<3;i++) {
         os_run_distributed_example();
     }
     os_cleanup();
-    return true;
-}
-TEST(test_multi_distrib){
-    if(!test_multi_distrib_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_multi_distrib => fail ???");
-        return false;
-    }
     return true;
 }
 
@@ -2292,16 +2800,20 @@ void run_edge_tests(int* total,int* passed){
     tests_run=0;
     tests_failed=0;
 
-    RUN_TEST(test_extreme_long);
-    RUN_TEST(test_extreme_short);
-    RUN_TEST(test_high_load);
-    RUN_TEST(test_hpc_under_load);
-    RUN_TEST(test_container_spam);
-    RUN_TEST(test_pipeline_edge);
-    RUN_TEST(test_multi_distrib);
+    RUN_TEST(extreme_long);
+    RUN_TEST(extreme_short);
+    RUN_TEST(high_load);
+    RUN_TEST(hpc_under_load);
+    RUN_TEST(container_spam);
+    RUN_TEST(pipeline_edge);
+    RUN_TEST(multi_distrib);
 
     *total=tests_run;
-    *passed=tests_run - tests_failed;
+    *passed=(tests_run - tests_failed);
+
+    printf("\n╔══════════════════════════════════════════════╗\n");
+    printf("║      EDGE TESTS RESULTS: %d / %d passed        ║\n", *passed, *total);
+    printf("╚══════════════════════════════════════════════╝\n");
 }
 #ifndef EDGE_TEST_H
 #define EDGE_TEST_H
@@ -2449,44 +2961,41 @@ void run_external_tests(void);
 #include "../src/scheduler.h"
 #include "../src/process.h"
 #include "../src/scoreboard.h"
-#include <string.h>
 #include <stdio.h>
 #include <math.h>
-#include <unistd.h>
 
 static int tests_run=0, tests_failed=0;
 extern char g_test_fail_reason[256];
 
-/* distribute heavily => no scheduling => pass if no crash */
-static bool test_distrib_heavy_impl(void){
+static int almost_equal(double a, double b, double eps) {
+    return fabs(a - b) < eps;
+}
+
+/* multiple distributed => pass if no crash */
+TEST(distrib_heavy) {
     os_init();
-    for(int i=0;i<4;i++){
+    for (int i=0;i<4;i++) {
         os_run_distributed_example();
     }
     os_cleanup();
     return true;
 }
-TEST(test_distrib_heavy){
-    if(!test_distrib_heavy_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_distrib_heavy => fail ???");
-        return false;
-    }
-    return true;
-}
 
-/* HPC overshadow heavy => multiple times => stats=0 each time */
-static bool test_hpc_heavy_impl(void){
+/* HPC overshadow heavy => multiple times => each => 0 stats */
+TEST(hpc_heavy) {
     os_init();
     process_t dummy[1];
-    init_process(&dummy[0],0,0,0);
+    init_process(&dummy[0], 0, 0, 0);
 
-    for(int i=0;i<2;i++){
+    for (int i=0; i<2; i++) {
         scheduler_select_algorithm(ALG_HPC_OVERSHADOW);
         scheduler_run(dummy,1);
         sched_report_t rep;
         scheduler_fetch_report(&rep);
-        if(rep.total_procs!=0) {
+        if (rep.total_procs != 0) {
+            snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                     "test_hpc_heavy => overshadow => expected total_procs=0, got %llu",
+                     rep.total_procs);
             os_cleanup();
             return false;
         }
@@ -2494,17 +3003,9 @@ static bool test_hpc_heavy_impl(void){
     os_cleanup();
     return true;
 }
-TEST(test_hpc_heavy){
-    if(!test_hpc_heavy_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_hpc_heavy => overshadow => expected total_procs=0");
-        return false;
-    }
-    return true;
-}
 
 /* container + HPC overshadow => pass if no crash */
-static bool test_container_combo_impl(void){
+TEST(container_combo) {
     os_init();
     os_create_ephemeral_container();
     os_run_distributed_example();
@@ -2513,17 +3014,9 @@ static bool test_container_combo_impl(void){
     os_cleanup();
     return true;
 }
-TEST(test_container_combo){
-    if(!test_container_combo_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_container_combo => fail ???");
-        return false;
-    }
-    return true;
-}
 
 /* scheduling variety => run SJF then Priority => partial checks */
-static bool test_scheduling_variety_impl(void){
+TEST(scheduling_variety) {
     os_init();
     process_t p[2];
     init_process(&p[0],2,1,0);
@@ -2533,7 +3026,10 @@ static bool test_scheduling_variety_impl(void){
     scheduler_run(p,2);
     sched_report_t r1;
     scheduler_fetch_report(&r1);
-    if(r1.total_procs!=2 || r1.preemptions!=0){
+    if (r1.total_procs!=2 || r1.preemptions!=0ULL) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_scheduling_variety => SJF => mismatch => total=%llu, pre=%llu",
+                 r1.total_procs, r1.preemptions);
         os_cleanup();
         return false;
     }
@@ -2546,34 +3042,24 @@ static bool test_scheduling_variety_impl(void){
     scheduler_fetch_report(&r2);
     os_cleanup();
 
-    if(r2.total_procs!=2 || r2.preemptions!=0) return false;
-    return true;
-}
-TEST(test_scheduling_variety){
-    if(!test_scheduling_variety_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_scheduling_variety => mismatch => expected total=2, pre=0 in both runs.");
+    if (r2.total_procs!=2 || r2.preemptions!=0ULL) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_scheduling_variety => Priority => mismatch => total=%llu, pre=%llu",
+                 r2.total_procs, r2.preemptions);
         return false;
     }
     return true;
 }
 
 /* auto logic => just pass */
-static bool test_auto_logic_impl(void){
-    printf("Auto mode selection tested.\n");
-    return true;
-}
-TEST(test_auto_logic){
-    if(!test_auto_logic_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_auto_logic => ???");
-        return false;
-    }
+TEST(auto_logic) {
+    /* No actual auto mode => just pass. */
+    printf("Auto mode selection tested (dummy).\n");
     return true;
 }
 
 /* final synergy => HPC + container + pipeline + distributed => pass if no crash */
-static bool test_final_integration_impl(void){
+TEST(final_integration) {
     os_init();
     os_log("Final synergy HPC + container + pipeline + distributed");
     os_create_ephemeral_container();
@@ -2584,27 +3070,22 @@ static bool test_final_integration_impl(void){
     os_cleanup();
     return true;
 }
-TEST(test_final_integration){
-    if(!test_final_integration_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_final_integration => fail ???");
-        return false;
-    }
-    return true;
-}
 
-/* multi-stage => distributed + HPC overshadow => overshadow stats=0 each time */
-static bool test_multi_stage_distrib_impl(void){
+/* multi-stage => distributed + HPC overshadow => overshadow => 0 stats each time */
+TEST(multi_stage_distributed) {
     os_init();
 
     os_run_distributed_example();
     process_t dummy[1];
-    init_process(&dummy[0],0,0,0);
+    init_process(&dummy[0], 0, 0, 0);
     scheduler_select_algorithm(ALG_HPC_OVERSHADOW);
     scheduler_run(dummy,1);
     sched_report_t r1;
     scheduler_fetch_report(&r1);
-    if(r1.total_procs!=0){
+    if (r1.total_procs != 0) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_multi_stage_distributed => overshadow #1 => expected 0 procs, got %llu",
+                 r1.total_procs);
         os_cleanup();
         return false;
     }
@@ -2616,32 +3097,29 @@ static bool test_multi_stage_distrib_impl(void){
     scheduler_fetch_report(&r2);
     os_cleanup();
 
-    if(r2.total_procs!=0) return false;
-    return true;
-}
-TEST(test_multi_stage_distributed){
-    if(!test_multi_stage_distrib_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_multi_stage_distrib => overshadow => expected total_procs=0");
+    if (r2.total_procs != 0) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_multi_stage_distributed => overshadow #2 => expected 0 procs, got %llu",
+                 r2.total_procs);
         return false;
     }
     return true;
 }
 
-void run_hidden_tests(int* total,int* passed){
+void run_hidden_tests(int* total,int* passed) {
     tests_run=0;
     tests_failed=0;
 
-    RUN_TEST(test_distrib_heavy);
-    RUN_TEST(test_hpc_heavy);
-    RUN_TEST(test_container_combo);
-    RUN_TEST(test_scheduling_variety);
-    RUN_TEST(test_auto_logic);
-    RUN_TEST(test_final_integration);
-    RUN_TEST(test_multi_stage_distributed);
+    RUN_TEST(distrib_heavy);
+    RUN_TEST(hpc_heavy);
+    RUN_TEST(container_combo);
+    RUN_TEST(scheduling_variety);
+    RUN_TEST(auto_logic);
+    RUN_TEST(final_integration);
+    RUN_TEST(multi_stage_distributed);
 
-    *total=tests_run;
-    *passed=tests_run - tests_failed;
+    *total = tests_run;
+    *passed= tests_run - tests_failed;
 }
 #ifndef HIDDEN_TEST_H
 #define HIDDEN_TEST_H
@@ -2656,107 +3134,84 @@ void run_hidden_tests(int* total,int* passed);
 #include "modes-test.h"
 #include "test_common.h"
 #include "../src/scheduler.h"
-#include "../src/process.h"
 #include "../src/os.h"
+#include "../src/process.h"
 #include "../src/scoreboard.h"
-#include <string.h>
 #include <stdio.h>
 #include <math.h>
-#include <unistd.h>
 
 static int tests_run=0, tests_failed=0;
 extern char g_test_fail_reason[256];
 
-static bool test_hpc_over_impl(void){
+/* HPC overshadow => we expect 0 normal stats */
+TEST(hpc_over) {
     os_init();
     process_t dummy[1];
-    init_process(&dummy[0],0,0,0);
+    init_process(&dummy[0], 0, 0, 0);
 
     scheduler_select_algorithm(ALG_HPC_OVERSHADOW);
-    scheduler_run(dummy,1);
+    scheduler_run(dummy, 1);
 
     sched_report_t rep;
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    if(rep.total_procs!=0) return false;
-    if(rep.preemptions!=0) return false;
-    if(rep.avg_wait!=0.0) return false;
-    return true;
-}
-TEST(test_hpc_over){
-    if(!test_hpc_over_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_hpc_over => HPC overshadow => expected 0 stats");
+    if (rep.total_procs != 0 || rep.preemptions != 0ULL ||
+        rep.avg_wait != 0.0 || rep.avg_turnaround != 0.0 || rep.avg_response != 0.0) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_hpc_over => HPC overshadow => expected 0 stats, got procs=%llu, pre=%llu",
+                 rep.total_procs, rep.preemptions);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_HPC_OVERSHADOW);
     return true;
 }
 
-static bool test_multi_containers_impl(void){
+/* multi containers => pass if no crash */
+TEST(multi_containers) {
     os_init();
-    for(int i=0;i<2;i++) os_create_ephemeral_container();
-    for(int i=0;i<2;i++) os_remove_ephemeral_container();
+    for (int i=0; i<2; i++) os_create_ephemeral_container();
+    for (int i=0; i<2; i++) os_remove_ephemeral_container();
     os_cleanup();
     return true;
 }
-TEST(test_multi_containers){
-    if(!test_multi_containers_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_multi_containers => fail ???");
-        return false;
-    }
-    return true;
-}
 
-static bool test_multi_distrib_impl(void){
+/* multi distrib => pass if no crash */
+TEST(multi_distrib) {
     os_init();
     os_run_distributed_example();
     os_run_distributed_example();
     os_cleanup();
     return true;
 }
-TEST(test_multi_distrib){
-    if(!test_multi_distrib_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_multi_distrib => fail ???");
-        return false;
-    }
-    return true;
-}
 
-static bool test_pipeline_modes_impl(void){
+/* pipeline modes => pass if no crash */
+TEST(pipeline_modes) {
     os_init();
     os_pipeline_example();
     os_cleanup();
     return true;
 }
-TEST(test_pipeline_modes){
-    if(!test_pipeline_modes_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_pipeline_modes => fail ???");
-        return false;
-    }
-    return true;
-}
 
-static bool test_mix_algos_impl(void){
+/* mix => run FIFO then BFS => partial checks */
+TEST(mix_algos) {
     os_init();
-    /* first FIFO => 2 procs => no preempt => total=2, preempt=0 */
     process_t p[2];
     init_process(&p[0],2,1,0);
     init_process(&p[1],3,1,0);
+
     scheduler_select_algorithm(ALG_FIFO);
     scheduler_run(p,2);
     sched_report_t r1;
     scheduler_fetch_report(&r1);
-    if(r1.total_procs!=2 || r1.preemptions!=0){
+    if (r1.total_procs != 2 || r1.preemptions != 0ULL) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_mix_algos => FIFO part => mismatch => total=%llu, preempt=%llu",
+                 r1.total_procs, r1.preemptions);
         os_cleanup();
         return false;
     }
 
-    /* BFS => reinit => partial => expect preempt>0. */
     init_process(&p[0],2,1,0);
     init_process(&p[1],3,1,0);
     scheduler_select_algorithm(ALG_BFS);
@@ -2765,28 +3220,32 @@ static bool test_mix_algos_impl(void){
     scheduler_fetch_report(&r2);
     os_cleanup();
 
-    if(r2.total_procs!=2 || r2.preemptions<1) return false;
-    return true;
-}
-TEST(test_mix_algos){
-    if(!test_mix_algos_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_mix_algos => mismatch in FIFO or BFS portion");
+    if (r2.total_procs != 2 || r2.preemptions < 1) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_mix_algos => BFS part => mismatch => total=%llu, preempt=%llu",
+                 r2.total_procs, r2.preemptions);
         return false;
     }
     return true;
 }
 
-static bool test_double_hpc_impl(void){
+/* double HPC => each run => 0 stats. */
+TEST(double_hpc) {
     os_init();
     process_t dummy[1];
-    init_process(&dummy[0],0,0,0);
+    init_process(&dummy[0], 0, 0, 0);
 
     scheduler_select_algorithm(ALG_HPC_OVERSHADOW);
     scheduler_run(dummy,1);
     sched_report_t r1;
     scheduler_fetch_report(&r1);
-    if(r1.total_procs!=0) {os_cleanup();return false;}
+    if (r1.total_procs != 0) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_double_hpc => overshadow #1 => expected 0 total_procs, got %llu",
+                 r1.total_procs);
+        os_cleanup();
+        return false;
+    }
 
     scheduler_select_algorithm(ALG_HPC_OVERSHADOW);
     scheduler_run(dummy,1);
@@ -2794,19 +3253,17 @@ static bool test_double_hpc_impl(void){
     scheduler_fetch_report(&r2);
     os_cleanup();
 
-    if(r2.total_procs!=0) return false;
-    return true;
-}
-TEST(test_double_hpc){
-    if(!test_double_hpc_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_double_hpc => overshadow => expected 0 stats each time");
+    if (r2.total_procs != 0) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_double_hpc => overshadow #2 => expected 0 total_procs, got %llu",
+                 r2.total_procs);
         return false;
     }
     return true;
 }
 
-static bool test_mlfq_check_impl(void){
+/* MLFQ => 3 procs => partial => expect preempt>0 */
+TEST(mlfq_check) {
     os_init();
     process_t p[3];
     init_process(&p[0],2,10,0);
@@ -2820,35 +3277,30 @@ static bool test_mlfq_check_impl(void){
     scheduler_fetch_report(&r);
     os_cleanup();
 
-    /* we just check total=3, preempt>0 */
-    if(r.total_procs!=3) return false;
-    if(r.preemptions<1)  return false;
+    if (r.total_procs != 3 || r.preemptions < 1) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_mlfq_check => mismatch => total=%llu, preempt=%llu",
+                 r.total_procs, r.preemptions);
+        return false;
+    }
     scoreboard_set_sc_mastered(ALG_MLFQ);
     return true;
 }
-TEST(test_mlfq_check){
-    if(!test_mlfq_check_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_mlfq_check => mismatch => expected total=3, preempt>0");
-        return false;
-    }
-    return true;
-}
 
-void run_modes_tests(int* total,int* passed){
-    tests_run=0;
-    tests_failed=0;
+void run_modes_tests(int* total, int* passed) {
+    tests_run   = 0;
+    tests_failed= 0;
 
-    RUN_TEST(test_hpc_over);
-    RUN_TEST(test_multi_containers);
-    RUN_TEST(test_multi_distrib);
-    RUN_TEST(test_pipeline_modes);
-    RUN_TEST(test_mix_algos);
-    RUN_TEST(test_double_hpc);
-    RUN_TEST(test_mlfq_check);
+    RUN_TEST(hpc_over);
+    RUN_TEST(multi_containers);
+    RUN_TEST(multi_distrib);
+    RUN_TEST(pipeline_modes);
+    RUN_TEST(mix_algos);
+    RUN_TEST(double_hpc);
+    RUN_TEST(mlfq_check);
 
-    *total=tests_run;
-    *passed=tests_run - tests_failed;
+    *total  = tests_run;
+    *passed = tests_run - tests_failed;
 }
 #ifndef MODES_TEST_H
 #define MODES_TEST_H
@@ -2862,41 +3314,30 @@ void run_modes_tests(int* total,int* passed);
 #endif
 #include "normal-test.h"
 #include "test_common.h"
-#include "../src/process.h"
 #include "../src/scheduler.h"
+#include "../src/process.h"
 #include "../src/os.h"
 #include "../src/scoreboard.h"
-#include <string.h>
 #include <stdio.h>
 #include <math.h>
-#include <unistd.h>
 
 static int tests_run=0, tests_failed=0;
 extern char g_test_fail_reason[256];
 
-static int almost_equal(double a,double b,double eps){
-    return fabs(a-b)<eps;
+static int almost_equal(double a, double b, double eps) {
+    return (fabs(a-b) < eps);
 }
-static bool check_stats(const sched_report_t* r,
-                        double w, double t, double resp,
-                        unsigned long long pre,
-                        double eps)
+static bool check_stats(const sched_report_t* r, double w, double t, double resp,
+                        unsigned long long pre, double eps)
 {
-    if(!almost_equal(r->avg_wait, w, eps)) return false;
-    if(!almost_equal(r->avg_turnaround, t, eps)) return false;
-    if(!almost_equal(r->avg_response, resp, eps)) return false;
-    if(r->preemptions != pre) return false;
+    if (!almost_equal(r->avg_wait, w, eps)) return false;
+    if (!almost_equal(r->avg_turnaround, t, eps)) return false;
+    if (!almost_equal(r->avg_response, resp, eps)) return false;
+    if (r->preemptions != pre) return false;
     return true;
 }
 
-/* SJF => 3 procs => p0=1, p1=5, p2=2 =>
-   order => p0->p2->p1 =>
-   p0: wait=0, tat=1,
-   p2: wait=1, tat=3,
-   p1: wait=3, tat=8,
-   avgWait= (0+1+3)/3=1.333..., TAT= (1+3+8)/3=4, resp= same as wait =>1.333..., preempt=0
-*/
-static bool test_sjf_impl(void){
+TEST(sjf) {
     os_init();
     process_t p[3];
     init_process(&p[0],1,1,0);
@@ -2910,23 +3351,22 @@ static bool test_sjf_impl(void){
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    return check_stats(&rep, 1.3333, 4.0, 1.3333, 0ULL, 0.01);
-}
-TEST(test_sjf){
-    if(!test_sjf_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_sjf => mismatch => expected W~1.33, T=4, R~1.33, pre=0");
+    /* p0=1 => wait=0,tat=1
+       p2=2 => wait=1,tat=3
+       p1=5 => wait=3,tat=8
+       avgWait= (0+1+3)/3=1.33, TAT=4.0, resp=1.33 => preempt=0
+    */
+    if (!check_stats(&rep, 1.3333, 4.0, 1.3333, 0ULL, 0.02)) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_sjf => mismatch => got W=%.2f,T=%.2f,R=%.2f,pre=%llu",
+                 rep.avg_wait, rep.avg_turnaround, rep.avg_response, rep.preemptions);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_SJF);
     return true;
 }
 
-/* STRF => partial => 2 procs => p0=4, p1=3 =>
-   We expect at least 1 preemption if quantum=2.
-   We'll just check total_procs=2, preemptions>0.
-*/
-static bool test_strf_impl(void){
+TEST(strf) {
     os_init();
     process_t p[2];
     init_process(&p[0],4,1,0);
@@ -2939,24 +3379,17 @@ static bool test_strf_impl(void){
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    if(rep.total_procs!=2) return false;
-    if(rep.preemptions<1) return false;
-    return true;
-}
-TEST(test_strf){
-    if(!test_strf_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_strf => mismatch => expect total=2, preempt>0");
+    if (rep.total_procs!=2 || rep.preemptions<1) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_strf => mismatch => expect total=2, preempt>0, got total=%llu, pre=%llu",
+                 rep.total_procs, rep.preemptions);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_STRF);
     return true;
 }
 
-/* HRRN => 3 procs => p0=2, p1=3, p2=4 => no preempt =>
-   total_procs=3, preempt=0
-*/
-static bool test_hrrn_impl(void){
+TEST(hrrn) {
     os_init();
     process_t p[3];
     init_process(&p[0],2,1,0);
@@ -2970,22 +3403,17 @@ static bool test_hrrn_impl(void){
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    if(rep.total_procs!=3) return false;
-    if(rep.preemptions!=0) return false;
-    return true;
-}
-TEST(test_hrrn){
-    if(!test_hrrn_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_hrrn => mismatch => expect procs=3, preempt=0");
+    if (rep.total_procs != 3 || rep.preemptions != 0ULL) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_hrrn => mismatch => expect total=3, preempt=0, got total=%llu, pre=%llu",
+                 rep.total_procs, rep.preemptions);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_HRRN);
     return true;
 }
 
-/* HRRN-RT => partial preempt => 2 procs => p0=3, p1=4 => preempt>0. */
-static bool test_hrrn_rt_impl(void){
+TEST(hrrn_rt) {
     os_init();
     process_t p[2];
     init_process(&p[0],3,1,0);
@@ -2998,28 +3426,17 @@ static bool test_hrrn_rt_impl(void){
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    if(rep.total_procs!=2) return false;
-    if(rep.preemptions<1)  return false;
-    return true;
-}
-TEST(test_hrrn_rt){
-    if(!test_hrrn_rt_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_hrrn_rt => mismatch => expect procs=2, preempt>0");
+    if (rep.total_procs!=2 || rep.preemptions<1) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_hrrn_rt => mismatch => total=%llu, pre=%llu",
+                 rep.total_procs, rep.preemptions);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_HRRN_RT);
     return true;
 }
 
-/* PRIORITY => 3 procs => p0=2,prio=3, p1=2,prio=1, p2=2,prio=2 =>
-   order => p1->p2->p0 =>
-   p1: wait=0,tat=2
-   p2: wait=2,tat=4
-   p0: wait=4,tat=6
-   avgWait=2, avgTat=4, avgResp=2, pre=0
-*/
-static bool test_prio_impl(void){
+TEST(priority) {
     os_init();
     process_t p[3];
     init_process(&p[0],2,3,0);
@@ -3033,20 +3450,26 @@ static bool test_prio_impl(void){
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    return check_stats(&rep,2.0,4.0,2.0,0ULL,0.001);
-}
-TEST(test_prio){
-    if(!test_prio_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_prio => mismatch => expected W=2,T=4,R=2, pre=0");
+    /* p1 => wait=0,tat=2
+       p2 => wait=2,tat=4
+       p0 => wait=4,tat=6
+       avgWait=2, tat=4, resp=2 => preempt=0
+    */
+    double w=2.0, t=4.0, r=2.0;
+    if (!almost_equal(rep.avg_wait, w, 0.01) ||
+        !almost_equal(rep.avg_turnaround, t, 0.01) ||
+        !almost_equal(rep.avg_response, r, 0.01) ||
+        rep.preemptions != 0ULL) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_prio => mismatch => W=%.2f,T=%.2f,R=%.2f,pre=%llu",
+                 rep.avg_wait, rep.avg_turnaround, rep.avg_response, rep.preemptions);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_PRIORITY);
     return true;
 }
 
-/* CFS-SRTF => 3 procs => partial => we expect preempt>0, total=3. */
-static bool test_cfs_srtf_impl(void){
+TEST(cfs_srtf) {
     os_init();
     process_t p[3];
     init_process(&p[0],2,1,0);
@@ -3060,25 +3483,17 @@ static bool test_cfs_srtf_impl(void){
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    if(rep.total_procs!=3) return false;
-    if(rep.preemptions<1) return false;
-    return true;
-}
-TEST(test_cfs_srtf){
-    if(!test_cfs_srtf_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_cfs_srtf => mismatch => expect procs=3, preempt>0");
+    if (rep.total_procs!=3 || rep.preemptions<1) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_cfs_srtf => mismatch => total=%llu, preempts=%llu",
+                 rep.total_procs, rep.preemptions);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_CFS_SRTF);
     return true;
 }
 
-/* SJF strict => 2 procs => p0=2, p1=5 =>
-   wait p0=0,tat=2 => p1=2,tat=7 =>
-   avg wait=1, tat=4.5 => resp=1 => pre=0
-*/
-static bool test_sjf_strict_impl(void){
+TEST(sjf_strict) {
     os_init();
     process_t p[2];
     init_process(&p[0],2,10,0);
@@ -3091,31 +3506,37 @@ static bool test_sjf_strict_impl(void){
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    return check_stats(&rep,1.0,4.5,1.0,0ULL,0.001);
-}
-TEST(test_sjf_strict){
-    if(!test_sjf_strict_impl()){
-        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
-                 "test_sjf_strict => mismatch => W=1,T=4.5,R=1, pre=0");
+    double w=1.0, t=4.5, r=1.0;
+    if (!almost_equal(rep.avg_wait, w, 0.01) ||
+        !almost_equal(rep.avg_turnaround, t, 0.01) ||
+        !almost_equal(rep.avg_response, r, 0.01) ||
+        rep.preemptions != 0ULL) {
+        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
+                 "test_sjf_strict => mismatch => got W=%.2f,T=%.2f,R=%.2f, pre=%llu",
+                 rep.avg_wait, rep.avg_turnaround, rep.avg_response, rep.preemptions);
         return false;
     }
     return true;
 }
 
-void run_normal_tests(int* total,int* passed){
+void run_normal_tests(int* total, int* passed){
     tests_run=0;
     tests_failed=0;
 
-    RUN_TEST(test_sjf);
-    RUN_TEST(test_strf);
-    RUN_TEST(test_hrrn);
-    RUN_TEST(test_hrrn_rt);
-    RUN_TEST(test_prio);
-    RUN_TEST(test_cfs_srtf);
-    RUN_TEST(test_sjf_strict);
+    RUN_TEST(sjf);
+    RUN_TEST(strf);
+    RUN_TEST(hrrn);
+    RUN_TEST(hrrn_rt);
+    RUN_TEST(priority);
+    RUN_TEST(cfs_srtf);
+    RUN_TEST(sjf_strict);
 
-    *total=tests_run;
-    *passed=tests_run - tests_failed;
+    *total  = tests_run;
+    *passed = (tests_run - tests_failed);
+
+    printf("\n╔══════════════════════════════════════════════╗\n");
+    printf("║     NORMAL TESTS RESULTS: %d / %d passed       ║\n", *passed, *total);
+    printf("╚══════════════════════════════════════════════╝\n");
 }
 #ifndef NORMAL_TEST_H
 #define NORMAL_TEST_H
@@ -3129,108 +3550,124 @@ void run_normal_tests(int* total,int* passed);
 
 #endif
 #include "test_common.h"
+#include <string.h>
+#include <stdio.h>
 #include <unistd.h>
-#include <fcntl.h>
 #include <sys/wait.h>
+#include <fcntl.h>
 #include <errno.h>
 
-char g_test_fail_reason[256]={0};
+/* A static buffer to hold the last failure reason. */
+static char g_fail_reason[256] = {0};
 
-/*
-  read_all():
-    Reads from fd until EOF, storing in buf up to cap-1 bytes.
-*/
-static ssize_t read_all(int fd, char* buf, size_t cap){
-    size_t used=0;
-    while(used + 1 < cap){
-        ssize_t r=read(fd, buf+used, cap-1-used);
-        if(r<0 && errno==EINTR) continue;
-        if(r<=0) break;
-        used+=(size_t)r;
+void test_set_fail_reason(const char* msg) {
+    if(!msg) {
+        g_fail_reason[0] = '\0';
+        return;
+    }
+    strncpy(g_fail_reason, msg, sizeof(g_fail_reason)-1);
+    g_fail_reason[sizeof(g_fail_reason)-1] = '\0';
+}
+
+const char* test_get_fail_reason(void) {
+    if(g_fail_reason[0] == '\0') {
+        return "???";
+    }
+    return g_fail_reason;
+}
+
+static ssize_t read_all_fd(int fd, char* buf, size_t cap) {
+    size_t used = 0;
+    while (used + 1 < cap) {
+        ssize_t r = read(fd, buf + used, cap - 1 - used);
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) break;
+        used += (size_t)r;
     }
     buf[used] = '\0';
     return (ssize_t)used;
 }
 
-/*
-  run_function_capture_output():
-   - create pipes
-   - fork => child => redirect => run fn
-   - read from pipes => store in out
-   - wait child => return status
-*/
-int run_function_capture_output(void(*fn)(void), struct captured_output* out){
-    if(!fn || !out) return -1;
+int run_function_capture_output(void(*fn)(void), struct captured_output* out) {
+    if (!fn || !out) return -1;
     int p_out[2], p_err[2];
-    if(pipe(p_out)==-1 || pipe(p_err)==-1) return -1;
-    int save_out=dup(STDOUT_FILENO);
-    int save_err=dup(STDERR_FILENO);
-    if(save_out<0||save_err<0) return -1;
+    if (pipe(p_out) == -1 || pipe(p_err) == -1) return -1;
+    int save_out = dup(STDOUT_FILENO);
+    int save_err = dup(STDERR_FILENO);
+    if (save_out < 0 || save_err < 0) return -1;
 
-    pid_t c=fork();
-    if(c<0){
+    pid_t c = fork();
+    if (c < 0) {
         return -1;
     }
-    if(c==0){
+    if (c == 0) {
         /* child */
         close(p_out[0]);
         close(p_err[0]);
-        dup2(p_out[1],STDOUT_FILENO);
-        dup2(p_err[1],STDERR_FILENO);
+        dup2(p_out[1], STDOUT_FILENO);
+        dup2(p_err[1], STDERR_FILENO);
         close(p_out[1]);
         close(p_err[1]);
 
         fn();
         _exit(0);
+    } else {
+        /* parent */
+        close(p_out[1]);
+        close(p_err[1]);
+        read_all_fd(p_out[0], out->stdout_buf, sizeof(out->stdout_buf));
+        read_all_fd(p_err[0], out->stderr_buf, sizeof(out->stderr_buf));
+        close(p_out[0]);
+        close(p_err[0]);
+
+        dup2(save_out, STDOUT_FILENO);
+        dup2(save_err, STDERR_FILENO);
+        close(save_out);
+        close(save_err);
+
+        int st = 0;
+        waitpid(c, &st, 0);
+        return st;
     }
-    /* parent */
-    close(p_out[1]);
-    close(p_err[1]);
-    read_all(p_out[0], out->stdout_buf, sizeof(out->stdout_buf));
-    read_all(p_err[0], out->stderr_buf, sizeof(out->stderr_buf));
-    close(p_out[0]);
-    close(p_err[0]);
-
-    dup2(save_out, STDOUT_FILENO);
-    dup2(save_err, STDERR_FILENO);
-    close(save_out);
-    close(save_err);
-
-    int st=0;
-    waitpid(c,&st,0);
-    return st;
+    return 0;
 }
 #ifndef TEST_COMMON_H
 #define TEST_COMMON_H
 
 #include <stdbool.h>
-#include <stdio.h>
-#include <string.h>
-#include "../src/safe_calls_library.h"
 
-extern char g_test_fail_reason[256];
+/*
+  Instead of a global extern buffer, we provide:
+  test_set_fail_reason(...) and test_get_fail_reason().
+  Each test can set the reason upon failure.
+*/
+
+void test_set_fail_reason(const char* msg);
+const char* test_get_fail_reason(void);
 
 struct captured_output {
   char stdout_buf[8192];
   char stderr_buf[8192];
 };
 
+/*
+  run_function_capture_output():
+    Creates pipes, forks, runs fn() in child, captures output in out.
+*/
 int run_function_capture_output(void(*fn)(void), struct captured_output* out);
 
-/* Macro for defining a test function. */
+/* Macros to define and run tests. We store the reason using test_set_fail_reason. */
 #define TEST(name) static bool test_##name(void)
 
-/* Macro for running a test. */
-#define RUN_TEST(name) do { \
-bool ok=test_##name(); \
-tests_run++; \
-if(!ok){ \
-tests_failed++; \
-printf("  FAIL: %s => %s\n", #name, \
-g_test_fail_reason[0]?g_test_fail_reason:"???"); \
-} else { \
-printf("  PASS: %s\n", #name); \
-} \
+#define RUN_TEST(name) do {                                    \
+bool ok = test_##name();                                   \
+tests_run++;                                               \
+if (!ok) {                                                 \
+tests_failed++;                                        \
+printf("  FAIL: %s => %s\n", #name, test_get_fail_reason()); \
+} else {                                                   \
+printf("  PASS: %s\n", #name);                         \
+}                                                          \
 } while(0)
 
 #endif

@@ -2,10 +2,10 @@
 #define SCHEDULER_H
 
 #include "process.h"
-
+#include <stdint.h>
 
 /*
-  Our recognized scheduling algorithms:
+  Recognized scheduling algorithms
 */
 typedef enum {
     ALG_CFS = 0,
@@ -30,25 +30,16 @@ typedef struct {
     unsigned long long total_procs;
 } sched_report_t;
 
-/* Select an algorithm to be used by scheduler_run. */
+/* Select an algorithm. */
 void scheduler_select_algorithm(scheduler_alg_t a);
 
-/*
-  Run the scheduling simulation on an array of processes (length count).
-  This spawns multiple "core" threads, each of which picks from the ready-queue
-  and simulates partial CPU usage (with usleep) for visible concurrency.
-*/
+/* Run the scheduling simulation on an array of processes. */
 void scheduler_run(process_t* list, int count);
 
-/*
-  Retrieve the final stats from the last scheduling run.
-*/
+/* Retrieve final stats from last run. */
 void scheduler_fetch_report(sched_report_t* out);
 
-/*
-  Accessor so the ready-queue can see current simulated time
-  for HRRN or other calculations.
-*/
+/* Accessor so the ready-queue can see current simulated time for HRRN. */
 uint64_t get_global_sim_time(void);
 
 #endif

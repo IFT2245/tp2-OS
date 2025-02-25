@@ -8,7 +8,7 @@
 #include <math.h>
 
 static int tests_run=0, tests_failed=0;
-extern char g_test_fail_reason[256];
+static char g_test_fail_reason[256];
 
 /* HPC overshadow => we expect 0 normal stats */
 TEST(hpc_over) {

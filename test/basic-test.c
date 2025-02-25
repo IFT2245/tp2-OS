@@ -9,18 +9,13 @@
 #include <math.h>
 
 static int tests_run=0, tests_failed=0;
+static char g_test_fail_reason[256];
 
 static int almost_equal(double a, double b, double eps) {
     return (fabs(a - b) < eps);
 }
-extern char g_test_fail_reason[256];
 
-/*
-  test_fifo => 2 procs => p0=3ms, p1=5ms => arrival=0 => no preemption
-  p0: wait=0, tat=3
-  p1: wait=3, tat=8
-  avgWait=1.5, avgTAT=5.5, avgResp=1.5 => preempt=0
-*/
+/* test_fifo => ... */
 TEST(fifo) {
     os_init();
     process_t p[2];
@@ -48,9 +43,6 @@ TEST(fifo) {
     return true;
 }
 
-/* test_rr => p0=2, p1=2 => quantum=2 => each finishes in its single slice => no preempt =>
-   p0 wait=0, tat=2 => p1 wait=2, tat=4 => avg wait=1, tat=3, resp=1 => preempt=0
-*/
 TEST(rr) {
     os_init();
     process_t p[2];
@@ -78,10 +70,6 @@ TEST(rr) {
     return true;
 }
 
-/* CFS => 2 procs => p0=3, p1=4 => no preempt =>
-   p0: wait=0,tat=3 => p1: wait=3,tat=7 =>
-   avg wait=1.5, tat=5.0, resp=1.5 => preempt=0
-*/
 TEST(cfs) {
     os_init();
     process_t p[2];
@@ -109,7 +97,6 @@ TEST(cfs) {
     return true;
 }
 
-/* BFS => 3 procs => partial => quantum=2 => expect at least 1 preempt */
 TEST(bfs) {
     os_init();
     process_t p[3];
@@ -134,7 +121,6 @@ TEST(bfs) {
     return true;
 }
 
-/* pipeline => pass if no crash */
 TEST(pipeline) {
     os_init();
     os_pipeline_example();
@@ -142,7 +128,6 @@ TEST(pipeline) {
     return true;
 }
 
-/* distributed => pass if no crash */
 TEST(distributed) {
     os_init();
     os_run_distributed_example();
@@ -150,7 +135,6 @@ TEST(distributed) {
     return true;
 }
 
-/* FIFO strict => 2 procs => p0=3, p1=4 => same as cfs test => W=1.5,T=5.0,R=1.5, pre=0 */
 TEST(fifo_strict) {
     os_init();
     process_t p[2];
@@ -177,9 +161,9 @@ TEST(fifo_strict) {
     return true;
 }
 
-void run_basic_tests(int* total, int* passed) {
-    tests_run = 0;
-    tests_failed = 0;
+void run_basic_tests(int* total, int* passed){
+    tests_run=0;
+    tests_failed=0;
 
     RUN_TEST(fifo);
     RUN_TEST(rr);
@@ -190,5 +174,10 @@ void run_basic_tests(int* total, int* passed) {
     RUN_TEST(fifo_strict);
 
     *total  = tests_run;
-    *passed = tests_run - tests_failed;
+    *passed = (tests_run - tests_failed);
+
+    /* Show final block. */
+    printf("\n╔══════════════════════════════════════════════╗\n");
+    printf("║       BASIC TESTS RESULTS: %d / %d passed      ║\n", *passed, *total);
+    printf("╚══════════════════════════════════════════════╝\n");
 }
