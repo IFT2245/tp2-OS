@@ -14,11 +14,11 @@ void run_external_tests_menu(void);
 
 /*
   Run shell commands concurrently with a chosen scheduling mode or all modes.
-  count        => how many commands
-  lines        => array of string commands
-  coreCount    => how many CPU cores
-  mode         => which mode to use; if -1 => all
-  allModes     => 1 => run all modes, 0 => single mode
+  - count        => how many commands
+  - lines        => array of string commands
+  - coreCount    => how many CPU cores
+  - mode         => which mode to use; if -1 => run all
+  - allModes     => 1 => run all modes, 0 => single mode
 */
 void run_shell_commands_concurrently(int count,
                                      char** lines,

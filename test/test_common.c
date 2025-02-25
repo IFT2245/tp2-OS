@@ -5,6 +5,7 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <stdarg.h>
 
 static char g_fail_reason[256] = {0};
 

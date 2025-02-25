@@ -8,20 +8,8 @@
 static scoreboard_t gSB = {
     0,0,0,0,0,0,  0,0,0,0,0,0,
     0,0,0,0,0,0,
-    60.0 /* pass_threshold default */
+    60.0 /* pass_threshold default => 60% */
 };
-
-/* Forward static function prototypes are not used; we define directly above usage. */
-
-/* scoreboard_init: no-op */
-void scoreboard_init(void) {
-    /* no-op */
-}
-
-/* scoreboard_close: no-op */
-void scoreboard_close(void) {
-    /* no-op */
-}
 
 static char* read_file_all(const char* path) {
     FILE* f = fopen(path, "rb");
@@ -121,10 +109,17 @@ static void write_scoreboard_json(const scoreboard_t* sb) {
     fclose(f);
 }
 
+void scoreboard_init(void) {
+    /* no-op */
+}
+
+void scoreboard_close(void) {
+    /* no-op */
+}
+
 void scoreboard_load(void) {
     char* json = read_file_all("scoreboard.json");
     if(!json) {
-        /* update_unlocks below will recalc percentages => defaults. */
         return;
     }
 
@@ -165,36 +160,41 @@ void scoreboard_load(void) {
     free(json);
 }
 
-/* Weighted pass check => if a suite's pass% >= pass_threshold => "unlocked". */
-static int is_suite_unlocked(scoreboard_suite_t suite) {
-    /* Recompute pass percents: */
+/* Recompute pass% => locked/unlocked logic => we store in scoreboard for easy usage. */
+static void recompute_pass_percents(void) {
     if(gSB.basic_total>0)
         gSB.basic_percent = (gSB.basic_pass  *100.0)/(double)gSB.basic_total;
     else
         gSB.basic_percent = 0.0;
+
     if(gSB.normal_total>0)
         gSB.normal_percent = (gSB.normal_pass *100.0)/(double)gSB.normal_total;
     else
         gSB.normal_percent = 0.0;
+
     if(gSB.external_total>0)
         gSB.external_percent = (gSB.external_pass*100.0)/(double)gSB.external_total;
     else
         gSB.external_percent = 0.0;
+
     if(gSB.modes_total>0)
         gSB.modes_percent = (gSB.modes_pass  *100.0)/(double)gSB.modes_total;
     else
         gSB.modes_percent = 0.0;
+
     if(gSB.edge_total>0)
         gSB.edge_percent = (gSB.edge_pass   *100.0)/(double)gSB.edge_total;
     else
         gSB.edge_percent = 0.0;
+
     if(gSB.hidden_total>0)
         gSB.hidden_percent = (gSB.hidden_pass *100.0)/(double)gSB.hidden_total;
     else
         gSB.hidden_percent = 0.0;
+}
 
+static int is_suite_unlocked(scoreboard_suite_t suite) {
     double T = gSB.pass_threshold;
-
     switch(suite) {
     case SUITE_BASIC:
         return (gSB.basic_percent >= T) ? 1 : 0;
@@ -213,24 +213,8 @@ static int is_suite_unlocked(scoreboard_suite_t suite) {
     }
 }
 
-void scoreboard_save(void) {
-    /* Ensure our pass% is up to date before writing. */
-    (void)is_suite_unlocked(SUITE_BASIC);
-    write_scoreboard_json(&gSB);
-}
-
-void scoreboard_clear(void) {
-    memset(&gSB, 0, sizeof(gSB));
-    gSB.pass_threshold = 60.0;
-    scoreboard_save();
-}
-
-void get_scoreboard(scoreboard_t* out) {
-    if(out) *out = gSB;
-}
-
+/* BFS=2, HPC=2, MLFQ=2, others=1 => up to 15 total => form 10% of overall. */
 static int get_scheduler_points(void) {
-    /* BFS=2, HPC=2, MLFQ=2, others=1 => up to 15 total. */
     int points = 0;
     if(gSB.sc_fifo)         points += 1;
     if(gSB.sc_rr)           points += 1;
@@ -247,29 +231,34 @@ static int get_scheduler_points(void) {
     return points;
 }
 
-/* Weighted blocks:
-   basic => 32%
-   normal => 20%
-   external => 10%
-   modes => 10%
-   edge => 10%
-   hidden => 8%
-   sched mastery => 10%
-*/
-int scoreboard_get_final_score(void) {
-    /* Recompute pass% in is_suite_unlocked: */
-    (void)is_suite_unlocked(SUITE_BASIC);
+void scoreboard_save(void) {
+    recompute_pass_percents();
+    write_scoreboard_json(&gSB);
+}
 
-    double b  = gSB.basic_percent     * 0.32;
-    double n  = gSB.normal_percent    * 0.20;
-    double e  = gSB.external_percent  * 0.10;
-    double m  = gSB.modes_percent     * 0.10;
-    double ed = gSB.edge_percent      * 0.10;
-    double h  = gSB.hidden_percent    * 0.08;
+void scoreboard_clear(void) {
+    memset(&gSB, 0, sizeof(gSB));
+    gSB.pass_threshold = 60.0;
+    scoreboard_save();
+}
+
+void get_scoreboard(scoreboard_t* out) {
+    if(out) *out = gSB;
+}
+
+int scoreboard_get_final_score(void) {
+    recompute_pass_percents();
+
+    double b  = gSB.basic_percent     * 0.32; /* basic => 32% */
+    double n  = gSB.normal_percent    * 0.20; /* normal => 20% */
+    double e  = gSB.external_percent  * 0.10; /* external => 10% */
+    double m  = gSB.modes_percent     * 0.10; /* modes => 10% */
+    double ed = gSB.edge_percent      * 0.10; /* edge => 10% */
+    double h  = gSB.hidden_percent    * 0.08; /* hidden => 8% */
 
     int sched_pts = get_scheduler_points();
     double sched_percent = ((double)sched_pts / 15.0)*100.0;
-    double s = sched_percent * 0.10; /* 10% of overall */
+    double s = sched_percent * 0.10;  /* scheduling mastery => 10% of overall */
 
     double total = b + n + e + m + ed + h + s;
     if(total>100.0) total=100.0;
@@ -278,6 +267,7 @@ int scoreboard_get_final_score(void) {
 }
 
 int scoreboard_is_unlocked(scoreboard_suite_t suite) {
+    recompute_pass_percents();
     return is_suite_unlocked(suite);
 }
 
@@ -295,7 +285,7 @@ void scoreboard_set_sc_mastered(scheduler_alg_t alg) {
     case ALG_PRIORITY:      gSB.sc_priority  = 1; break;
     case ALG_HPC_OVERSHADOW:gSB.sc_hpc_over  = 1; break;
     case ALG_MLFQ:          gSB.sc_mlfq      = 1; break;
-    default: break;
+    default:                break;
     }
 }
 

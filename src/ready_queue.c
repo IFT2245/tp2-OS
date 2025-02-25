@@ -21,13 +21,14 @@ static struct {
     node_t           ml_queues[MLFQ_MAX_QUEUES]; /* heads for MLFQ */
 } gQ;
 
+/* no forward declarations => define static helper functions before usage. */
+
+/* For HRRN ratio => need global sim time from scheduler. */
+extern uint64_t get_global_sim_time(void);
+
 static pthread_mutex_t* pm(void) { return &gQ.m; }
 static pthread_cond_t*  pc(void) { return &gQ.c; }
 
-/* External from scheduler for HRRN calculations: */
-extern uint64_t get_global_sim_time(void);
-
-/* Helpers: pop from sentinel->next. */
 static process_t* pop_head(void) {
     node_t* head = gQ.sentinel.next;
     if (!head) return NULL;
@@ -51,7 +52,7 @@ static void push_tail(process_t* p) {
 }
 
 static void push_priority(process_t* p) {
-    /* smaller priority => earlier */
+    /* smaller priority => earlier in the list */
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
     n->next = NULL;
@@ -81,7 +82,7 @@ static void push_cfs(process_t* p) {
 }
 
 static void push_sjf(process_t* p) {
-    /* sorted by burst_time ascending */
+    /* sorted by original burst_time ascending */
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
     n->next = NULL;
@@ -95,7 +96,8 @@ static void push_sjf(process_t* p) {
     gQ.size++;
 }
 
-/* HRRN ratio => (waiting + remain)/remain => bigger => earlier. */
+/* HRRN ratio => (waiting + remain) / remain => bigger => earlier.
+   We'll store only numerator for comparison => waiting+remain. */
 static uint64_t hrrn_val(process_t* p, uint64_t now) {
     uint64_t wait = (now > p->arrival_time) ? (now - p->arrival_time) : 0ULL;
     uint64_t remain = (p->remaining_time > 0) ? p->remaining_time : 1ULL;
@@ -103,7 +105,8 @@ static uint64_t hrrn_val(process_t* p, uint64_t now) {
 }
 
 static void push_hrrn(process_t* p, int preemptive) {
-    (void)preemptive; /* same insertion logic, preempt handled differently in runner. */
+    (void)preemptive; /* same insertion logic, preempt is handled in scheduler runner. */
+
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
     n->next = NULL;
@@ -124,7 +127,7 @@ static void push_hrrn(process_t* p, int preemptive) {
     gQ.size++;
 }
 
-/* MLFQ => multiple queues, pop from highest non-empty queue. */
+/* MLFQ => multiple queues => pop from highest non-empty queue. */
 static process_t* pop_mlfq(void) {
     for (int i=0; i<MLFQ_MAX_QUEUES; i++) {
         if (gQ.ml_queues[i].next) {
@@ -156,7 +159,7 @@ static void push_mlfq(process_t* p) {
     gQ.size++;
 }
 
-/* function pointers for push/pop. */
+/* We'll store function pointers for push/pop. */
 static process_t* (*f_pop)(void) = NULL;
 static void       (*f_push)(process_t*) = NULL;
 static int        g_preemptive = 0;
@@ -221,7 +224,7 @@ void ready_queue_init_policy(scheduler_alg_t alg) {
     case ALG_MLFQ:
         f_push = (void (*)(process_t*))push_mlfq;
         f_pop  = (process_t* (*)(void))pop_mlfq;
-        g_preemptive = 1; /* typical MLFQ is preemptive */
+        g_preemptive = 1;
         break;
 
     default:
@@ -244,6 +247,8 @@ void ready_queue_push(process_t* p) {
     if (p) {
         if (gQ.alg == ALG_HRRN || gQ.alg == ALG_HRRN_RT) {
             push_hrrn(p, (gQ.alg==ALG_HRRN_RT)?1:0);
+        } else if (gQ.alg == ALG_MLFQ) {
+            push_mlfq(p);
         } else {
             f_push(p);
         }

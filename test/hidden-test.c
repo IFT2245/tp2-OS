@@ -1,69 +1,23 @@
 #include "hidden-test.h"
 #include "test_common.h"
+
 #include "../src/os.h"
 #include "../src/scheduler.h"
 #include "../src/process.h"
 #include "../src/scoreboard.h"
+
 #include <stdio.h>
 #include <math.h>
 
 static int tests_run=0, tests_failed=0;
 static char g_test_fail_reason[256];
 
-/* prototypes */
-static bool test_distrib_heavy(void);
-static bool test_hpc_heavy(void);
-static bool test_container_combo(void);
-static bool test_scheduling_variety(void);
-static bool test_auto_logic(void);
-static bool test_final_integration(void);
-static bool test_multi_stage_distributed(void);
-
-/* For sub-sub menu. */
-typedef bool(*hidden_test_fn)(void);
-static hidden_test_fn g_hidden_tests[] = {
-    test_distrib_heavy,
-    test_hpc_heavy,
-    test_container_combo,
-    test_scheduling_variety,
-    test_auto_logic,
-    test_final_integration,
-    test_multi_stage_distributed
-};
-static const char* g_hidden_test_names[] = {
-    "Distrib Heavy",
-    "HPC Heavy",
-    "Container + HPC Combo",
-    "Scheduling Variety",
-    "Auto Logic (dummy)",
-    "Final Integration",
-    "Multi-stage Distributed"
-};
-static const int g_hidden_count = (int)(sizeof(g_hidden_tests)/sizeof(g_hidden_tests[0]));
-
-int hidden_test_get_count(void){ return g_hidden_count; }
-const char* hidden_test_get_name(int index){
-    if(index<0 || index>=g_hidden_count) return NULL;
-    return g_hidden_test_names[index];
-}
-int hidden_test_run_single(int index){
-    if(index<0 || index>=g_hidden_count) return 0;
-    tests_run=0; tests_failed=0;
-    bool ok = g_hidden_tests[index]();
-    int passcount = ok ? 1 : 0;
-    scoreboard_update_hidden(1, passcount);
-    scoreboard_save();
-    return passcount;
-}
-
-/* Helpers */
 static int almost_equal(double a, double b, double eps){
     return fabs(a - b) < eps;
 }
 
-static bool test_distrib_heavy(void){
+TEST(distrib_heavy) {
     os_init();
-    tests_run++;
     for(int i=0;i<4;i++){
         os_run_distributed_example();
     }
@@ -71,11 +25,10 @@ static bool test_distrib_heavy(void){
     return true;
 }
 
-static bool test_hpc_heavy(void){
+TEST(hpc_heavy) {
     os_init();
-    tests_run++;
     process_t dummy[1];
-    init_process(&dummy[0], 0, 0, 0);
+    init_process(&dummy[0], 0,0,0);
 
     for(int i=0;i<2;i++){
         scheduler_select_algorithm(ALG_HPC_OVERSHADOW);
@@ -83,11 +36,10 @@ static bool test_hpc_heavy(void){
         sched_report_t rep;
         scheduler_fetch_report(&rep);
         if(rep.total_procs != 0){
-            tests_failed++;
-            char buf[256];
-            snprintf(buf,sizeof(buf),
-                     "test_hpc_heavy => overshadow => expected total_procs=0, got %llu",
+            snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
+                     "test_hpc_heavy => overshadow => expected 0 procs, got %llu",
                      rep.total_procs);
+            test_set_fail_reason(g_test_fail_reason);
             os_cleanup();
             return false;
         }
@@ -96,9 +48,8 @@ static bool test_hpc_heavy(void){
     return true;
 }
 
-static bool test_container_combo(void){
+TEST(container_combo) {
     os_init();
-    tests_run++;
     os_create_ephemeral_container();
     os_run_distributed_example();
     os_run_hpc_overshadow();
@@ -107,10 +58,8 @@ static bool test_container_combo(void){
     return true;
 }
 
-static bool test_scheduling_variety(void){
+TEST(scheduling_variety) {
     os_init();
-    tests_run++;
-
     process_t p[2];
     init_process(&p[0],2,1,0);
     init_process(&p[1],6,2,0);
@@ -120,11 +69,10 @@ static bool test_scheduling_variety(void){
     sched_report_t r1;
     scheduler_fetch_report(&r1);
     if(r1.total_procs!=2 || r1.preemptions!=0ULL){
-        tests_failed++;
-        char buf[256];
-        snprintf(buf,sizeof(buf),
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
                  "test_scheduling_variety => SJF => mismatch => total=%llu, pre=%llu",
                  r1.total_procs, r1.preemptions);
+        test_set_fail_reason(g_test_fail_reason);
         os_cleanup();
         return false;
     }
@@ -138,26 +86,23 @@ static bool test_scheduling_variety(void){
     os_cleanup();
 
     if(r2.total_procs!=2 || r2.preemptions!=0ULL){
-        tests_failed++;
-        char buf[256];
-        snprintf(buf,sizeof(buf),
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
                  "test_scheduling_variety => Priority => mismatch => total=%llu, pre=%llu",
                  r2.total_procs, r2.preemptions);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
 
     return true;
 }
 
-static bool test_auto_logic(void){
-    tests_run++;
-    /* no real auto => pass */
+TEST(auto_logic) {
+    /* dummy => pass */
     return true;
 }
 
-static bool test_final_integration(void){
+TEST(final_integration) {
     os_init();
-    tests_run++;
     os_log("Final synergy HPC + container + pipeline + distributed");
     os_create_ephemeral_container();
     os_run_hpc_overshadow();
@@ -168,11 +113,10 @@ static bool test_final_integration(void){
     return true;
 }
 
-static bool test_multi_stage_distributed(void){
+TEST(multi_stage_distributed) {
     os_init();
-
-    tests_run++;
     os_run_distributed_example();
+
     process_t dummy[1];
     init_process(&dummy[0], 0, 0, 0);
     scheduler_select_algorithm(ALG_HPC_OVERSHADOW);
@@ -180,11 +124,10 @@ static bool test_multi_stage_distributed(void){
     sched_report_t r1;
     scheduler_fetch_report(&r1);
     if(r1.total_procs != 0){
-        tests_failed++;
-        char buf[256];
-        snprintf(buf,sizeof(buf),
-                 "test_multi_stage_distributed => overshadow #1 => expected 0 procs, got %llu",
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
+                 "test_multi_stage_distributed => overshadow #1 => got %llu procs, expected 0",
                  r1.total_procs);
+        test_set_fail_reason(g_test_fail_reason);
         os_cleanup();
         return false;
     }
@@ -197,11 +140,10 @@ static bool test_multi_stage_distributed(void){
     os_cleanup();
 
     if(r2.total_procs != 0){
-        tests_failed++;
-        char buf[256];
-        snprintf(buf,sizeof(buf),
-                 "test_multi_stage_distributed => overshadow #2 => expected 0 procs, got %llu",
+        snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
+                 "test_multi_stage_distributed => overshadow #2 => got %llu procs, expected 0",
                  r2.total_procs);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     return true;
@@ -211,14 +153,23 @@ void run_hidden_tests(int* total,int* passed){
     tests_run=0;
     tests_failed=0;
 
-    test_distrib_heavy();
-    test_hpc_heavy();
-    test_container_combo();
-    test_scheduling_variety();
-    test_auto_logic();
-    test_final_integration();
-    test_multi_stage_distributed();
+    printf("\n\033[1m\033[93m╔══════════ HIDDEN TESTS START ══════════╗\033[0m\n");
+
+    RUN_TEST(distrib_heavy);
+    RUN_TEST(hpc_heavy);
+    RUN_TEST(container_combo);
+    RUN_TEST(scheduling_variety);
+    RUN_TEST(auto_logic);
+    RUN_TEST(final_integration);
+    RUN_TEST(multi_stage_distributed);
 
     *total = tests_run;
     *passed= (tests_run - tests_failed);
+
+    printf("\033[1m\033[93m╔══════════════════════════════════════════════╗\n");
+    printf("║      HIDDEN TESTS RESULTS: %d / %d passed       ║\n", *passed, *total);
+    if(*passed < *total) {
+        printf("║    FAILURES => see above logs for reasons    ║\n");
+    }
+    printf("╚══════════════════════════════════════════════╝\033[0m\n");
 }

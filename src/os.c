@@ -11,7 +11,6 @@
 #include <time.h>
 #include <string.h>
 
-/* Colors for nice logs */
 #define CLR_RESET   "\033[0m"
 #define CLR_BOLD    "\033[1m"
 #define CLR_MAGENTA "\033[95m"
@@ -19,7 +18,7 @@
 #define CLR_GREEN   "\033[92m"
 #define CLR_YELLOW  "\033[93m"
 
-/* Speed-friendly sleep function => scale by speed mode. */
+/* If speed mode=fast => scale down sleeps heavily. */
 static void sim_sleep(unsigned int us) {
     int sm = stats_get_speed_mode();
     if(sm == 1) {
@@ -29,7 +28,7 @@ static void sim_sleep(unsigned int us) {
     }
 }
 
-/* Concurrency stop flag stored here, set by set_os_concurrency_stop_flag(...). */
+/* concurrency stop flag => set by set_os_concurrency_stop_flag(...). */
 static volatile sig_atomic_t g_concurrency_stop_flag = 0;
 
 void set_os_concurrency_stop_flag(int val) {
@@ -40,13 +39,14 @@ int os_concurrency_stop_requested(void) {
     return (int)g_concurrency_stop_flag;
 }
 
-/* Time reference. */
+/* For time measurement. */
 static uint64_t g_start_ms = 0;
 
-/* Container management */
+/* Up to 32 ephemeral containers. */
 static int       g_container_count = 0;
-static char      g_container_paths[32][256]; /* up to 32 ephemeral containers */
+static char      g_container_paths[32][256];
 
+/* current monotonic time in ms. */
 static uint64_t now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -68,7 +68,7 @@ void os_init(void) {
 }
 
 void os_cleanup(void) {
-    /* remove any leftover ephemeral containers in reverse order */
+    /* remove ephemeral containers in reverse order. */
     while (g_container_count > 0) {
         g_container_count--;
         const char* path = g_container_paths[g_container_count];
@@ -93,7 +93,8 @@ uint64_t os_time(void) {
 }
 
 void os_log(const char* msg) {
-    if (msg) {
+    /* normal => print, fast => skip to reduce spam. */
+    if (stats_get_speed_mode() == 0 && msg) {
         printf("%s\n", msg);
         sim_sleep(150000);
     }
@@ -126,7 +127,8 @@ void os_remove_ephemeral_container(void) {
     }
 }
 
-/* HPC overshadow thread => CPU-bound workload. */
+/* HPC overshadow => CPU-bound threads. */
+
 static void* overshadow_thread(void* arg) {
     long *ret = (long*)arg;
     long sum = 0;
@@ -171,6 +173,7 @@ void os_run_hpc_overshadow(void) {
     sim_sleep(200000);
 }
 
+/* pipeline => fork child, do minimal logs. */
 void os_pipeline_example(void) {
     printf(CLR_CYAN "╔══════════════════════════════════════════════╗\n");
     printf("║             PIPELINE BLOCK START            ║\n");
@@ -200,6 +203,7 @@ void os_pipeline_example(void) {
     sim_sleep(200000);
 }
 
+/* distributed => fork child that runs HPC overshadow. */
 void os_run_distributed_example(void) {
     printf(CLR_CYAN "╔══════════════════════════════════════════════╗\n");
     printf("║          DISTRIBUTED BLOCK START            ║\n");

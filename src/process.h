@@ -4,9 +4,16 @@
 #include <stdint.h>
 
 /*
-  Single "process" (or "task") in our scheduler.
-  Fields for original burst_time, priority, arrival_time,
-  plus scheduling fields: vruntime, remaining_time, etc.
+  Single "process" (or "task") structure for scheduling.
+  Fields:
+   - burst_time
+   - priority
+   - vruntime
+   - arrival_time
+   - remaining_time
+   - stats (start_time, end_time, first_response, responded)
+   - MLFQ queue level
+   - times_owning_core
 */
 
 typedef struct process_s {

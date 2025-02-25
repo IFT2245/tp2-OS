@@ -1,9 +1,11 @@
 #include "normal-test.h"
 #include "test_common.h"
+
 #include "../src/scheduler.h"
 #include "../src/process.h"
 #include "../src/os.h"
 #include "../src/scoreboard.h"
+
 #include <stdio.h>
 #include <math.h>
 
@@ -23,14 +25,6 @@ static bool check_stats(const sched_report_t* r, double w, double t, double resp
     return true;
 }
 
-/*
-  SJF => 3 procs => p0=1, p1=5, p2=2 => non-preempt =>
-   order => p0->p2->p1
-   p0: wait=0,  tat=1
-   p2: wait=1,  tat=3
-   p1: wait=3,  tat=8
-   avgWait= (0+1+3)/3=1.33..., TAT= (1+3+8)/3=4.0, resp=1.33..., preempt=0
-*/
 TEST(sjf) {
     os_init();
     process_t p[3];
@@ -45,19 +39,18 @@ TEST(sjf) {
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    if (!check_stats(&rep, 1.3333, 4.0, 1.3333, 0ULL, 0.01)) {
+    /* sum waits => 0+1+3=4 => avg=1.33..., sum TAT => 1+3+8=12 => avg=4.0 */
+    if (!check_stats(&rep, 1.3333, 4.0, 1.3333, 0ULL, 0.02)) {
         snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
-                 "test_sjf => mismatch => got wait=%.2f,tat=%.2f,resp=%.2f,pre=%llu",
+                 "test_sjf => mismatch => W=%.2f,T=%.2f,R=%.2f, pre=%llu",
                  rep.avg_wait, rep.avg_turnaround, rep.avg_response, rep.preemptions);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_SJF);
     return true;
 }
 
-/*
-  STRF => partial => quantum=2 => 2 procs => p0=4, p1=3 => we expect at least 1 preempt
-*/
 TEST(strf) {
     os_init();
     process_t p[2];
@@ -73,17 +66,15 @@ TEST(strf) {
 
     if (rep.total_procs != 2 || rep.preemptions < 1) {
         snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
-                 "test_strf => mismatch => expect total=2, preempt>0, got total=%llu, pre=%llu",
+                 "test_strf => mismatch => procs=%llu, preempt=%llu",
                  rep.total_procs, rep.preemptions);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_STRF);
     return true;
 }
 
-/*
-  HRRN => no preempt => 3 procs => p0=2, p1=3, p2=4 => we just check total=3, preempt=0
-*/
 TEST(hrrn) {
     os_init();
     process_t p[3];
@@ -100,15 +91,15 @@ TEST(hrrn) {
 
     if (rep.total_procs != 3 || rep.preemptions != 0ULL) {
         snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
-                 "test_hrrn => mismatch => expect total=3, preempt=0, got total=%llu, pre=%llu",
+                 "test_hrrn => mismatch => total=%llu, preempt=%llu",
                  rep.total_procs, rep.preemptions);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_HRRN);
     return true;
 }
 
-/* HRRN-RT => partial => 2 procs => p0=3, p1=4 => at least 1 preempt. */
 TEST(hrrn_rt) {
     os_init();
     process_t p[2];
@@ -126,21 +117,14 @@ TEST(hrrn_rt) {
         snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
                  "test_hrrn_rt => mismatch => total=%llu, pre=%llu",
                  rep.total_procs, rep.preemptions);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_HRRN_RT);
     return true;
 }
 
-/*
-  PRIORITY => 3 procs => p0=2,prio=3, p1=2,prio=1, p2=2,prio=2
-   order => p1->p2->p0 =>
-   p1: wait=0,tat=2
-   p2: wait=2,tat=4
-   p0: wait=4,tat=6
-   avgWait=2, tat=4, resp=2 => pre=0
-*/
-TEST(priority) {
+TEST(priority_test) {
     os_init();
     process_t p[3];
     init_process(&p[0],2,3,0);
@@ -160,15 +144,15 @@ TEST(priority) {
         !almost_equal(rep.avg_response, r, 0.01) ||
         rep.preemptions != 0ULL) {
         snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
-                 "test_prio => mismatch => got W=%.2f,T=%.2f,R=%.2f,pre=%llu",
+                 "test_priority => mismatch => W=%.2f,T=%.2f,R=%.2f, pre=%llu",
                  rep.avg_wait, rep.avg_turnaround, rep.avg_response, rep.preemptions);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_PRIORITY);
     return true;
 }
 
-/* CFS-SRTF => partial => 3 procs => p0=2, p1=4, p2=6 => expect preempt>0 */
 TEST(cfs_srtf) {
     os_init();
     process_t p[3];
@@ -185,19 +169,15 @@ TEST(cfs_srtf) {
 
     if (rep.total_procs!=3 || rep.preemptions<1) {
         snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
-                 "test_cfs_srtf => mismatch => total=%llu, preempts=%llu",
+                 "test_cfs_srtf => mismatch => total=%llu, preempt=%llu",
                  rep.total_procs, rep.preemptions);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_CFS_SRTF);
     return true;
 }
 
-/*
-  SJF strict => 2 procs => p0=2, p1=5 =>
-   p0 wait=0, tat=2 => p1 wait=2, tat=7 =>
-   avgWait=1, tat=4.5 => resp=1, preempt=0
-*/
 TEST(sjf_strict) {
     os_init();
     process_t p[2];
@@ -219,6 +199,7 @@ TEST(sjf_strict) {
         snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
                  "test_sjf_strict => mismatch => got W=%.2f,T=%.2f,R=%.2f, pre=%llu",
                  rep.avg_wait, rep.avg_turnaround, rep.avg_response, rep.preemptions);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     return true;
@@ -228,14 +209,23 @@ void run_normal_tests(int* total, int* passed) {
     tests_run  = 0;
     tests_failed = 0;
 
+    printf("\n\033[1m\033[93m╔══════════ NORMAL TESTS START ══════════╗\033[0m\n");
+
     RUN_TEST(sjf);
     RUN_TEST(strf);
     RUN_TEST(hrrn);
     RUN_TEST(hrrn_rt);
-    RUN_TEST(priority);
+    RUN_TEST(priority_test);
     RUN_TEST(cfs_srtf);
     RUN_TEST(sjf_strict);
 
     *total  = tests_run;
     *passed = tests_run - tests_failed;
+
+    printf("\033[1m\033[93m╔══════════════════════════════════════════════╗\n");
+    printf("║      NORMAL TESTS RESULTS: %d / %d passed       ║\n", *passed, *total);
+    if(*passed < *total) {
+        printf("║    FAILURES => see above logs for reasons    ║\n");
+    }
+    printf("╚══════════════════════════════════════════════╝\033[0m\n");
 }

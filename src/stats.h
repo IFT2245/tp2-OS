@@ -1,7 +1,7 @@
 #ifndef STATS_H
 #define STATS_H
 
-/* Colors */
+/* Colors for ASCII art convenience. */
 #define CLR_RESET   "\033[0m"
 #define CLR_BOLD    "\033[1m"
 #define CLR_MAGENTA "\033[95m"
@@ -12,8 +12,9 @@
 #define CLR_CYAN    "\033[96m"
 
 /*
-   stats.h => a global struct tracking concurrency usage, signals, etc.
+   stats.h => a global struct tracking concurrency usage, signals, tests, etc.
 */
+
 typedef struct {
     int signals_received_sigint;
     int signals_received_sigterm;

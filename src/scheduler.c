@@ -3,12 +3,14 @@
 #include "worker.h"
 #include "os.h"
 #include "stats.h"
+
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
 
+/* number of cores limit */
 #ifndef MAX_CORES
 #define MAX_CORES 4
 #endif
@@ -21,12 +23,12 @@ static int             g_running     = 0;
 static uint64_t        g_sim_time = 0;
 static pthread_mutex_t g_sim_time_lock = PTHREAD_MUTEX_INITIALIZER;
 
-uint64_t get_global_sim_time(void) {
-    pthread_mutex_lock(&g_sim_time_lock);
-    uint64_t t = g_sim_time;
-    pthread_mutex_unlock(&g_sim_time_lock);
-    return t;
-}
+/* HPC overshadow mode => no normal stats. */
+static int HPC_over_mode = 0;
+
+/* store processes pointer and count for final stats. */
+static process_t* g_process_list = NULL;
+static int        g_list_count   = 0;
 
 /* accumulators for stats. */
 static double gAvgWait = 0.0, gAvgTAT = 0.0, gAvgResp = 0.0;
@@ -38,17 +40,11 @@ static uint64_t g_total_resp = 0ULL;
 static unsigned long long g_total_preempts = 0ULL;
 static int                g_total_count    = 0;
 
-static int HPC_over_mode = 0;
-static process_t* g_process_list = NULL;
-static int        g_list_count   = 0;
-
-static void sim_sleep_scheduler(unsigned int us){
-    int sm = stats_get_speed_mode();
-    if(sm==1){
-        usleep(us/10 + 1);
-    } else {
-        usleep(us);
-    }
+uint64_t get_global_sim_time(void) {
+    pthread_mutex_lock(&g_sim_time_lock);
+    uint64_t t = g_sim_time;
+    pthread_mutex_unlock(&g_sim_time_lock);
+    return t;
 }
 
 static void reset_accumulators(void) {
@@ -68,10 +64,50 @@ static void reset_accumulators(void) {
     g_sim_time     = 0;
 }
 
+/* in normal mode => we slow down to show steps, in fast => minimal wait. */
+static void sim_sleep_scheduler(unsigned int us){
+    int sm = stats_get_speed_mode();
+    if(sm==1){
+        usleep(us/10 + 1);
+    } else {
+        usleep(us);
+    }
+}
+
 void scheduler_select_algorithm(scheduler_alg_t a) {
     g_current_alg = a;
 }
 
+static void finalize_stats(void) {
+    if(HPC_over_mode || g_list_count <= 0) {
+        return;
+    }
+    for(int i=0; i<g_list_count; i++) {
+        process_t* P = &g_process_list[i];
+        uint64_t at = P->arrival_time;
+        uint64_t st = P->first_response;
+        uint64_t et = P->end_time;
+
+        uint64_t wait = (st > at) ? (st - at) : 0ULL;
+        uint64_t tat  = (et > at) ? (et - at) : 0ULL;
+        uint64_t resp = wait;
+
+        g_total_wait += wait;
+        g_total_tat  += tat;
+        g_total_resp += resp;
+    }
+    g_total_count = g_list_count;
+
+    if(g_total_count > 0) {
+        gAvgWait = (double)g_total_wait / (double)g_total_count;
+        gAvgTAT  = (double)g_total_tat  / (double)g_total_count;
+        gAvgResp = (double)g_total_resp / (double)g_total_count;
+    }
+    gPreemptions = g_total_preempts;
+    gProcs       = g_total_count;
+}
+
+/* thread function => continuously pop from queue => run partial => push back or finalize. */
 static void* core_thread_func(void* arg) {
     long core_id = (long)arg;
     unsigned long quantum = 2; /* small quantum for preemptive algs */
@@ -79,19 +115,24 @@ static void* core_thread_func(void* arg) {
     while(g_running) {
         process_t* p = ready_queue_pop();
         if(!g_running || !p) {
+            /* might be shutting down => break. */
             continue;
         }
         uint64_t real_t = os_time();
-        printf("\033[93m[time=%llu ms] => container=1 core=%ld => scheduling processPtr=%p\n"
-               "   => burst_time=%lu, prio=%d, vruntime=%llu, remain=%llu, timesScheduled=%d\033[0m\n",
-               (unsigned long long)real_t,
-               core_id, (void*)p,
-               (unsigned long)p->burst_time,
-               p->priority,
-               (unsigned long long)p->vruntime,
-               (unsigned long long)p->remaining_time,
-               p->times_owning_core);
-        sim_sleep_scheduler(300000);
+
+        /* skip printing if speed=fast => reduce spam. */
+        if(stats_get_speed_mode()==0) {
+            printf("\033[93m[time=%llu ms] => container=1 core=%ld => scheduling processPtr=%p\n"
+                   "   => burst_time=%lu, prio=%d, vruntime=%llu, remain=%llu, timesScheduled=%d\033[0m\n",
+                   (unsigned long long)real_t,
+                   core_id, (void*)p,
+                   (unsigned long)p->burst_time,
+                   p->priority,
+                   (unsigned long long)p->vruntime,
+                   (unsigned long long)p->remaining_time,
+                   p->times_owning_core);
+            sim_sleep_scheduler(300000);
+        }
 
         if(!p->responded) {
             p->responded = 1;
@@ -127,7 +168,7 @@ static void* core_thread_func(void* arg) {
 
         simulate_process_partial(p, slice, (int)core_id);
 
-        /* increment g_sim_time. */
+        /* increment g_sim_time by 'slice' for scheduling. */
         pthread_mutex_lock(&g_sim_time_lock);
         g_sim_time += slice;
         uint64_t now_sim = g_sim_time;
@@ -140,11 +181,13 @@ static void* core_thread_func(void* arg) {
 
         if(preemptive && p->remaining_time > 0) {
             __sync_fetch_and_add(&g_total_preempts, 1ULL);
-            printf("\033[94m   => PREEMPT => processPtr=%p => new remain=%llu => preemptions=%llu\033[0m\n",
-                   (void*)p,
-                   (unsigned long long)p->remaining_time,
-                   (unsigned long long)g_total_preempts);
-            sim_sleep_scheduler(300000);
+            if(stats_get_speed_mode()==0) {
+                printf("\033[94m   => PREEMPT => processPtr=%p => new remain=%llu => preemptions=%llu\033[0m\n",
+                       (void*)p,
+                       (unsigned long long)p->remaining_time,
+                       (unsigned long long)g_total_preempts);
+                sim_sleep_scheduler(300000);
+            }
 
             if(g_current_alg == ALG_MLFQ) {
                 p->mlfq_level++;
@@ -152,45 +195,16 @@ static void* core_thread_func(void* arg) {
             ready_queue_push(p);
         } else {
             p->end_time = now_sim;
-            printf("\033[92m   => FINISH => processPtr=%p => total CPU used=%lu ms => time=%llu ms\033[0m\n",
-                   (void*)p,
-                   (unsigned long)slice,
-                   (unsigned long long)os_time());
-            sim_sleep_scheduler(300000);
+            if(stats_get_speed_mode()==0) {
+                printf("\033[92m   => FINISH => processPtr=%p => total CPU used=%lu ms => time=%llu ms\033[0m\n",
+                       (void*)p,
+                       (unsigned long)slice,
+                       (unsigned long long)os_time());
+                sim_sleep_scheduler(300000);
+            }
         }
     }
     return NULL;
-}
-
-static void finalize_stats(void) {
-    if(HPC_over_mode || g_list_count <= 0) {
-        return;
-    }
-    for(int i=0; i<g_list_count; i++) {
-        process_t* P = &g_process_list[i];
-        uint64_t at = P->arrival_time;
-        uint64_t st = P->first_response;
-        uint64_t et = P->end_time;
-        uint64_t bt = P->burst_time;
-
-        uint64_t wait = (st > at) ? (st - at) : 0ULL;
-        uint64_t tat  = (et > at) ? (et - at) : 0ULL;
-        uint64_t resp = wait;
-
-        g_total_wait += wait;
-        g_total_tat  += tat;
-        g_total_resp += resp;
-        (void)bt; /* not always needed in this final calc. */
-    }
-    g_total_count = g_list_count;
-
-    if(g_total_count > 0) {
-        gAvgWait = (double)g_total_wait / (double)g_total_count;
-        gAvgTAT  = (double)g_total_tat  / (double)g_total_count;
-        gAvgResp = (double)g_total_resp / (double)g_total_count;
-    }
-    gPreemptions = g_total_preempts;
-    gProcs       = g_total_count;
 }
 
 void scheduler_run(process_t* list, int count) {
@@ -199,27 +213,30 @@ void scheduler_run(process_t* list, int count) {
 
     if(g_current_alg == ALG_HPC_OVERSHADOW) {
         HPC_over_mode = 1;
+        /* Just run HPC overshadow, no stats. */
         printf("\n\033[95m╔══════════════════════════════════════════════╗\n");
-        printf("║       SCHEDULE NAME => HPC-OVERSHADOW        ║\n");
-        printf("╚══════════════════════════════════════════════╝\033[0m\n");
+        printf(         "║       SCHEDULE NAME => HPC-OVERSHADOW        ║\n");
+        printf(         "╚══════════════════════════════════════════════╝\033[0m\n");
         sim_sleep_scheduler(300000);
 
         os_run_hpc_overshadow();
 
         printf("\033[96m╔══════════════════════════════════════════════╗\n");
-        printf("║  SCHEDULE END => HPC-OVERSHADOW => no stats  ║\n");
-        printf("╚══════════════════════════════════════════════╝\033[0m\n");
+        printf(       "║  SCHEDULE END => HPC-OVERSHADOW => no stats  ║\n");
+        printf(       "╚══════════════════════════════════════════════╝\033[0m\n");
         sim_sleep_scheduler(300000);
         return;
     }
 
+    /* For display. */
     printf("\n\033[95m╔══════════════════════════════════════════════╗\n");
-    printf("║   SCHEDULE NAME => %d (enum)                 ║\n", g_current_alg);
-    printf("║   Number of processes => %d                  ║\n", count);
-    printf("║   Time start => %llu ms                      ║\n", (unsigned long long)os_time());
-    printf("╚══════════════════════════════════════════════╝\033[0m\n");
+    printf(         "║   SCHEDULE NAME => %d (enum)                 ║\n", g_current_alg);
+    printf(         "║   Number of processes => %d                  ║\n", count);
+    printf(         "║   Time start => %llu ms                      ║\n", (unsigned long long)os_time());
+    printf(         "╚══════════════════════════════════════════════╝\033[0m\n");
     sim_sleep_scheduler(300000);
 
+    /* Decide number of cores. BFS or MLFQ => 2 cores, else 1. (example) */
     switch(g_current_alg) {
     case ALG_BFS:
     case ALG_MLFQ:
@@ -236,6 +253,7 @@ void scheduler_run(process_t* list, int count) {
     g_list_count   = count;
     g_running      = 1;
 
+    /* push all procs. */
     for(int i=0; i<count; i++) {
         ready_queue_push(&list[i]);
     }
@@ -248,9 +266,14 @@ void scheduler_run(process_t* list, int count) {
 
     while(ready_queue_size() > 0) {
         sim_sleep_scheduler(200000);
+        if(os_concurrency_stop_requested()) {
+            /* if concurrency stop => break early. The leftover queue gets free popped. */
+            break;
+        }
     }
-    g_running = 0;
 
+    g_running = 0;
+    /* push NULL to unblock threads. */
     for(int i=0; i<n; i++) {
         ready_queue_push(NULL);
     }
@@ -263,10 +286,10 @@ void scheduler_run(process_t* list, int count) {
 
     uint64_t total_time = get_global_sim_time();
     printf("\033[96m╔══════════════════════════════════════════════╗\n");
-    printf("║ SCHEDULE END => alg=%d => totalTime=%llums    ║\n", g_current_alg, (unsigned long long)total_time);
-    printf("║ Stats: preemptions=%llu, totalProcs=%llu     ║\n", (unsigned long long)gPreemptions, (unsigned long long)gProcs);
-    printf("║ AvgWait=%.2f, AvgTAT=%.2f, AvgResp=%.2f       ║\n", gAvgWait, gAvgTAT, gAvgResp);
-    printf("╚══════════════════════════════════════════════╝\033[0m\n");
+    printf(       "║ SCHEDULE END => alg=%d => totalTime=%llums    ║\n", g_current_alg, (unsigned long long)total_time);
+    printf(       "║ Stats: preemptions=%llu, totalProcs=%llu     ║\n", (unsigned long long)gPreemptions, (unsigned long long)gProcs);
+    printf(       "║ AvgWait=%.2f, AvgTAT=%.2f, AvgResp=%.2f       ║\n", gAvgWait, gAvgTAT, gAvgResp);
+    printf(       "╚══════════════════════════════════════════════╝\033[0m\n");
     sim_sleep_scheduler(300000);
 
     g_process_list = NULL;

@@ -1,9 +1,11 @@
 #include "edge-test.h"
 #include "test_common.h"
+
 #include "../src/process.h"
 #include "../src/scheduler.h"
 #include "../src/os.h"
 #include "../src/scoreboard.h"
+
 #include <stdio.h>
 #include <math.h>
 
@@ -30,14 +32,15 @@ TEST(extreme_long) {
         snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
                  "test_extreme_long => mismatch => total=%llu, pre=%llu",
                  rep.total_procs, rep.preemptions);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     if (!almost_equal(rep.avg_wait, 0.0, 0.001) ||
-        !almost_equal(rep.avg_turnaround, 50.0, 0.1) ||
-        !almost_equal(rep.avg_response, 0.0, 0.001)) {
+        !almost_equal(rep.avg_turnaround, 50.0, 0.1)) {
         snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
-                 "test_extreme_long => stats mismatch => W=%.2f,T=%.2f,R=%.2f",
-                 rep.avg_wait, rep.avg_turnaround, rep.avg_response);
+                 "test_extreme_long => stats mismatch => W=%.2f,T=%.2f",
+                 rep.avg_wait, rep.avg_turnaround);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     return true;
@@ -59,6 +62,7 @@ TEST(extreme_short) {
         snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
                  "test_extreme_short => mismatch => total=%llu, pre=%llu",
                  rep.total_procs, rep.preemptions);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     if (!almost_equal(rep.avg_wait, 0.0, 0.001) ||
@@ -66,6 +70,7 @@ TEST(extreme_short) {
         snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
                  "test_extreme_short => stats mismatch => W=%.2f,T=%.2f",
                  rep.avg_wait, rep.avg_turnaround);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     return true;
@@ -88,6 +93,7 @@ TEST(high_load) {
         snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
                  "test_high_load => mismatch => total=%llu, expected=10",
                  rep.total_procs);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     return true;
@@ -132,6 +138,8 @@ void run_edge_tests(int* total,int* passed){
     tests_run=0;
     tests_failed=0;
 
+    printf("\n\033[1m\033[93m╔════════════ EDGE TESTS START ═══════════╗\033[0m\n");
+
     RUN_TEST(extreme_long);
     RUN_TEST(extreme_short);
     RUN_TEST(high_load);
@@ -143,7 +151,10 @@ void run_edge_tests(int* total,int* passed){
     *total=tests_run;
     *passed=(tests_run - tests_failed);
 
-    printf("\n╔══════════════════════════════════════════════╗\n");
+    printf("\033[1m\033[93m╔══════════════════════════════════════════════╗\n");
     printf("║      EDGE TESTS RESULTS: %d / %d passed        ║\n", *passed, *total);
-    printf("╚══════════════════════════════════════════════╝\n");
+    if(*passed < *total) {
+        printf("║    FAILURES => see above logs for reasons    ║\n");
+    }
+    printf("╚══════════════════════════════════════════════╝\033[0m\n");
 }

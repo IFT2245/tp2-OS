@@ -67,10 +67,10 @@ void scoreboard_set_sc_mastered(scheduler_alg_t alg);
 /* Update raw counts for each test suite. */
 void scoreboard_update_basic(int total, int pass);
 void scoreboard_update_normal(int total, int pass);
-void scoreboard_update_external(int total, int pass);
-void scoreboard_update_modes(int total, int pass);
-void scoreboard_update_edge(int total, int pass);
-void scoreboard_update_hidden(int total, int pass);
+void scoreboard_update_external(int total,int pass);
+void scoreboard_update_modes(int total,int pass);
+void scoreboard_update_edge(int total,int pass);
+void scoreboard_update_hidden(int total,int pass);
 
 /* Check if suite is unlocked (pass% >= pass_threshold). */
 int scoreboard_is_unlocked(scoreboard_suite_t suite);

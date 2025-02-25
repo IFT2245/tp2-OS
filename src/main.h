@@ -3,7 +3,7 @@
 
 /* Main menu and related helpers for the OS Scheduling Game. */
 
-/* Cleanup function that saves scoreboard, prints stats, and exits. */
+/* Cleanup function that saves scoreboard, prints stats, and exits the program. */
 void cleanup_and_exit(int code);
 
 /* Signal handler for SIGINT, SIGTERM, SIGUSR1. */

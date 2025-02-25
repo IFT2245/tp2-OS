@@ -6,7 +6,7 @@ static stats_t g_stats;
 
 void stats_init(void) {
     memset(&g_stats, 0, sizeof(g_stats));
-    g_stats.speed_mode = 0; /* default normal */
+    g_stats.speed_mode = 0; /* default normal mode */
 }
 
 void stats_get(stats_t* out) {

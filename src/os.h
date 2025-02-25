@@ -10,10 +10,10 @@
    - pipeline
    - distributed example
    - time logging for user display logs
-   - concurrency stop check
+   - concurrency stop check (used by SIGUSR1/SIGTERM)
 */
 
-/* Sets the concurrency stop flag (e.g. after SIGUSR1). */
+/* Sets the concurrency stop flag (e.g. after SIGUSR1 or SIGTERM). */
 void set_os_concurrency_stop_flag(int val);
 
 /* Returns if concurrency stop was requested. */
@@ -28,7 +28,7 @@ void os_cleanup(void);
 /* Returns real-world time in ms since os_init(). */
 uint64_t os_time(void);
 
-/* Optionally log a message with a short delay for user-friendly pacing. */
+/* Optionally log a message with a short delay for user-friendly pacing in normal mode. */
 void os_log(const char* msg);
 
 /* Ephemeral container operations. */

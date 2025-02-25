@@ -1,61 +1,33 @@
 #include "external-test.h"
 #include "test_common.h"
+
 #include "../src/os.h"
 #include "../src/scheduler.h"
 #include "../src/process.h"
 #include "../src/scoreboard.h"
 #include "../src/runner.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 
-/* We'll track test counts. */
 static int tests_run=0, tests_failed=0;
 static char g_test_fail_reason[256];
 
-/* prototypes */
+/* Prototypes for local test functions: */
 static bool test_external_hpc(void);
 static bool test_external_bfs(void);
 static bool test_run_shell_concurrency(void);
 
-/* Array for single test picking. */
-typedef bool(*ext_test_fn)(void);
-static ext_test_fn g_ext_tests[] = {
-    test_external_hpc,
-    test_external_bfs,
-    test_run_shell_concurrency
-};
-static const char* g_ext_names[] = {
-    "External HPC Overshadow",
-    "External BFS Check",
-    "Shell Concurrency"
-};
-static const int g_ext_count = (int)(sizeof(g_ext_tests)/sizeof(g_ext_tests[0]));
+/* We do not forward-declare the run tests in .c if they're used below this point.
+   We'll define them before usage. */
 
-int external_test_get_count(void){
-    return g_ext_count;
-}
-const char* external_test_get_name(int index){
-    if(index<0 || index>=g_ext_count) return NULL;
-    return g_ext_names[index];
-}
-int external_test_run_single(int index){
-    if(index<0 || index>=g_ext_count) return 0;
-    tests_run=0; tests_failed=0;
-    bool ok = g_ext_tests[index]();
-    int passcount = ok ? 1 : 0;
-    scoreboard_update_external(1, passcount);
-    scoreboard_save();
-    return passcount;
-}
-
-/* Implementations */
 static bool test_external_hpc(void)
 {
     os_init();
     process_t dummy[1];
-    init_process(&dummy[0], 0,0,0);
+    init_process(&dummy[0], 0, 0, 0);
 
     scheduler_select_algorithm(ALG_HPC_OVERSHADOW);
     scheduler_run(dummy,1);
@@ -70,6 +42,7 @@ static bool test_external_hpc(void)
         snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
                  "test_external_hpc => expected total_procs=0, got %llu",
                  (unsigned long long)rep.total_procs);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     return true;
@@ -96,6 +69,7 @@ static bool test_external_bfs(void)
                  "test_external_bfs => mismatch => procs=%llu, preempt=%llu",
                  (unsigned long long)rep.total_procs,
                  (unsigned long long)rep.preemptions);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     return true;
@@ -116,17 +90,23 @@ static bool test_run_shell_concurrency(void)
 
 void run_external_tests(void)
 {
-    printf("[External] => Starting external tests.\n");
-    /* We'll run all 3. */
+    printf("\n\033[1m\033[93m╔═════════ EXTERNAL TESTS START ═════════╗\033[0m\n");
+
+    /* We'll run all external tests here. */
     tests_run=0;
     tests_failed=0;
 
-    test_external_hpc();
-    test_external_bfs();
-    test_run_shell_concurrency();
+    bool ok1 = test_external_hpc();
+    bool ok2 = test_external_bfs();
+    bool ok3 = test_run_shell_concurrency();
 
-    scoreboard_update_external(tests_run, tests_run - tests_failed);
+    scoreboard_update_external(tests_run, (tests_run - tests_failed));
     scoreboard_save();
 
-    printf("[External] => %d total, %d passed.\n", tests_run, (tests_run - tests_failed));
+    printf("\033[1m\033[93m╔════════════════════════════════════════════╗\n");
+    printf("║   EXTERNAL TESTS RESULTS: %d / %d passed     ║\n", (tests_run - tests_failed), tests_run);
+    if(tests_failed>0) {
+        printf("║   FAILURES => see reason above logs        ║\n");
+    }
+    printf("╚════════════════════════════════════════════╝\033[0m\n");
 }

@@ -1,10 +1,12 @@
 #include "basic-test.h"
 #include "test_common.h"
+
 #include "../src/scheduler.h"
 #include "../src/process.h"
 #include "../src/os.h"
 #include "../src/scoreboard.h"
 #include "../src/worker.h"
+
 #include <stdio.h>
 #include <math.h>
 
@@ -15,7 +17,8 @@ static int almost_equal(double a, double b, double eps) {
     return (fabs(a - b) < eps);
 }
 
-/* test_fifo => ... */
+/* We define all test functions here (no forward declarations needed). */
+
 TEST(fifo) {
     os_init();
     process_t p[2];
@@ -37,6 +40,7 @@ TEST(fifo) {
         snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
                  "test_fifo => mismatch, got W=%.2f,T=%.2f,R=%.2f, pre=%llu",
                  rep.avg_wait, rep.avg_turnaround, rep.avg_response, rep.preemptions);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_FIFO);
@@ -64,6 +68,7 @@ TEST(rr) {
         snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
                  "test_rr => mismatch, got W=%.2f,T=%.2f,R=%.2f, pre=%llu",
                  rep.avg_wait, rep.avg_turnaround, rep.avg_response, rep.preemptions);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_RR);
@@ -91,6 +96,7 @@ TEST(cfs) {
         snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
                  "test_cfs => mismatch, got W=%.2f,T=%.2f,R=%.2f, pre=%llu",
                  rep.avg_wait, rep.avg_turnaround, rep.avg_response, rep.preemptions);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_CFS);
@@ -115,6 +121,7 @@ TEST(bfs) {
         snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
                  "test_bfs => mismatch => expected procs=3, preempt>0, got procs=%llu, preempts=%llu",
                  rep.total_procs, rep.preemptions);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     scoreboard_set_sc_mastered(ALG_BFS);
@@ -156,6 +163,7 @@ TEST(fifo_strict) {
         snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
                  "test_fifo_strict => mismatch => W=%.2f,T=%.2f,R=%.2f, pre=%llu",
                  rep.avg_wait, rep.avg_turnaround, rep.avg_response, rep.preemptions);
+        test_set_fail_reason(g_test_fail_reason);
         return false;
     }
     return true;
@@ -164,6 +172,8 @@ TEST(fifo_strict) {
 void run_basic_tests(int* total, int* passed){
     tests_run=0;
     tests_failed=0;
+
+    printf("\n" CLR_BOLD CLR_YELLOW "╔════════════ BASIC TESTS START ═════════════╗" CLR_RESET "\n");
 
     RUN_TEST(fifo);
     RUN_TEST(rr);
@@ -177,7 +187,10 @@ void run_basic_tests(int* total, int* passed){
     *passed = (tests_run - tests_failed);
 
     /* Show final block. */
-    printf("\n╔══════════════════════════════════════════════╗\n");
+    printf(CLR_BOLD CLR_YELLOW "╔══════════════════════════════════════════════╗\n");
     printf("║       BASIC TESTS RESULTS: %d / %d passed      ║\n", *passed, *total);
-    printf("╚══════════════════════════════════════════════╝\n");
+    if(*passed < *total) {
+        printf("║    FAILURES => see above logs for reasons    ║\n");
+    }
+    printf("╚══════════════════════════════════════════════╝\n" CLR_RESET);
 }

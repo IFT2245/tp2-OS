@@ -1,4 +1,3 @@
-#include <unistd.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +16,10 @@
 #include "../test/modes-test.h"
 #include "../test/edge-test.h"
 #include "../test/hidden-test.h"
+
+/* We use this to track whether SIGTERM was received so we can stop concurrency
+   or test suites, but remain in the main menu. */
+static volatile sig_atomic_t g_return_to_menu = 0;
 
 /* ---------------------------------------------------------
    Implementation of functions declared in main.h
@@ -52,6 +55,7 @@ void ascii_main_menu_header(void) {
     printf("     'A concurrency and scheduling trainer'  \n\n");
 }
 
+/* Show scoreboard in an ASCII table, with an additional row describing schedule mastery weighting. */
 void menu_show_scoreboard(void) {
     scoreboard_t sb;
     get_scoreboard(&sb);
@@ -94,24 +98,23 @@ void menu_show_scoreboard(void) {
            unlockedHidden ? CLR_GREEN"UNLOCKED"CLR_RESET : CLR_RED"LOCKED"CLR_RESET);
 
     printf("║--------------------------------------------║\n");
-    printf("║ Schedulers mastery (10%% block => 15 points total):\n");
+    printf("║ Schedulers Mastery [weighted up to 15 pts]:\n");
     printf("║   FIFO:%s  RR:%s  CFS:%s  CFS-SRTF:%s  BFS:%s\n",
            sb.sc_fifo? "✔":"✘",
            sb.sc_rr? "✔":"✘",
            sb.sc_cfs? "✔":"✘",
            sb.sc_cfs_srtf? "✔":"✘",
            sb.sc_bfs? "✔":"✘");
-
     printf("║   SJF:%s  STRF:%s  HRRN:%s  HRRN-RT:%s  PRIORITY:%s\n",
            sb.sc_sjf? "✔":"✘",
            sb.sc_strf? "✔":"✘",
            sb.sc_hrrn? "✔":"✘",
            sb.sc_hrrn_rt? "✔":"✘",
            sb.sc_priority? "✔":"✘");
-
     printf("║   HPC-OVER:%s  MLFQ:%s\n",
            sb.sc_hpc_over? "✔":"✘",
            sb.sc_mlfq? "✔":"✘");
+    printf("║   [Weights => BFS=2, HPC=2, MLFQ=2, others=1 each] \n");
 
     int final_score = scoreboard_get_final_score();
     printf("║--------------------------------------------║\n");
@@ -120,12 +123,14 @@ void menu_show_scoreboard(void) {
     pause_enter();
 }
 
+/* Clears scoreboard data. */
 void menu_clear_scoreboard(void) {
     scoreboard_clear();
     printf("\nScoreboard cleared.\n");
     pause_enter();
 }
 
+/* Toggles speed mode between 0 and 1. */
 void menu_toggle_speed_mode(void) {
     int current = stats_get_speed_mode();
     int next    = (current == 0) ? 1 : 0;
@@ -134,6 +139,7 @@ void menu_toggle_speed_mode(void) {
     pause_enter();
 }
 
+/* Let user pick exactly one suite to run. */
 void submenu_run_single_test(void) {
     clear_screen();
     printf("Choose which suite?\n");
@@ -154,7 +160,7 @@ void submenu_run_single_test(void) {
         return;
     }
 
-    /* Check if unlocked first: */
+    /* Check if unlocked: */
     int unlocked = 0;
     switch(suite) {
         case 1: unlocked = scoreboard_is_unlocked(SUITE_BASIC);    break;
@@ -171,8 +177,15 @@ void submenu_run_single_test(void) {
         return;
     }
 
-    /* We currently run the entire suite in place of "single test." */
+    /* For now, we run the entire suite instead of a single internal test:
+       If you want to pick specific tests inside the suite, you can expand further. */
     printf("\nRunning that suite's tests...\n");
+    printf(CLR_BOLD CLR_GREEN "╔══════════════════════════════════╗\n");
+    printf("║   SCHEDULE BLOCK => TEST SUITE   ║\n");
+    printf("╚══════════════════════════════════╝\n" CLR_RESET);
+
+    g_return_to_menu = 0; /* reset the flag that might be set by SIGTERM */
+
     switch(suite){
         case 1: {
             int t=0, p=0;
@@ -212,70 +225,60 @@ void submenu_run_single_test(void) {
             break;
     }
     scoreboard_save();
+
+    printf(CLR_BOLD CLR_GREEN "\n╔══════════════════════════════════╗\n");
+    printf("║   END SCHEDULE BLOCK => TESTS    ║\n");
+    printf("╚══════════════════════════════════╝\n" CLR_RESET);
+
     pause_enter();
 }
 
+/* This runs all UNLOCKED test suites in ascending order. */
 void submenu_run_tests(void) {
-    /* This runs all unlocked test suites in order, with ASCII feedback. */
-    printf(CLR_CYAN "╔═══════════════════════════════════════════╗\n");
+    /* Mark that we are running tests. If SIGTERM arrives, we will return to menu. */
+    g_return_to_menu = 0;
+
+    printf(CLR_BOLD CLR_CYAN "╔═══════════════════════════════════════════╗\n");
     printf("║         Running all UNLOCKED tests        ║\n");
     printf("╚═══════════════════════════════════════════╝\n" CLR_RESET);
 
-    /* BASIC */
-    if(!scoreboard_is_unlocked(SUITE_BASIC)){
-        printf("BASIC locked, skipping.\n");
-    } else {
+    if(scoreboard_is_unlocked(SUITE_BASIC) && !g_return_to_menu){
         int t=0,p=0;
+        printf("\n[Running BASIC suite...]\n");
         run_basic_tests(&t,&p);
         scoreboard_update_basic(t,p);
         scoreboard_save();
     }
-
-    /* NORMAL */
-    if(!scoreboard_is_unlocked(SUITE_NORMAL)){
-        printf("NORMAL locked, skipping.\n");
-    } else {
+    if(scoreboard_is_unlocked(SUITE_NORMAL) && !g_return_to_menu){
         int t=0,p=0;
+        printf("\n[Running NORMAL suite...]\n");
         run_normal_tests(&t,&p);
         scoreboard_update_normal(t,p);
         scoreboard_save();
     }
-
-    /* MODES */
-    if(!scoreboard_is_unlocked(SUITE_MODES)){
-        printf("MODES locked, skipping.\n");
-    } else {
+    if(scoreboard_is_unlocked(SUITE_MODES) && !g_return_to_menu){
         int t=0,p=0;
+        printf("\n[Running MODES suite...]\n");
         run_modes_tests(&t,&p);
         scoreboard_update_modes(t,p);
         scoreboard_save();
     }
-
-    /* EDGE */
-    if(!scoreboard_is_unlocked(SUITE_EDGE)){
-        printf("EDGE locked, skipping.\n");
-    } else {
+    if(scoreboard_is_unlocked(SUITE_EDGE) && !g_return_to_menu){
         int t=0,p=0;
+        printf("\n[Running EDGE suite...]\n");
         run_edge_tests(&t,&p);
         scoreboard_update_edge(t,p);
         scoreboard_save();
     }
-
-    /* HIDDEN */
-    if(!scoreboard_is_unlocked(SUITE_HIDDEN)){
-        printf("HIDDEN locked, skipping.\n");
-    } else {
+    if(scoreboard_is_unlocked(SUITE_HIDDEN) && !g_return_to_menu){
         int t=0,p=0;
+        printf("\n[Running HIDDEN suite...]\n");
         run_hidden_tests(&t,&p);
         scoreboard_update_hidden(t,p);
         scoreboard_save();
     }
-
-    /* EXTERNAL (in some designs you might want to run them as well) */
-    if(!scoreboard_is_unlocked(SUITE_EXTERNAL)){
-        printf("EXTERNAL locked, skipping.\n");
-    } else {
-        printf("Running external tests...\n");
+    if(scoreboard_is_unlocked(SUITE_EXTERNAL) && !g_return_to_menu){
+        printf("\n[Running EXTERNAL suite...]\n");
         run_external_tests_menu();
         scoreboard_save();
     }
@@ -283,6 +286,7 @@ void submenu_run_tests(void) {
     pause_enter();
 }
 
+/* External concurrency submenu. As requested, SIGTERM => set concurrency stop, then return. */
 void menu_submenu_external_concurrency(void) {
     int unlockedExt = scoreboard_is_unlocked(SUITE_EXTERNAL);
     if(!unlockedExt) {
@@ -291,9 +295,10 @@ void menu_submenu_external_concurrency(void) {
         return;
     }
 
-    printf(CLR_BOLD CLR_CYAN "\n╔══════════════════════════════╗\n" CLR_RESET);
-    printf(CLR_BOLD CLR_CYAN   "║ External Shell Concurrency   ║\n" CLR_RESET);
-    printf(CLR_BOLD CLR_CYAN   "╚══════════════════════════════╝\n" CLR_RESET);
+    clear_screen();
+    printf(CLR_BOLD CLR_CYAN "\n╔════════════════════════════════════╗\n" CLR_RESET);
+    printf(CLR_BOLD CLR_CYAN   "║  External Shell Concurrency Menu   ║\n" CLR_RESET);
+    printf(CLR_BOLD CLR_CYAN   "╚════════════════════════════════════╝\n" CLR_RESET);
 
     printf("1) Run concurrency with a SINGLE scheduling mode\n");
     printf("2) Run concurrency with ALL scheduling modes\n");
@@ -321,8 +326,7 @@ void menu_submenu_external_concurrency(void) {
     int c = parse_int_strtol(buf, 2);
     if(c<1) c=2;
 
-    /* concurrency level => short/medium/stress */
-    printf("\nChoose concurrency test type:\n");
+    printf("\nChoose concurrency test style:\n");
     printf(" 1) Short test\n");
     printf(" 2) Medium test\n");
     printf(" 3) Stress test\n");
@@ -331,33 +335,38 @@ void menu_submenu_external_concurrency(void) {
     int style = parse_int_strtol(buf,1);
     if(style<1 || style>3) style=1;
 
+    /* Create array of commands. */
     char** lines = (char**)calloc(n, sizeof(char*));
     if(!lines) return;
 
-    /* Prepare lines for concurrency. */
-    stats_inc_concurrency_runs();
+    /* "SCHEDULE BLOCK" for concurrency. */
+    g_return_to_menu = 0; /* allow SIGTERM to break concurrency. */
 
-    if(sub==1){
-        /* single scheduling => vary 'sleep' based on style. */
-        for(int i=0; i<n; i++){
-            int base=2;
-            switch(style){
-                case 1: base=2; break;
-                case 2: base=5; break;
-                case 3: base=10;break;
-            }
+    int base=2;
+    switch(style) {
+        case 1: base=2;  break;
+        case 2: base=5;  break;
+        case 3: base=10; break;
+        default: base=2; break;
+    }
+    /* Prepare lines for concurrency. If sub=1 => single scheduling => vary the sleeps.
+       If sub=2 => all scheduling => simpler pattern. */
+    int i;
+    if(sub==1) {
+        for(i=0; i<n; i++){
             char tmp[64];
             snprintf(tmp, sizeof(tmp), "sleep %d", (i+1)*base);
             lines[i] = strdup(tmp);
         }
     } else {
-        /* sub==2 => run all scheduling modes => we keep it simple. */
-        for(int i=0; i<n; i++){
-            snprintf(buf,sizeof(buf),"sleep %d", (i+1)*2);
-            lines[i] = strdup(buf);
+        for(i=0; i<n; i++){
+            char tmp[64];
+            snprintf(tmp, sizeof(tmp), "sleep %d", (i+1)*2);
+            lines[i] = strdup(tmp);
         }
     }
 
+    /* If single scheduling mode, we ask user. */
     if(sub==1){
         printf("\nSelect scheduling mode:\n");
         printf(" 0=FIFO,1=RR,2=CFS,3=CFS-SRTF,4=BFS,\n");
@@ -366,7 +375,7 @@ void menu_submenu_external_concurrency(void) {
         printf("Choice: ");
         if(!read_line(buf,sizeof(buf))){
             pause_enter();
-            for(int i=0;i<n;i++) free(lines[i]);
+            for(i=0;i<n;i++) free(lines[i]);
             free(lines);
             return;
         }
@@ -381,13 +390,15 @@ void menu_submenu_external_concurrency(void) {
         run_shell_commands_concurrently(n, lines, c, -1, 1);
     }
 
-    for(int i=0; i<n; i++){
+    for(i=0; i<n; i++){
         free(lines[i]);
     }
     free(lines);
+
     pause_enter();
 }
 
+/* Cleanup function => finalize scoreboard, print stats, exit with code. */
 void cleanup_and_exit(int code) {
     os_cleanup();
     scoreboard_save();
@@ -396,24 +407,26 @@ void cleanup_and_exit(int code) {
     exit(code);
 }
 
-/* Handle signals => SIGINT, SIGTERM, SIGUSR1 => store concurrency_stop if needed. */
+/* Handle signals => SIGINT => exit, SIGTERM => stop concurrency/test but remain in menu,
+   SIGUSR1 => set concurrency stop as well. */
 void handle_signal(int signum) {
     if(signum == SIGINT) {
         stats_inc_signal_sigint();
-        printf("\n[Main] Caught SIGINT! Saving scoreboard...\n");
+        printf("\n[Main] Caught SIGINT => Save scoreboard and exit.\n");
         int fs = scoreboard_get_final_score();
         cleanup_and_exit(fs);
     }
     else if(signum == SIGTERM){
         stats_inc_signal_sigterm();
-        printf("\n[Main] Caught SIGTERM! Saving scoreboard...\n");
-        int fs = scoreboard_get_final_score();
-        cleanup_and_exit(fs);
+        printf("\n[Main] Caught SIGTERM => concurrency/test stops => returning to menu.\n");
+        set_os_concurrency_stop_flag(1);
+        /* We set this so test or concurrency loops can see it and break out. */
+        g_return_to_menu = 1;
     }
     else if(signum == SIGUSR1) {
         stats_inc_signal_other();
-        printf("\n[Main] Caught SIGUSR1 => concurrency stop flag set.\n");
-        set_os_concurrency_stop_flag(1); /* unify concurrency stop in os.c */
+        printf("\n[Main] Caught SIGUSR1 => concurrency stop.\n");
+        set_os_concurrency_stop_flag(1);
     }
 }
 
@@ -462,18 +475,15 @@ int main(int argc, char** argv){
         case 1:
             submenu_run_tests();
             break;
-
         case 2: {
             int fs = scoreboard_get_final_score();
             printf("\nExiting with final score = %d.\n", fs);
             cleanup_and_exit(fs);
             break;
         }
-
         case 3:
             menu_submenu_external_concurrency();
             break;
-
         case 4: {
             if(!scoreboard_is_unlocked(SUITE_EXTERNAL)){
                 printf("External tests locked.\n");
@@ -486,29 +496,23 @@ int main(int argc, char** argv){
             }
             break;
         }
-
         case 5:
             menu_show_scoreboard();
             break;
-
         case 6:
             menu_clear_scoreboard();
             break;
-
         case 7:
             menu_toggle_speed_mode();
             break;
-
         case 8:
             submenu_run_single_test();
             break;
-
         default:
             printf("Invalid.\n");
             pause_enter();
             break;
         }
     }
-
     return 0;
 }
