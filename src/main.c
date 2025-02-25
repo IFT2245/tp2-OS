@@ -1,13 +1,13 @@
-#include <stdlib.h>
-#include <string.h>
 #include <stdio.h>
 #include <signal.h>
 #include <sys/types.h>
+#include <stdlib.h>
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #endif
 
+#include "main.h"
 #include "runner.h"
 #include "os.h"
 #include "safe_calls_library.h"
@@ -15,14 +15,14 @@
 #include "stats.h"
 
 /* Test suite headers in ../test/ */
+#include <string.h>
+
 #include "../test/basic-test.h"
 #include "../test/normal-test.h"
 #include "../test/modes-test.h"
 #include "../test/edge-test.h"
 #include "../test/hidden-test.h"
 #include "../test/external-test.h"
-
-#include "main.h"  /* Our local header declaring the functions below */
 
 /*
   We use this to track whether SIGTERM was received so we can
@@ -48,16 +48,17 @@ void pause_enter(void) {
     fflush(stdout);
     int c;
     while ((c = getchar()) != '\n' && c != EOF) {
-        /* discard */
+        /* discard any leftover */
     }
 }
 
 int read_line(char *buf, size_t sz) {
     if (!fgets(buf, sz, stdin)) return 0;
-    buf[strcspn(buf, "\n")] = '\0';
+    buf[strcspn(buf, "\n")] = '\0';  /* remove trailing newline */
     return 1;
 }
 
+/* ASCII art main menu header, improved for clarity */
 void ascii_main_menu_header(void) {
     printf(CLR_BOLD CLR_YELLOW "┌────────────────────────────────────────────┐\n" CLR_RESET);
     printf(CLR_BOLD CLR_YELLOW "│            OS-SCHEDULING GAME            │\n" CLR_RESET);
@@ -65,6 +66,7 @@ void ascii_main_menu_header(void) {
     printf("     'A concurrency and scheduling trainer'  \n\n");
 }
 
+/* Show scoreboard in an improved manner with progress bar */
 void menu_show_scoreboard(void) {
     scoreboard_t sb;
     get_scoreboard(&sb);
@@ -127,11 +129,26 @@ void menu_show_scoreboard(void) {
 
     int final_score = scoreboard_get_final_score();
     printf("║--------------------------------------------║\n");
-    printf("╚═ Overall Score => %d/100\n", final_score);
+    printf("╠═ Overall Score => %d/100\n", final_score);
+
+    /* Simple progress bar for final score */
+    printf("║ Progress: ");
+    int barLength = final_score / 10; /* each block = 10 points */
+    printf("[");
+    for(int i=0; i<barLength; i++){
+        printf("█");
+    }
+    for(int i=barLength; i<10; i++){
+        printf(" ");
+    }
+    printf("] %d%%\n", final_score);
+
+    printf("╚════════════════════════════════════════════╝\n");
 
     pause_enter();
 }
 
+/* Clears scoreboard entirely */
 void menu_clear_scoreboard(void) {
     scoreboard_clear();
     printf(CLR_BOLD CLR_CYAN "\n╔════════════════════════════════════════════╗\n");
@@ -140,6 +157,7 @@ void menu_clear_scoreboard(void) {
     pause_enter();
 }
 
+/* Toggles between fast(1) and normal(0) speed mode */
 void menu_toggle_speed_mode(void) {
     int current = stats_get_speed_mode();
     int next    = (current == 0) ? 1 : 0;
@@ -152,6 +170,11 @@ void menu_toggle_speed_mode(void) {
     pause_enter();
 }
 
+/*
+   Allows user to pick exactly one suite and run exactly one test from it.
+   Each test suite is an example set of multiple tests. We'll just run them all
+   in that suite but also demonstrate partial usage.
+*/
 void submenu_run_single_test(void) {
     clear_screen();
     printf(CLR_BOLD CLR_CYAN "╔════════════════════════════════════╗\n" CLR_RESET);
@@ -193,6 +216,7 @@ void submenu_run_single_test(void) {
     }
 
     printf("\nRunning that suite's tests...\n");
+    /* Provide a schedule block with the suite name for clarity */
     printf(CLR_BOLD CLR_GREEN "╔══════════════════════════════════╗\n");
     printf("║   SCHEDULE BLOCK => TEST SUITE   ║\n");
     printf("╚══════════════════════════════════╝\n" CLR_RESET);
@@ -232,6 +256,7 @@ void submenu_run_single_test(void) {
         }
         case 6: {
             run_external_tests_menu();
+            /* external suite has scoreboard_update inside run_external_tests */
             break;
         }
         default:
@@ -246,49 +271,57 @@ void submenu_run_single_test(void) {
     pause_enter();
 }
 
+/*
+   Runs all UNLOCKED test suites but now does NOT re-run them if they
+   are already fully passed. This satisfies the user instruction to
+   skip re-running passing tests in "Run All Unlocked Test Suites."
+*/
 void submenu_run_tests(void) {
     g_return_to_menu = 0;
+    scoreboard_t sb;
+    get_scoreboard(&sb);
 
     printf(CLR_BOLD CLR_CYAN "╔═══════════════════════════════════════════╗\n");
-    printf("║         Running all UNLOCKED tests        ║\n");
+    printf("║     Running all UNLOCKED (unpassed) tests ║\n");
     printf("╚═══════════════════════════════════════════╝\n" CLR_RESET);
 
-    if(scoreboard_is_unlocked(SUITE_BASIC) && !g_return_to_menu){
+    /* Basic always unlocked, but if it's already 100% we skip. */
+    if(scoreboard_is_unlocked(SUITE_BASIC) && sb.basic_percent<100.0 && !g_return_to_menu){
         int t=0,p=0;
         printf("\n[Running BASIC suite...]\n");
         run_basic_tests(&t,&p);
         scoreboard_update_basic(t,p);
         scoreboard_save();
     }
-    if(scoreboard_is_unlocked(SUITE_NORMAL) && !g_return_to_menu){
+    if(scoreboard_is_unlocked(SUITE_NORMAL) && sb.normal_percent<100.0 && !g_return_to_menu){
         int t=0,p=0;
         printf("\n[Running NORMAL suite...]\n");
         run_normal_tests(&t,&p);
         scoreboard_update_normal(t,p);
         scoreboard_save();
     }
-    if(scoreboard_is_unlocked(SUITE_MODES) && !g_return_to_menu){
+    if(scoreboard_is_unlocked(SUITE_MODES) && sb.modes_percent<100.0 && !g_return_to_menu){
         int t=0,p=0;
         printf("\n[Running MODES suite...]\n");
         run_modes_tests(&t,&p);
         scoreboard_update_modes(t,p);
         scoreboard_save();
     }
-    if(scoreboard_is_unlocked(SUITE_EDGE) && !g_return_to_menu){
+    if(scoreboard_is_unlocked(SUITE_EDGE) && sb.edge_percent<100.0 && !g_return_to_menu){
         int t=0,p=0;
         printf("\n[Running EDGE suite...]\n");
         run_edge_tests(&t,&p);
         scoreboard_update_edge(t,p);
         scoreboard_save();
     }
-    if(scoreboard_is_unlocked(SUITE_HIDDEN) && !g_return_to_menu){
+    if(scoreboard_is_unlocked(SUITE_HIDDEN) && sb.hidden_percent<100.0 && !g_return_to_menu){
         int t=0,p=0;
         printf("\n[Running HIDDEN suite...]\n");
         run_hidden_tests(&t,&p);
         scoreboard_update_hidden(t,p);
         scoreboard_save();
     }
-    if(scoreboard_is_unlocked(SUITE_EXTERNAL) && !g_return_to_menu){
+    if(scoreboard_is_unlocked(SUITE_EXTERNAL) && sb.external_percent<100.0 && !g_return_to_menu){
         printf("\n[Running EXTERNAL suite...]\n");
         run_external_tests_menu();
         scoreboard_save();
@@ -297,6 +330,7 @@ void submenu_run_tests(void) {
     pause_enter();
 }
 
+/* External concurrency submenu: runs concurrency with single/all scheduling modes. */
 void menu_submenu_external_concurrency(void) {
     int unlockedExt = scoreboard_is_unlocked(SUITE_EXTERNAL);
     if(!unlockedExt) {
@@ -353,17 +387,19 @@ void menu_submenu_external_concurrency(void) {
 
     int base=2;
     switch(style) {
-        case 1: base=2;  break;
-        case 2: base=5;  break;
-        case 3: base=10; break;
+        case 1: base=2;  break;  /* short */
+        case 2: base=5;  break;  /* medium */
+        case 3: base=10; break;  /* stress */
         default: base=2; break;
     }
 
     for(int i=0; i<n; i++){
         char tmp[64];
         if(sub == 1) {
+            /* single mode => let's do a small difference in durations */
             snprintf(tmp, sizeof(tmp), "sleep %d", (i+1)*base);
         } else {
+            /* all modes => any small commands is enough */
             snprintf(tmp, sizeof(tmp), "sleep %d", (i+1)*2);
         }
         lines[i] = strdup(tmp);
@@ -400,6 +436,7 @@ void menu_submenu_external_concurrency(void) {
     pause_enter();
 }
 
+/* Cleanup function to finalize scoreboard, stats, exit. */
 void cleanup_and_exit(int code) {
     /* We wrap final messages in a block so everything is consistent */
     printf(CLR_BOLD CLR_YELLOW "\n╔════════════════════════════════════════════╗\n");
@@ -413,6 +450,7 @@ void cleanup_and_exit(int code) {
     exit(code);
 }
 
+/* Signal handler for SIGINT, SIGTERM, SIGUSR1. */
 void handle_signal(int signum) {
     if(signum == SIGINT) {
         stats_inc_signal_sigint();

@@ -18,7 +18,7 @@
 
 typedef struct process_s {
     uint64_t burst_time;       /* total CPU time needed (ms) */
-    int      priority;         /* smaller => higher priority (some algs) */
+    int      priority;         /* smaller => higher priority (for some algs) */
     uint64_t vruntime;         /* used by CFS / CFS-SRTF */
     uint64_t arrival_time;     /* simulation "arrival" time */
     uint64_t remaining_time;   /* how many ms remain for this process */

@@ -15,11 +15,9 @@
 static int tests_run=0, tests_failed=0;
 static char g_test_fail_reason[256];
 
-/*
-   We define each test function before usage (no forward declarations).
-*/
-
+/* HPC overshadow test */
 static bool test_external_hpc(void) {
+    tests_run++;
     os_init();
     process_t dummy[1];
     init_process(&dummy[0], 0, 0, 0);
@@ -31,7 +29,6 @@ static bool test_external_hpc(void) {
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    tests_run++;
     if(rep.total_procs!=0){
         tests_failed++;
         snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
@@ -40,10 +37,13 @@ static bool test_external_hpc(void) {
         test_set_fail_reason(g_test_fail_reason);
         return false;
     }
+    scoreboard_set_sc_mastered(ALG_HPC_OVERSHADOW);
     return true;
 }
 
+/* BFS partial test. */
 static bool test_external_bfs(void) {
+    tests_run++;
     os_init();
     process_t p[2];
     init_process(&p[0],3,1,0);
@@ -56,7 +56,6 @@ static bool test_external_bfs(void) {
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    tests_run++;
     if(rep.total_procs!=2 || rep.preemptions<1){
         tests_failed++;
         snprintf(g_test_fail_reason,sizeof(g_test_fail_reason),
@@ -66,9 +65,11 @@ static bool test_external_bfs(void) {
         test_set_fail_reason(g_test_fail_reason);
         return false;
     }
+    scoreboard_set_sc_mastered(ALG_BFS);
     return true;
 }
 
+/* Shell concurrency sample test => just run 2 commands with FIFO. */
 static bool test_run_shell_concurrency(void) {
     tests_run++;
     int count=2;
@@ -77,6 +78,7 @@ static bool test_run_shell_concurrency(void) {
     lines[1] = "sleep 3";
 
     run_shell_commands_concurrently(count, lines, 1, ALG_FIFO, 0);
+    /* Not truly verifying output here, just ensuring it runs. */
     return true;
 }
 
@@ -91,6 +93,7 @@ void run_external_tests(void) {
     bool ok3 = test_run_shell_concurrency();
     (void)ok1; (void)ok2; (void)ok3;
 
+    /* update scoreboard after we run. */
     scoreboard_update_external(tests_run, (tests_run - tests_failed));
     scoreboard_save();
 

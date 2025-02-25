@@ -25,13 +25,13 @@ int read_line(char *buf, size_t sz);
 /* Prints the ASCII art main menu header. */
 void ascii_main_menu_header(void);
 
-/* Submenu to run all unlocked tests. */
+/* Submenu to run all unlocked tests (skipping already 100% passed). */
 void submenu_run_tests(void);
 
 /* Submenu to run exactly one test from a chosen suite. */
 void submenu_run_single_test(void);
 
-/* Shows the scoreboard in a "squared ASCII" format. */
+/* Shows the scoreboard in a "squared ASCII" format with progress bar. */
 void menu_show_scoreboard(void);
 
 /* Clears the scoreboard. */

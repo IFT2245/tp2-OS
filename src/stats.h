@@ -3,7 +3,7 @@
 
 /*
    stats.h => a global struct tracking concurrency usage, signals, tests, etc.
-   We also define some color macros here for convenience in printing.
+   Also color macros for convenient printing.
 */
 
 #define CLR_RESET   "\033[0m"
@@ -31,12 +31,12 @@ typedef struct {
     /* speed_mode: 0 => normal, 1 => fast */
     int speed_mode;
 
-    /* NEW: track total concurrency commands issued in runner. */
+    /* track total concurrency commands issued in runner. */
     int concurrency_commands_run;
 
 } stats_t;
 
-/* Initialize. */
+/* Initialize global stats. */
 void stats_init(void);
 
 /* Get the global stats. */
@@ -48,7 +48,7 @@ void stats_set_speed_mode(int mode);
 /* get speed_mode. */
 int stats_get_speed_mode(void);
 
-/* increments. */
+/* increments for various tracked fields. */
 void stats_inc_signal_sigint(void);
 void stats_inc_signal_sigterm(void);
 void stats_inc_signal_other(void);
@@ -58,8 +58,6 @@ void stats_inc_containers_created(void);
 void stats_inc_containers_removed(void);
 void stats_inc_tests_passed(int count);
 void stats_inc_tests_failed(int count);
-
-/* NEW: increment concurrency commands run. */
 void stats_inc_concurrency_commands(int n);
 
 /* Print them in a block at program end. */

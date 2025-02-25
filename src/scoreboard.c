@@ -1,17 +1,17 @@
 #include "scoreboard.h"
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
+/* The global scoreboard. */
 static scoreboard_t gSB = {
     0,0,0,0,0,0,0,0,0,0,0,0,
     0,0,0,0,0,0,
     60.0
 };
 
-/* ----- Utility to read the JSON scoreboard file fully ----- */
+/* Utility: read entire file into memory. */
 static char* read_file_all(const char* path) {
     FILE* f = fopen(path, "rb");
     if(!f) return NULL;
@@ -37,6 +37,7 @@ static char* read_file_all(const char* path) {
     return buf;
 }
 
+/* JSON parse helpers */
 static int parse_json_int(const char* json, const char* key, int def) {
     if(!json || !key) return def;
     char pattern[128];
@@ -67,6 +68,7 @@ static double parse_json_double(const char* json, const char* key, double def) {
     return val;
 }
 
+/* Writes scoreboard to scoreboard.json */
 static void write_scoreboard_json(const scoreboard_t* sb) {
     FILE* f = fopen("scoreboard.json", "w");
     if(!f) return;
@@ -111,11 +113,11 @@ static void write_scoreboard_json(const scoreboard_t* sb) {
 }
 
 void scoreboard_init(void) {
-    /* no-op */
+    /* no-op for now */
 }
 
 void scoreboard_close(void) {
-    /* no-op */
+    /* no-op for now */
 }
 
 void scoreboard_load(void) {
@@ -193,10 +195,9 @@ static void recompute_pass_percents(void) {
         gSB.hidden_percent = 0.0;
 }
 
-/* Basic test is always unlocked at game start per requirement. */
+/* Basic is always unlocked at game start. Others must pass threshold. */
 static int is_suite_unlocked(scoreboard_suite_t suite) {
     if(suite == SUITE_BASIC) {
-        /* Basic is always unlocked. */
         return 1;
     }
     double T = gSB.pass_threshold;
@@ -212,25 +213,25 @@ static int is_suite_unlocked(scoreboard_suite_t suite) {
     case SUITE_HIDDEN:
         return (gSB.hidden_percent >= T) ? 1 : 0;
     default:
-        /* Should not happen normally for known suites. */
         return 0;
     }
 }
 
+/* compute how many scheduling algorithms have been "mastered." BFS=2 points, HPC=2, MLFQ=2, else=1. */
 static int get_scheduler_points(void) {
     int points = 0;
     if(gSB.sc_fifo)         points += 1;
     if(gSB.sc_rr)           points += 1;
     if(gSB.sc_cfs)          points += 1;
     if(gSB.sc_cfs_srtf)     points += 1;
-    if(gSB.sc_bfs)          points += 2; /* BFS = 2 points */
+    if(gSB.sc_bfs)          points += 2;
     if(gSB.sc_sjf)          points += 1;
     if(gSB.sc_strf)         points += 1;
     if(gSB.sc_hrrn)         points += 1;
     if(gSB.sc_hrrn_rt)      points += 1;
     if(gSB.sc_priority)     points += 1;
-    if(gSB.sc_hpc_over)     points += 2; /* HPC overshadow = 2 points */
-    if(gSB.sc_mlfq)         points += 2; /* MLFQ = 2 points */
+    if(gSB.sc_hpc_over)     points += 2;
+    if(gSB.sc_mlfq)         points += 2;
     return points;
 }
 
@@ -250,30 +251,24 @@ void get_scoreboard(scoreboard_t* out) {
 }
 
 int scoreboard_get_final_score(void) {
+    /* Weighted contributions:
+       basic => 32%, normal => 20%, external => 10%, modes => 10%,
+       edge => 10%, hidden => 8%, schedules => 10% (scaled from up to 15 pts).
+    */
     recompute_pass_percents();
 
-    /*
-      Weighted contributions:
-      - basic_percent   => 32%
-      - normal_percent  => 20%
-      - external        => 10%
-      - modes           => 10%
-      - edge            => 10%
-      - hidden          => 8%
-      - schedules mastery => 10% (summing up to 15 points => scaled to 100 => 10%).
-    */
     double b  = gSB.basic_percent     * 0.32;
     double n  = gSB.normal_percent    * 0.20;
     double e  = gSB.external_percent  * 0.10;
-    double m  = gSB.modes_percent     * 0.10;
+    double mo = gSB.modes_percent     * 0.10;
     double ed = gSB.edge_percent      * 0.10;
     double h  = gSB.hidden_percent    * 0.08;
 
     int sched_pts = get_scheduler_points();
     double sched_percent = ((double)sched_pts / 15.0)*100.0;
-    double s = sched_percent * 0.10;
+    double s = sched_percent * 0.10; /* 10% for scheduling mastery */
 
-    double total = b + n + e + m + ed + h + s;
+    double total = b + n + e + mo + ed + h + s;
     if(total>100.0) total=100.0;
     if(total<0.0)   total=0.0;
     return (int)(total+0.5);

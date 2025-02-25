@@ -3,20 +3,14 @@
 #include <stdio.h>
 #include <unistd.h>
 
-#ifndef CLR_RESET
-#define CLR_RESET "\033[0m"
-#endif
-#ifndef CLR_BOLD
-#define CLR_BOLD  "\033[1m"
-#endif
-#ifndef CLR_BLUE
-#define CLR_BLUE  "\033[94m"
-#endif
-
-static void sim_sleep(unsigned int us){
+/*
+  We simulate partial CPU usage by sleeping. If FAST mode => we drastically reduce.
+*/
+static void sim_sleep(unsigned int us) {
     int sm = stats_get_speed_mode();
-    if(sm==1){
-        usleep(us/10 + 1);
+    if(sm==1) {
+        /* fast => ~1/10 the sleeping or even less. */
+        usleep(us / 10 + 1);
     } else {
         usleep(us);
     }
@@ -25,7 +19,7 @@ static void sim_sleep(unsigned int us){
 void simulate_process_partial(process_t* p, unsigned long slice_ms, int core_id) {
     if(!p || slice_ms==0) return;
     if(stats_get_speed_mode()==0) {
-        printf(CLR_BLUE "[Worker] Core=%d => Partial run => priority=%d, slice=%lu ms\n" CLR_RESET,
+        printf("\033[94m[Worker] Core=%d => Partial run => priority=%d, slice=%lu ms\n\033[0m",
                core_id, p->priority, slice_ms);
     }
     unsigned int real_us = (unsigned int)(slice_ms * 220000);

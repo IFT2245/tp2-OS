@@ -2,11 +2,12 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Global stats object. */
 static stats_t g_stats;
 
 void stats_init(void) {
     memset(&g_stats, 0, sizeof(g_stats));
-    g_stats.speed_mode = 0; /* default normal mode */
+    g_stats.speed_mode = 0; /* default => normal speed */
 }
 
 void stats_get(stats_t* out) {
@@ -50,12 +51,13 @@ void stats_inc_tests_passed(int count) {
 void stats_inc_tests_failed(int count) {
     g_stats.tests_failed += count;
 }
-
-/* NEW: increment concurrency_commands_run */
 void stats_inc_concurrency_commands(int n) {
     g_stats.concurrency_commands_run += n;
 }
 
+/*
+  Print final stats with nice ASCII box.
+*/
 void stats_print_summary(void) {
     printf(CLR_BOLD CLR_CYAN "\n╔═══════════════════ FINAL STATS ═════════════════╗\n");
     printf("║ Speed Mode            : %s\n", g_stats.speed_mode ? "FAST" : "NORMAL");

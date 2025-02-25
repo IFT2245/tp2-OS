@@ -6,7 +6,10 @@
               with chosen scheduling modes.
 */
 
-void run_all_levels(void); /* (deprecated stub) */
+#include <stddef.h>
+
+/* Deprecated stub, replaced by menu logic. */
+void run_all_levels(void);
 
 /* Runs the external tests menu, checks scoreboard, etc. */
 void run_external_tests_menu(void);

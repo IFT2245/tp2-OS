@@ -1,6 +1,7 @@
 #include "process.h"
 #include <string.h>
 
+/* Initialize a process with given burst, priority, arrival_time. */
 void init_process(process_t* p, uint64_t burst, int priority, uint64_t arrival) {
     if (!p) return;
     memset(p, 0, sizeof(*p));

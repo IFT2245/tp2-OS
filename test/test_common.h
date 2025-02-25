@@ -13,8 +13,6 @@
 #define CLR_YELLOW  "\033[93m"
 #define CLR_CYAN    "\033[96m"
 
-/* Provide a macro for test definitions and a reason buffer. */
-
 void test_set_fail_reason(const char* msg);
 const char* test_get_fail_reason(void);
 
@@ -29,6 +27,7 @@ struct captured_output {
 */
 int run_function_capture_output(void(*fn)(void), struct captured_output* out);
 
+/* A macro for test function definitions. */
 #define TEST(name) static bool test_##name(void)
 
 /* RUN_TEST macro to unify pass/fail printing. */
