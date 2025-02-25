@@ -1,16 +1,17 @@
 #include "scoreboard.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
-/* We'll keep a static scoreboard in memory. */
 static scoreboard_t gSB = {
-    0,0,0,0,0,0,  0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,
     0,0,0,0,0,0,
-    60.0 /* pass_threshold default => 60% */
+    60.0
 };
 
+/* ----- Utility to read the JSON scoreboard file fully ----- */
 static char* read_file_all(const char* path) {
     FILE* f = fopen(path, "rb");
     if(!f) return NULL;
@@ -40,7 +41,7 @@ static int parse_json_int(const char* json, const char* key, int def) {
     if(!json || !key) return def;
     char pattern[128];
     snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    char* found = strstr(json, pattern);
+    char* found = strstr((char*)json, pattern);
     if(!found) return def;
     char* colon = strstr(found, ":");
     if(!colon) return def;
@@ -55,7 +56,7 @@ static double parse_json_double(const char* json, const char* key, double def) {
     if(!json || !key) return def;
     char pattern[128];
     snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    char* found = strstr(json, pattern);
+    char* found = strstr((char*)json, pattern);
     if(!found) return def;
     char* colon = strstr(found, ":");
     if(!colon) return def;
@@ -136,18 +137,18 @@ void scoreboard_load(void) {
     gSB.hidden_total   = parse_json_int(json,"hidden_total",   gSB.hidden_total);
     gSB.hidden_pass    = parse_json_int(json,"hidden_pass",    gSB.hidden_pass);
 
-    gSB.sc_fifo      = parse_json_int(json,"sc_fifo",      gSB.sc_fifo);
-    gSB.sc_rr        = parse_json_int(json,"sc_rr",        gSB.sc_rr);
-    gSB.sc_cfs       = parse_json_int(json,"sc_cfs",       gSB.sc_cfs);
-    gSB.sc_cfs_srtf  = parse_json_int(json,"sc_cfs_srtf",  gSB.sc_cfs_srtf);
-    gSB.sc_bfs       = parse_json_int(json,"sc_bfs",       gSB.sc_bfs);
-    gSB.sc_sjf       = parse_json_int(json,"sc_sjf",       gSB.sc_sjf);
-    gSB.sc_strf      = parse_json_int(json,"sc_strf",      gSB.sc_strf);
-    gSB.sc_hrrn      = parse_json_int(json,"sc_hrrn",      gSB.sc_hrrn);
-    gSB.sc_hrrn_rt   = parse_json_int(json,"sc_hrrn_rt",   gSB.sc_hrrn_rt);
-    gSB.sc_priority  = parse_json_int(json,"sc_priority",  gSB.sc_priority);
-    gSB.sc_hpc_over  = parse_json_int(json,"sc_hpc_over",  gSB.sc_hpc_over);
-    gSB.sc_mlfq      = parse_json_int(json,"sc_mlfq",      gSB.sc_mlfq);
+    gSB.sc_fifo     = parse_json_int(json,"sc_fifo",     gSB.sc_fifo);
+    gSB.sc_rr       = parse_json_int(json,"sc_rr",       gSB.sc_rr);
+    gSB.sc_cfs      = parse_json_int(json,"sc_cfs",      gSB.sc_cfs);
+    gSB.sc_cfs_srtf = parse_json_int(json,"sc_cfs_srtf", gSB.sc_cfs_srtf);
+    gSB.sc_bfs      = parse_json_int(json,"sc_bfs",      gSB.sc_bfs);
+    gSB.sc_sjf      = parse_json_int(json,"sc_sjf",      gSB.sc_sjf);
+    gSB.sc_strf     = parse_json_int(json,"sc_strf",     gSB.sc_strf);
+    gSB.sc_hrrn     = parse_json_int(json,"sc_hrrn",     gSB.sc_hrrn);
+    gSB.sc_hrrn_rt  = parse_json_int(json,"sc_hrrn_rt",  gSB.sc_hrrn_rt);
+    gSB.sc_priority = parse_json_int(json,"sc_priority", gSB.sc_priority);
+    gSB.sc_hpc_over = parse_json_int(json,"sc_hpc_over", gSB.sc_hpc_over);
+    gSB.sc_mlfq     = parse_json_int(json,"sc_mlfq",     gSB.sc_mlfq);
 
     gSB.basic_percent    = parse_json_double(json,"basic_percent",    gSB.basic_percent);
     gSB.normal_percent   = parse_json_double(json,"normal_percent",   gSB.normal_percent);
@@ -160,7 +161,6 @@ void scoreboard_load(void) {
     free(json);
 }
 
-/* Recompute pass% => locked/unlocked logic => we store in scoreboard for easy usage. */
 static void recompute_pass_percents(void) {
     if(gSB.basic_total>0)
         gSB.basic_percent = (gSB.basic_pass  *100.0)/(double)gSB.basic_total;
@@ -193,11 +193,14 @@ static void recompute_pass_percents(void) {
         gSB.hidden_percent = 0.0;
 }
 
+/* Basic test is always unlocked at game start per requirement. */
 static int is_suite_unlocked(scoreboard_suite_t suite) {
+    if(suite == SUITE_BASIC) {
+        /* Basic is always unlocked. */
+        return 1;
+    }
     double T = gSB.pass_threshold;
     switch(suite) {
-    case SUITE_BASIC:
-        return (gSB.basic_percent >= T) ? 1 : 0;
     case SUITE_NORMAL:
         return (gSB.normal_percent >= T) ? 1 : 0;
     case SUITE_EXTERNAL:
@@ -209,25 +212,25 @@ static int is_suite_unlocked(scoreboard_suite_t suite) {
     case SUITE_HIDDEN:
         return (gSB.hidden_percent >= T) ? 1 : 0;
     default:
+        /* Should not happen normally for known suites. */
         return 0;
     }
 }
 
-/* BFS=2, HPC=2, MLFQ=2, others=1 => up to 15 total => form 10% of overall. */
 static int get_scheduler_points(void) {
     int points = 0;
     if(gSB.sc_fifo)         points += 1;
     if(gSB.sc_rr)           points += 1;
     if(gSB.sc_cfs)          points += 1;
     if(gSB.sc_cfs_srtf)     points += 1;
-    if(gSB.sc_bfs)          points += 2;
+    if(gSB.sc_bfs)          points += 2; /* BFS = 2 points */
     if(gSB.sc_sjf)          points += 1;
     if(gSB.sc_strf)         points += 1;
     if(gSB.sc_hrrn)         points += 1;
     if(gSB.sc_hrrn_rt)      points += 1;
     if(gSB.sc_priority)     points += 1;
-    if(gSB.sc_hpc_over)     points += 2;
-    if(gSB.sc_mlfq)         points += 2;
+    if(gSB.sc_hpc_over)     points += 2; /* HPC overshadow = 2 points */
+    if(gSB.sc_mlfq)         points += 2; /* MLFQ = 2 points */
     return points;
 }
 
@@ -238,7 +241,7 @@ void scoreboard_save(void) {
 
 void scoreboard_clear(void) {
     memset(&gSB, 0, sizeof(gSB));
-    gSB.pass_threshold = 60.0;
+    gSB.pass_threshold = 60.0; /* default requirement */
     scoreboard_save();
 }
 
@@ -249,16 +252,26 @@ void get_scoreboard(scoreboard_t* out) {
 int scoreboard_get_final_score(void) {
     recompute_pass_percents();
 
-    double b  = gSB.basic_percent     * 0.32; /* basic => 32% */
-    double n  = gSB.normal_percent    * 0.20; /* normal => 20% */
-    double e  = gSB.external_percent  * 0.10; /* external => 10% */
-    double m  = gSB.modes_percent     * 0.10; /* modes => 10% */
-    double ed = gSB.edge_percent      * 0.10; /* edge => 10% */
-    double h  = gSB.hidden_percent    * 0.08; /* hidden => 8% */
+    /*
+      Weighted contributions:
+      - basic_percent   => 32%
+      - normal_percent  => 20%
+      - external        => 10%
+      - modes           => 10%
+      - edge            => 10%
+      - hidden          => 8%
+      - schedules mastery => 10% (summing up to 15 points => scaled to 100 => 10%).
+    */
+    double b  = gSB.basic_percent     * 0.32;
+    double n  = gSB.normal_percent    * 0.20;
+    double e  = gSB.external_percent  * 0.10;
+    double m  = gSB.modes_percent     * 0.10;
+    double ed = gSB.edge_percent      * 0.10;
+    double h  = gSB.hidden_percent    * 0.08;
 
     int sched_pts = get_scheduler_points();
     double sched_percent = ((double)sched_pts / 15.0)*100.0;
-    double s = sched_percent * 0.10;  /* scheduling mastery => 10% of overall */
+    double s = sched_percent * 0.10;
 
     double total = b + n + e + m + ed + h + s;
     if(total>100.0) total=100.0;

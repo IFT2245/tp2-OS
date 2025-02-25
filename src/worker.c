@@ -3,11 +3,16 @@
 #include <stdio.h>
 #include <unistd.h>
 
+#ifndef CLR_RESET
 #define CLR_RESET "\033[0m"
+#endif
+#ifndef CLR_BOLD
 #define CLR_BOLD  "\033[1m"
+#endif
+#ifndef CLR_BLUE
 #define CLR_BLUE  "\033[94m"
+#endif
 
-/* scaled sleep to reflect the timeslice in real-time. */
 static void sim_sleep(unsigned int us){
     int sm = stats_get_speed_mode();
     if(sm==1){
@@ -17,7 +22,6 @@ static void sim_sleep(unsigned int us){
     }
 }
 
-/* Provide partial CPU usage simulation. */
 void simulate_process_partial(process_t* p, unsigned long slice_ms, int core_id) {
     if(!p || slice_ms==0) return;
     if(stats_get_speed_mode()==0) {

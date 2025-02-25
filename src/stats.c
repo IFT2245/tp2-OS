@@ -51,8 +51,13 @@ void stats_inc_tests_failed(int count) {
     g_stats.tests_failed += count;
 }
 
+/* NEW: increment concurrency_commands_run */
+void stats_inc_concurrency_commands(int n) {
+    g_stats.concurrency_commands_run += n;
+}
+
 void stats_print_summary(void) {
-    printf("╔═══════════════════ STATS ═════════════════╗\n");
+    printf(CLR_BOLD CLR_CYAN "\n╔═══════════════════ FINAL STATS ═════════════════╗\n");
     printf("║ Speed Mode            : %s\n", g_stats.speed_mode ? "FAST" : "NORMAL");
     printf("║ Signals (SIGINT)      : %d\n", g_stats.signals_received_sigint);
     printf("║ Signals (SIGTERM)     : %d\n", g_stats.signals_received_sigterm);
@@ -63,5 +68,6 @@ void stats_print_summary(void) {
     printf("║ Containers Removed    : %d\n", g_stats.containers_removed);
     printf("║ Tests Passed          : %d\n", g_stats.tests_passed);
     printf("║ Tests Failed          : %d\n", g_stats.tests_failed);
-    printf("╚═══════════════════════════════════════════╝\n");
+    printf("║ Concurrency Cmds Run  : %d\n", g_stats.concurrency_commands_run);
+    printf("╚═════════════════════════════════════════════════╝\n" CLR_RESET);
 }

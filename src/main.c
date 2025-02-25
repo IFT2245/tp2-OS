@@ -1,29 +1,39 @@
-#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <signal.h>
+#include <sys/types.h>
 
-#include "main.h"
+#if defined(_WIN32) || defined(_WIN64)
+#include <windows.h>
+#endif
+
 #include "runner.h"
 #include "os.h"
 #include "safe_calls_library.h"
 #include "scoreboard.h"
 #include "stats.h"
 
-/* Test suite headers. */
+/* Test suite headers in ../test/ */
 #include "../test/basic-test.h"
 #include "../test/normal-test.h"
 #include "../test/modes-test.h"
 #include "../test/edge-test.h"
 #include "../test/hidden-test.h"
+#include "../test/external-test.h"
 
-/* We use this to track whether SIGTERM was received so we can stop concurrency
-   or test suites, but remain in the main menu. */
+#include "main.h"  /* Our local header declaring the functions below */
+
+/*
+  We use this to track whether SIGTERM was received so we can
+  stop concurrency or test suites, but remain in the main menu.
+*/
 static volatile sig_atomic_t g_return_to_menu = 0;
 
-/* ---------------------------------------------------------
-   Implementation of functions declared in main.h
-   --------------------------------------------------------- */
+/* ----------------------------------------------------------------
+   Implementation of the functions declared in main.h
+   ----------------------------------------------------------------
+*/
 
 void clear_screen(void) {
 #if defined(_WIN32) || defined(_WIN64)
@@ -55,7 +65,6 @@ void ascii_main_menu_header(void) {
     printf("     'A concurrency and scheduling trainer'  \n\n");
 }
 
-/* Show scoreboard in an ASCII table, with an additional row describing schedule mastery weighting. */
 void menu_show_scoreboard(void) {
     scoreboard_t sb;
     get_scoreboard(&sb);
@@ -123,25 +132,32 @@ void menu_show_scoreboard(void) {
     pause_enter();
 }
 
-/* Clears scoreboard data. */
 void menu_clear_scoreboard(void) {
     scoreboard_clear();
-    printf("\nScoreboard cleared.\n");
+    printf(CLR_BOLD CLR_CYAN "\n╔════════════════════════════════════════════╗\n");
+    printf("║ Scoreboard cleared.                        ║\n");
+    printf("╚════════════════════════════════════════════╝\n" CLR_RESET);
     pause_enter();
 }
 
-/* Toggles speed mode between 0 and 1. */
 void menu_toggle_speed_mode(void) {
     int current = stats_get_speed_mode();
     int next    = (current == 0) ? 1 : 0;
     stats_set_speed_mode(next);
-    printf("\nSpeed mode set to: %s\n", (next == 0) ? "NORMAL" : "FAST");
+
+    printf(CLR_BOLD CLR_CYAN "\n╔═════════════════════════════════════╗\n");
+    printf("║ Speed mode set to: %s\n", (next == 0) ? "NORMAL" : "FAST");
+    printf("╚═════════════════════════════════════╝\n" CLR_RESET);
+
     pause_enter();
 }
 
-/* Let user pick exactly one suite to run. */
 void submenu_run_single_test(void) {
     clear_screen();
+    printf(CLR_BOLD CLR_CYAN "╔════════════════════════════════════╗\n" CLR_RESET);
+    printf(CLR_BOLD CLR_CYAN "║ RUN SINGLE TEST - SUITE SELECTION  ║\n" CLR_RESET);
+    printf(CLR_BOLD CLR_CYAN "╚════════════════════════════════════╝\n" CLR_RESET);
+
     printf("Choose which suite?\n");
     printf(" 1) Basic\n");
     printf(" 2) Normal\n");
@@ -160,7 +176,6 @@ void submenu_run_single_test(void) {
         return;
     }
 
-    /* Check if unlocked: */
     int unlocked = 0;
     switch(suite) {
         case 1: unlocked = scoreboard_is_unlocked(SUITE_BASIC);    break;
@@ -172,13 +187,11 @@ void submenu_run_single_test(void) {
         default: break;
     }
     if(!unlocked) {
-        printf("That suite is locked.\n");
+        printf("\nThat suite is currently locked.\n");
         pause_enter();
         return;
     }
 
-    /* For now, we run the entire suite instead of a single internal test:
-       If you want to pick specific tests inside the suite, you can expand further. */
     printf("\nRunning that suite's tests...\n");
     printf(CLR_BOLD CLR_GREEN "╔══════════════════════════════════╗\n");
     printf("║   SCHEDULE BLOCK => TEST SUITE   ║\n");
@@ -233,9 +246,7 @@ void submenu_run_single_test(void) {
     pause_enter();
 }
 
-/* This runs all UNLOCKED test suites in ascending order. */
 void submenu_run_tests(void) {
-    /* Mark that we are running tests. If SIGTERM arrives, we will return to menu. */
     g_return_to_menu = 0;
 
     printf(CLR_BOLD CLR_CYAN "╔═══════════════════════════════════════════╗\n");
@@ -286,11 +297,10 @@ void submenu_run_tests(void) {
     pause_enter();
 }
 
-/* External concurrency submenu. As requested, SIGTERM => set concurrency stop, then return. */
 void menu_submenu_external_concurrency(void) {
     int unlockedExt = scoreboard_is_unlocked(SUITE_EXTERNAL);
     if(!unlockedExt) {
-        printf("\n[External Concurrency] is locked.\n");
+        printf(CLR_BOLD CLR_RED "\n[External Concurrency] is locked.\n" CLR_RESET);
         pause_enter();
         return;
     }
@@ -303,6 +313,7 @@ void menu_submenu_external_concurrency(void) {
     printf("1) Run concurrency with a SINGLE scheduling mode\n");
     printf("2) Run concurrency with ALL scheduling modes\n");
     printf("\nChoice: ");
+
     char buf[256];
     if(!read_line(buf, sizeof(buf))) return;
     int sub = parse_int_strtol(buf, -1);
@@ -335,12 +346,10 @@ void menu_submenu_external_concurrency(void) {
     int style = parse_int_strtol(buf,1);
     if(style<1 || style>3) style=1;
 
-    /* Create array of commands. */
     char** lines = (char**)calloc(n, sizeof(char*));
     if(!lines) return;
 
-    /* "SCHEDULE BLOCK" for concurrency. */
-    g_return_to_menu = 0; /* allow SIGTERM to break concurrency. */
+    g_return_to_menu = 0;
 
     int base=2;
     switch(style) {
@@ -349,24 +358,17 @@ void menu_submenu_external_concurrency(void) {
         case 3: base=10; break;
         default: base=2; break;
     }
-    /* Prepare lines for concurrency. If sub=1 => single scheduling => vary the sleeps.
-       If sub=2 => all scheduling => simpler pattern. */
-    int i;
-    if(sub==1) {
-        for(i=0; i<n; i++){
-            char tmp[64];
+
+    for(int i=0; i<n; i++){
+        char tmp[64];
+        if(sub == 1) {
             snprintf(tmp, sizeof(tmp), "sleep %d", (i+1)*base);
-            lines[i] = strdup(tmp);
-        }
-    } else {
-        for(i=0; i<n; i++){
-            char tmp[64];
+        } else {
             snprintf(tmp, sizeof(tmp), "sleep %d", (i+1)*2);
-            lines[i] = strdup(tmp);
         }
+        lines[i] = strdup(tmp);
     }
 
-    /* If single scheduling mode, we ask user. */
     if(sub==1){
         printf("\nSelect scheduling mode:\n");
         printf(" 0=FIFO,1=RR,2=CFS,3=CFS-SRTF,4=BFS,\n");
@@ -375,7 +377,7 @@ void menu_submenu_external_concurrency(void) {
         printf("Choice: ");
         if(!read_line(buf,sizeof(buf))){
             pause_enter();
-            for(i=0;i<n;i++) free(lines[i]);
+            for(int i=0;i<n;i++) free(lines[i]);
             free(lines);
             return;
         }
@@ -390,7 +392,7 @@ void menu_submenu_external_concurrency(void) {
         run_shell_commands_concurrently(n, lines, c, -1, 1);
     }
 
-    for(i=0; i<n; i++){
+    for(int i=0; i<n; i++){
         free(lines[i]);
     }
     free(lines);
@@ -398,8 +400,12 @@ void menu_submenu_external_concurrency(void) {
     pause_enter();
 }
 
-/* Cleanup function => finalize scoreboard, print stats, exit with code. */
 void cleanup_and_exit(int code) {
+    /* We wrap final messages in a block so everything is consistent */
+    printf(CLR_BOLD CLR_YELLOW "\n╔════════════════════════════════════════════╗\n");
+    printf("║ Exiting Program => Saving scoreboard & stats ║\n");
+    printf("╚════════════════════════════════════════════╝\n" CLR_RESET);
+
     os_cleanup();
     scoreboard_save();
     scoreboard_close();
@@ -407,37 +413,30 @@ void cleanup_and_exit(int code) {
     exit(code);
 }
 
-/* Handle signals => SIGINT => exit, SIGTERM => stop concurrency/test but remain in menu,
-   SIGUSR1 => set concurrency stop as well. */
 void handle_signal(int signum) {
     if(signum == SIGINT) {
         stats_inc_signal_sigint();
-        printf("\n[Main] Caught SIGINT => Save scoreboard and exit.\n");
+        printf(CLR_BOLD CLR_RED "\n[Main] Caught SIGINT => Save scoreboard and exit.\n" CLR_RESET);
         int fs = scoreboard_get_final_score();
         cleanup_and_exit(fs);
     }
     else if(signum == SIGTERM){
         stats_inc_signal_sigterm();
-        printf("\n[Main] Caught SIGTERM => concurrency/test stops => returning to menu.\n");
+        printf(CLR_BOLD CLR_RED "\n[Main] Caught SIGTERM => concurrency/test stops => returning to menu.\n" CLR_RESET);
         set_os_concurrency_stop_flag(1);
-        /* We set this so test or concurrency loops can see it and break out. */
         g_return_to_menu = 1;
     }
     else if(signum == SIGUSR1) {
         stats_inc_signal_other();
-        printf("\n[Main] Caught SIGUSR1 => concurrency stop.\n");
+        printf(CLR_BOLD CLR_RED "\n[Main] Caught SIGUSR1 => concurrency stop.\n" CLR_RESET);
         set_os_concurrency_stop_flag(1);
     }
 }
 
-/* ---------------------------------------------------------
-   The main() entry point
-   --------------------------------------------------------- */
 int main(int argc, char** argv){
     (void)argc;
     (void)argv;
 
-    /* Hook signals. */
     signal(SIGINT,  handle_signal);
     signal(SIGTERM, handle_signal);
     signal(SIGUSR1, handle_signal);

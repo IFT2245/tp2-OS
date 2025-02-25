@@ -15,16 +15,11 @@
 static int tests_run=0, tests_failed=0;
 static char g_test_fail_reason[256];
 
-/* Prototypes for local test functions: */
-static bool test_external_hpc(void);
-static bool test_external_bfs(void);
-static bool test_run_shell_concurrency(void);
+/*
+   We define each test function before usage (no forward declarations).
+*/
 
-/* We do not forward-declare the run tests in .c if they're used below this point.
-   We'll define them before usage. */
-
-static bool test_external_hpc(void)
-{
+static bool test_external_hpc(void) {
     os_init();
     process_t dummy[1];
     init_process(&dummy[0], 0, 0, 0);
@@ -48,8 +43,7 @@ static bool test_external_hpc(void)
     return true;
 }
 
-static bool test_external_bfs(void)
-{
+static bool test_external_bfs(void) {
     os_init();
     process_t p[2];
     init_process(&p[0],3,1,0);
@@ -75,30 +69,27 @@ static bool test_external_bfs(void)
     return true;
 }
 
-static bool test_run_shell_concurrency(void)
-{
+static bool test_run_shell_concurrency(void) {
     tests_run++;
     int count=2;
     char* lines[2];
     lines[0] = "sleep 2";
     lines[1] = "sleep 3";
 
-    /* single core, FIFO mode => run concurrency => pass if no crash. */
     run_shell_commands_concurrently(count, lines, 1, ALG_FIFO, 0);
     return true;
 }
 
-void run_external_tests(void)
-{
+void run_external_tests(void) {
     printf("\n\033[1m\033[93m╔═════════ EXTERNAL TESTS START ═════════╗\033[0m\n");
 
-    /* We'll run all external tests here. */
     tests_run=0;
     tests_failed=0;
 
     bool ok1 = test_external_hpc();
     bool ok2 = test_external_bfs();
     bool ok3 = test_run_shell_concurrency();
+    (void)ok1; (void)ok2; (void)ok3;
 
     scoreboard_update_external(tests_run, (tests_run - tests_failed));
     scoreboard_save();

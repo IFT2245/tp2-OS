@@ -24,12 +24,12 @@ typedef struct process_s {
     uint64_t remaining_time;   /* how many ms remain for this process */
 
     /* Additional fields to track stats: */
-    uint64_t start_time;       /* sim time of first CPU usage */
-    uint64_t end_time;         /* sim time of finishing */
-    uint64_t first_response;   /* sim time of first CPU usage */
-    int      responded;        /* 0 if not responded yet, 1 if yes */
-    int      mlfq_level;       /* queue level for MLFQ */
-    int      times_owning_core;/* how many times scheduled on a core so far */
+    uint64_t start_time;
+    uint64_t end_time;
+    uint64_t first_response;
+    int      responded;
+    int      mlfq_level;
+    int      times_owning_core;
 } process_t;
 
 /* Initialize a process with the given burst, priority, arrival_time. */

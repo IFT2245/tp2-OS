@@ -1,7 +1,11 @@
 #ifndef MAIN_H
 #define MAIN_H
 
-/* Main menu and related helpers for the OS Scheduling Game. */
+#include <stddef.h>
+
+/*
+ * main.h => Declarations for menu and utility functions used by main.c
+ */
 
 /* Cleanup function that saves scoreboard, prints stats, and exits the program. */
 void cleanup_and_exit(int code);

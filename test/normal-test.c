@@ -39,7 +39,7 @@ TEST(sjf) {
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    /* sum waits => 0+1+3=4 => avg=1.33..., sum TAT => 1+3+8=12 => avg=4.0 */
+    /* sum waits => 0+1+3=4 => avg=1.33..., sum TAT => 1+6+5=12 => avg=4.0 (approx) */
     if (!check_stats(&rep, 1.3333, 4.0, 1.3333, 0ULL, 0.02)) {
         snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
                  "test_sjf => mismatch => W=%.2f,T=%.2f,R=%.2f, pre=%llu",
@@ -169,7 +169,7 @@ TEST(cfs_srtf) {
 
     if (rep.total_procs!=3 || rep.preemptions<1) {
         snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
-                 "test_cfs_srtf => mismatch => total=%llu, preempt=%llu",
+                 "test_cfs_srtf => mismatch => total=%llu, pre=%llu",
                  rep.total_procs, rep.preemptions);
         test_set_fail_reason(g_test_fail_reason);
         return false;

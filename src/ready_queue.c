@@ -13,21 +13,32 @@ typedef struct node_s {
 } node_t;
 
 static struct {
-    node_t           sentinel;   /* for normal queue usage */
+    node_t           sentinel;
     size_t           size;
     pthread_mutex_t  m;
     pthread_cond_t   c;
     scheduler_alg_t  alg;
-    node_t           ml_queues[MLFQ_MAX_QUEUES]; /* heads for MLFQ */
+    node_t           ml_queues[MLFQ_MAX_QUEUES];
 } gQ;
 
-/* no forward declarations => define static helper functions before usage. */
+static pthread_mutex_t* pm(void) {
+    return &gQ.m;
+}
 
-/* For HRRN ratio => need global sim time from scheduler. */
-extern uint64_t get_global_sim_time(void);
+static pthread_cond_t* pc(void) {
+    return &gQ.c;
+}
 
-static pthread_mutex_t* pm(void) { return &gQ.m; }
-static pthread_cond_t*  pc(void) { return &gQ.c; }
+/*
+  Remove any 'extern' or forward declarations here;
+  'get_global_sim_time' is declared in scheduler.h
+*/
+
+/*
+ * Linked-list style queue operations for different scheduling policies.
+ * We define each push/pop strategy below, then select them in
+ * ready_queue_init_policy() based on scheduler_alg_t.
+ */
 
 static process_t* pop_head(void) {
     node_t* head = gQ.sentinel.next;
@@ -52,11 +63,9 @@ static void push_tail(process_t* p) {
 }
 
 static void push_priority(process_t* p) {
-    /* smaller priority => earlier in the list */
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
     n->next = NULL;
-
     node_t* cur = &gQ.sentinel;
     while (cur->next && (p->priority >= cur->next->proc->priority)) {
         cur = cur->next;
@@ -67,7 +76,6 @@ static void push_priority(process_t* p) {
 }
 
 static void push_cfs(process_t* p) {
-    /* sorted by vruntime ascending */
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
     n->next = NULL;
@@ -82,7 +90,6 @@ static void push_cfs(process_t* p) {
 }
 
 static void push_sjf(process_t* p) {
-    /* sorted by original burst_time ascending */
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
     n->next = NULL;
@@ -96,16 +103,18 @@ static void push_sjf(process_t* p) {
     gQ.size++;
 }
 
-/* HRRN ratio => (waiting + remain) / remain => bigger => earlier.
-   We'll store only numerator for comparison => waiting+remain. */
+/*
+ * We'll use a helper function for HRRN ratio: ratio = (wait + remain).
+ * Big ratio => process gets scheduled sooner.
+ */
 static uint64_t hrrn_val(process_t* p, uint64_t now) {
-    uint64_t wait = (now > p->arrival_time) ? (now - p->arrival_time) : 0ULL;
+    uint64_t wait   = (now > p->arrival_time) ? (now - p->arrival_time) : 0ULL;
     uint64_t remain = (p->remaining_time > 0) ? p->remaining_time : 1ULL;
     return (wait + remain);
 }
 
 static void push_hrrn(process_t* p, int preemptive) {
-    (void)preemptive; /* same insertion logic, preempt is handled in scheduler runner. */
+    (void)preemptive; /* not used directly here for push ordering */
 
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
@@ -127,9 +136,8 @@ static void push_hrrn(process_t* p, int preemptive) {
     gQ.size++;
 }
 
-/* MLFQ => multiple queues => pop from highest non-empty queue. */
 static process_t* pop_mlfq(void) {
-    for (int i=0; i<MLFQ_MAX_QUEUES; i++) {
+    for (int i = 0; i < MLFQ_MAX_QUEUES; i++) {
         if (gQ.ml_queues[i].next) {
             node_t* n = gQ.ml_queues[i].next;
             gQ.ml_queues[i].next = n->next;
@@ -144,7 +152,7 @@ static process_t* pop_mlfq(void) {
 
 static void push_mlfq(process_t* p) {
     int level = p->mlfq_level;
-    if (level < 0) level=0;
+    if (level < 0) level = 0;
     if (level >= MLFQ_MAX_QUEUES) level = MLFQ_MAX_QUEUES - 1;
 
     node_t* n = (node_t*)malloc(sizeof(node_t));
@@ -159,10 +167,14 @@ static void push_mlfq(process_t* p) {
     gQ.size++;
 }
 
-/* We'll store function pointers for push/pop. */
+/* The function pointers chosen based on scheduling policy. */
 static process_t* (*f_pop)(void) = NULL;
 static void       (*f_push)(process_t*) = NULL;
 static int        g_preemptive = 0;
+
+/*
+ * Public API from ready_queue.h
+ */
 
 void ready_queue_init_policy(scheduler_alg_t alg) {
     memset(&gQ, 0, sizeof(gQ));
@@ -170,7 +182,7 @@ void ready_queue_init_policy(scheduler_alg_t alg) {
     pthread_cond_init(pc(), NULL);
     gQ.alg = alg;
 
-    switch(alg) {
+    switch (alg) {
     case ALG_FIFO:
     case ALG_RR:
     case ALG_BFS:
@@ -228,7 +240,6 @@ void ready_queue_init_policy(scheduler_alg_t alg) {
         break;
 
     default:
-        /* HPC overshadow or unknown => just tail. HPC overshadow is handled outside. */
         f_push = push_tail;
         f_pop  = pop_head;
         g_preemptive = 0;
@@ -245,8 +256,9 @@ void ready_queue_destroy(void) {
 void ready_queue_push(process_t* p) {
     pthread_mutex_lock(pm());
     if (p) {
+        /* HRRN logic also sets ratio in push step. */
         if (gQ.alg == ALG_HRRN || gQ.alg == ALG_HRRN_RT) {
-            push_hrrn(p, (gQ.alg==ALG_HRRN_RT)?1:0);
+            push_hrrn(p, (gQ.alg == ALG_HRRN_RT) ? 1 : 0);
         } else if (gQ.alg == ALG_MLFQ) {
             push_mlfq(p);
         } else {
@@ -260,14 +272,14 @@ void ready_queue_push(process_t* p) {
 process_t* ready_queue_pop(void) {
     pthread_mutex_lock(pm());
     while(1) {
-        if(gQ.size>0) {
+        if (gQ.size > 0) {
             process_t* r = f_pop();
             pthread_mutex_unlock(pm());
             return r;
         }
         pthread_cond_wait(pc(), pm());
     }
-    /* never reached */
+    /* unreachable */
     pthread_mutex_unlock(pm());
     return NULL;
 }

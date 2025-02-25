@@ -17,8 +17,6 @@ static int almost_equal(double a, double b, double eps) {
     return (fabs(a - b) < eps);
 }
 
-/* We define all test functions here (no forward declarations needed). */
-
 TEST(fifo) {
     os_init();
     process_t p[2];
@@ -186,7 +184,6 @@ void run_basic_tests(int* total, int* passed){
     *total  = tests_run;
     *passed = (tests_run - tests_failed);
 
-    /* Show final block. */
     printf(CLR_BOLD CLR_YELLOW "╔══════════════════════════════════════════════╗\n");
     printf("║       BASIC TESTS RESULTS: %d / %d passed      ║\n", *passed, *total);
     if(*passed < *total) {

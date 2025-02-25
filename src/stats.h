@@ -1,7 +1,11 @@
 #ifndef STATS_H
 #define STATS_H
 
-/* Colors for ASCII art convenience. */
+/*
+   stats.h => a global struct tracking concurrency usage, signals, tests, etc.
+   We also define some color macros here for convenience in printing.
+*/
+
 #define CLR_RESET   "\033[0m"
 #define CLR_BOLD    "\033[1m"
 #define CLR_MAGENTA "\033[95m"
@@ -10,10 +14,6 @@
 #define CLR_GRAY    "\033[90m"
 #define CLR_YELLOW  "\033[93m"
 #define CLR_CYAN    "\033[96m"
-
-/*
-   stats.h => a global struct tracking concurrency usage, signals, tests, etc.
-*/
 
 typedef struct {
     int signals_received_sigint;
@@ -30,6 +30,10 @@ typedef struct {
 
     /* speed_mode: 0 => normal, 1 => fast */
     int speed_mode;
+
+    /* NEW: track total concurrency commands issued in runner. */
+    int concurrency_commands_run;
+
 } stats_t;
 
 /* Initialize. */
@@ -55,7 +59,10 @@ void stats_inc_containers_removed(void);
 void stats_inc_tests_passed(int count);
 void stats_inc_tests_failed(int count);
 
-/* Print them in a block. */
+/* NEW: increment concurrency commands run. */
+void stats_inc_concurrency_commands(int n);
+
+/* Print them in a block at program end. */
 void stats_print_summary(void);
 
 #endif

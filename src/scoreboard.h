@@ -5,7 +5,7 @@
 
 /* Enum to identify a test suite. */
 typedef enum {
-    SUITE_BASIC = 0,
+    SUITE_BASIC = 1,
     SUITE_NORMAL,
     SUITE_EXTERNAL,
     SUITE_MODES,
@@ -37,6 +37,7 @@ typedef struct {
     double edge_percent;
     double hidden_percent;
 
+    /* Passing threshold for unlocking next suite. */
     double pass_threshold;
 } scoreboard_t;
 
@@ -72,7 +73,7 @@ void scoreboard_update_modes(int total,int pass);
 void scoreboard_update_edge(int total,int pass);
 void scoreboard_update_hidden(int total,int pass);
 
-/* Check if suite is unlocked (pass% >= pass_threshold). */
+/* Check if suite is unlocked. (Basic is always unlocked at game start.) */
 int scoreboard_is_unlocked(scoreboard_suite_t suite);
 
 #endif
