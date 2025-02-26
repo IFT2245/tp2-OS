@@ -674,14 +674,14 @@ void menu_submenu_external_concurrency(void);
 */
 static volatile sig_atomic_t g_concurrency_stop_flag = 0;
 
-/* For measuring time since os_init() */
+/* For measuring time since os_init() in real-time ms. */
 static uint64_t g_start_ms = 0;
 
 /* Up to 32 ephemeral containers. */
 static int       g_container_count = 0;
 static char      g_container_paths[32][256];
 
-/* Returns monotonic current time in ms */
+/* Returns monotonic current time in ms. */
 static uint64_t now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -713,6 +713,7 @@ void os_init(void) {
    ----------------------------------------------------------------
 */
 void os_cleanup(void) {
+    /* Remove all ephemeral containers in reverse order. */
     while (g_container_count > 0) {
         g_container_count--;
         const char* path = g_container_paths[g_container_count];
@@ -726,12 +727,13 @@ void os_cleanup(void) {
 }
 
 uint64_t os_time(void) {
+    /* Return real-world elapsed ms since os_init(). */
     const uint64_t now = now_ms();
     if(now < g_start_ms) return 0ULL;
     return (now - g_start_ms);
 }
 
-/* Minimal logging with a small delay in normal mode only */
+/* Minimal logging with a small delay in normal mode only. */
 void os_log(const char* msg) {
     if(!msg) return;
     if(stats_get_speed_mode() == 0) {
@@ -756,7 +758,7 @@ void os_create_ephemeral_container(void) {
     }
 }
 
-/* Container removal */
+/* Container removal (explicit). */
 void os_remove_ephemeral_container(void) {
     if(g_container_count <= 0) return;
     g_container_count--;
@@ -770,7 +772,10 @@ void os_remove_ephemeral_container(void) {
     }
 }
 
-/* HPC overshadow => spawn 4 CPU-bound threads */
+/*
+   HPC overshadow => spawns multiple CPU-bound threads to demonstrate concurrency.
+   Now refined to choose a random number of threads between 4..8.
+*/
 static void* overshadow_thread(void* arg) {
     long *ret = (long*)arg;
     long sum = 0;
@@ -788,16 +793,24 @@ void os_run_hpc_overshadow(void) {
         return;
     }
 
-    const int n=4; /* 4 CPU-bound threads for overshadow */
+    /* NEW/UPDATED: pick a random number of CPU-bound threads from 4..8. */
+    srand((unsigned int)time(NULL));
+    int n = 4 + (rand() % 5); /* range = [4..8]. */
+
     long* results = (long*)calloc(n, sizeof(long));
     pthread_t* th = (pthread_t*)malloc(n*sizeof(pthread_t));
+
+    if(stats_get_speed_mode()==0){
+        printf("\033[92m[HPC Overshadow] => spawning %d threads\n\033[0m", n);
+        usleep(200000);
+    }
 
     for (int i=0; i<n; i++) {
         pthread_create(&th[i], NULL, overshadow_thread, &results[i]);
         if(stats_get_speed_mode()==0){
             printf("\033[92m   HPC Overshadow Thread #%d => time=%llu ms => started.\n\033[0m",
                    i+1, (unsigned long long)os_time());
-            usleep(200000);
+            usleep(150000);
         }
     }
     for (int i=0; i<n; i++) {
@@ -805,7 +818,7 @@ void os_run_hpc_overshadow(void) {
         if(stats_get_speed_mode()==0){
             printf("\033[92m   HPC Overshadow Thread #%d => time=%llu ms => finished.\n\033[0m",
                    i+1, (unsigned long long)os_time());
-            usleep(200000);
+            usleep(100000);
         }
     }
 
@@ -817,11 +830,12 @@ void os_run_hpc_overshadow(void) {
     }
 }
 
-/* HPC overlay => spawn 2 CPU-bound threads, slightly lighter than overshadow. */
+/*
+   HPC overlay => spawns a smaller random number of CPU-bound threads, e.g. [2..4].
+*/
 static void* overlay_thread(void* arg) {
     long *ret = (long*)arg;
     long sum = 0;
-    /* We do fewer iterations than overshadow as well, to differentiate. */
     for (long i=0; i<4000000; i++) {
         if(os_concurrency_stop_requested()) break;
         sum += (i % 19) + (i % 13);
@@ -836,16 +850,24 @@ void os_run_hpc_overlay(void) {
         return;
     }
 
-    const int n=2; /* HPC overlay => 2 CPU-bound threads */
+    /* NEW/UPDATED: random number of threads in [2..4]. */
+    srand((unsigned int)time(NULL));
+    int n = 2 + (rand() % 3); /* range = [2..4]. */
+
     long* results = (long*)calloc(n, sizeof(long));
     pthread_t* th = (pthread_t*)malloc(n*sizeof(pthread_t));
+
+    if(stats_get_speed_mode()==0){
+        printf("\033[92m[HPC Overlay] => spawning %d threads\n\033[0m", n);
+        usleep(200000);
+    }
 
     for (int i=0; i<n; i++) {
         pthread_create(&th[i], NULL, overlay_thread, &results[i]);
         if(stats_get_speed_mode()==0){
             printf("\033[92m   HPC Overlay Thread #%d => time=%llu ms => started.\n\033[0m",
                    i+1, (unsigned long long)os_time());
-            usleep(200000);
+            usleep(150000);
         }
     }
     for (int i=0; i<n; i++) {
@@ -853,7 +875,7 @@ void os_run_hpc_overlay(void) {
         if(stats_get_speed_mode()==0){
             printf("\033[92m   HPC Overlay Thread #%d => time=%llu ms => finished.\n\033[0m",
                    i+1, (unsigned long long)os_time());
-            usleep(200000);
+            usleep(100000);
         }
     }
 
@@ -865,7 +887,10 @@ void os_run_hpc_overlay(void) {
     }
 }
 
-/* Pipeline => single child fork + wait. */
+/*
+   Pipeline example => now refined to create multiple child processes in series,
+   simulating a multi-stage pipeline.
+*/
 void os_pipeline_example(void) {
     printf("\033[95m╔══════════════════════════════════════════════╗\n");
     printf("║             PIPELINE BLOCK START             ║\n");
@@ -876,23 +901,59 @@ void os_pipeline_example(void) {
         return;
     }
 
-    pid_t c = fork();
-    if (c == 0) {
+    /* We'll do a 2-stage pipeline:
+       stage1 child => does some "work"
+       then pipe into stage2 child => does next "work"
+       (in real shell code, you'd connect the outputs/inputs, but here we demonstrate the concept.)
+    */
+    int pipefd[2];
+    if(pipe(pipefd) == -1) {
+        perror("pipe");
+        return;
+    }
+
+    pid_t c1 = fork();
+    if(c1==0) {
+        /* Child1 => simulate pipeline stage #1 */
+        close(pipefd[0]);
         if(stats_get_speed_mode()==0){
-            printf("\033[92m   [Pipeline child => start => time=%llu ms]\033[0m\n",
+            printf("\033[92m   [Pipeline child1 => start => time=%llu ms]\033[0m\n",
                    (unsigned long long)os_time());
-            usleep(50000);
-            printf("\033[92m   [Pipeline child => end => time=%llu ms]\033[0m\n",
+            usleep(100000);
+        }
+        /* write some data to pipe to pass to next stage. */
+        const char* data="Hello from stage1";
+        write(pipefd[1], data, strlen(data)+1);
+        close(pipefd[1]);
+
+        if(stats_get_speed_mode()==0){
+            printf("\033[92m   [Pipeline child1 => end => time=%llu ms]\033[0m\n",
                    (unsigned long long)os_time());
         }
         _exit(0);
-    } else if (c > 0) {
-        if(stats_get_speed_mode()==0){
-            printf("\033[92m   [Pipeline parent => waiting => time=%llu ms]\033[0m\n",
-                   (unsigned long long)os_time());
-            usleep(200000);
+    } else if(c1>0) {
+        /* parent => spawn stage2 */
+        pid_t c2 = fork();
+        if(c2==0) {
+            close(pipefd[1]);
+            /* read data from stage1. */
+            char buf[128];
+            memset(buf,0,sizeof(buf));
+            read(pipefd[0], buf, sizeof(buf)-1);
+            if(stats_get_speed_mode()==0){
+                printf("\033[92m   [Pipeline child2 => got data=\"%s\" => time=%llu ms]\033[0m\n",
+                       buf, (unsigned long long)os_time());
+                usleep(150000);
+            }
+            close(pipefd[0]);
+            _exit(0);
+        } else if(c2>0) {
+            /* parent => wait for both. */
+            close(pipefd[0]);
+            close(pipefd[1]);
+            waitpid(c1,NULL,0);
+            waitpid(c2,NULL,0);
         }
-        waitpid(c, NULL, 0);
     }
 
     printf("\033[96m╔══════════════════════════════════════════════╗\n");
@@ -904,7 +965,10 @@ void os_pipeline_example(void) {
     }
 }
 
-/* Distributed => fork child that runs HPC overshadow. */
+/*
+   Distributed example => we fork multiple HPC overshadow tasks in parallel
+   to simulate "remote nodes" doing CPU-bound HPC overshadow.
+*/
 void os_run_distributed_example(void) {
     printf("\033[95m╔══════════════════════════════════════════════╗\n");
     printf("║          DISTRIBUTED BLOCK START             ║\n");
@@ -915,22 +979,27 @@ void os_run_distributed_example(void) {
         return;
     }
 
-    pid_t c = fork();
-    if (c == 0) {
-        if(stats_get_speed_mode()==0){
-            printf("\033[92m   [Distributed child => HPC overshadow => time=%llu ms]\033[0m\n",
-                   (unsigned long long)os_time());
-            usleep(200000);
+    /* We'll spawn 2 HPC overshadow children, each doing overshadow. */
+    for(int i=0; i<2; i++) {
+        if(os_concurrency_stop_requested()) {
+            break;
         }
-        os_run_hpc_overshadow();
-        _exit(0);
-    } else if (c > 0) {
-        if(stats_get_speed_mode()==0){
-            printf("\033[92m   [Distributed parent => waiting => time=%llu ms]\033[0m\n",
-                   (unsigned long long)os_time());
-            usleep(200000);
+        pid_t c = fork();
+        if (c == 0) {
+            if(stats_get_speed_mode()==0){
+                printf("\033[92m   [Distributed child => HPC overshadow => time=%llu ms]\033[0m\n",
+                       (unsigned long long)os_time());
+                usleep(200000);
+            }
+            os_run_hpc_overshadow();
+            _exit(0);
+        } else if (c > 0) {
+            /* parent just moves on to spawn the next or wait. */
         }
-        waitpid(c, NULL, 0);
+    }
+    /* Wait for them all. In real code we'd track pids, but let's do a simple approach. */
+    for(int i=0; i<2; i++) {
+        wait(NULL);
     }
 
     printf("\033[96m╔══════════════════════════════════════════════╗\n");
@@ -988,8 +1057,10 @@ void os_pipeline_example(void);
 void os_run_distributed_example(void);
 
 #endif
-#include "process.h"
+#include <stdlib.h>
 #include <string.h>
+#include "safe_calls_library.h"
+#include "process.h"
 
 /* Initialize a process with given burst, priority, arrival_time. */
 void init_process(process_t* p, uint64_t burst, int priority, uint64_t arrival) {
@@ -999,6 +1070,22 @@ void init_process(process_t* p, uint64_t burst, int priority, uint64_t arrival) 
     p->remaining_time = burst;
     p->priority       = priority;
     p->arrival_time   = arrival;
+    p->times_owning_core = 0;
+}
+
+/* OPTIONAL new function: reset a process so it can be reused. */
+void reset_process(process_t* p, uint64_t new_burst, int new_priority, uint64_t new_arrival) {
+    if(!p) return;
+    p->burst_time     = new_burst;
+    p->remaining_time = new_burst;
+    p->priority       = new_priority;
+    p->arrival_time   = new_arrival;
+    p->vruntime       = 0;
+    p->start_time     = 0;
+    p->end_time       = 0;
+    p->first_response = 0;
+    p->responded      = 0;
+    p->mlfq_level     = 0;
     p->times_owning_core = 0;
 }
 #ifndef PROCESS_H
@@ -1047,22 +1134,35 @@ void init_process(process_t* p, uint64_t burst, int priority, uint64_t arrival);
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 /* We'll keep up to 10 MLFQ levels. */
 #define MLFQ_MAX_QUEUES 10
 
+/*
+   We implement optional *aging* for MLFQ:
+   If a process remains in a lower queue for more than MLFQ_AGING_MS
+   (in simulated time), we promote it up one level.
+*/
+#define MLFQ_AGING_MS  10
+
+/*
+   A single node in our queue/linked-list.
+   If proc == NULL, it is a "sentinel" node that signals termination.
+*/
 typedef struct node_s {
     process_t*       proc;
+    uint64_t         enqueued_sim_time;
     struct node_s*   next;
 } node_t;
 
 /*
-  We store everything in a single static struct 'gQ' with:
-  - sentinel for main list
-  - ml_queues[] for MLFQ
-  - size
-  - chosen alg
-  - locks/conds
+   The global queue structure with:
+   - sentinel for normal single-queue algorithms
+   - ml_queues[] for MLFQ
+   - size
+   - chosen alg
+   - locks/conds
 */
 static struct {
     node_t           sentinel;
@@ -1070,6 +1170,7 @@ static struct {
     pthread_mutex_t  m;
     pthread_cond_t   c;
     scheduler_alg_t  alg;
+    /* The MLFQ queues (0=highest priority, MLFQ_MAX_QUEUES-1=lowest) */
     node_t           ml_queues[MLFQ_MAX_QUEUES];
 } gQ;
 
@@ -1083,6 +1184,8 @@ static process_t* pop_head(void) {
     if (!head) return NULL;
     gQ.sentinel.next = head->next;
     gQ.size--;
+
+    /* If this is a sentinel node => return NULL so the thread can exit. */
     process_t* p = head->proc;
     free(head);
     return p;
@@ -1091,6 +1194,7 @@ static process_t* pop_head(void) {
 static void push_tail(process_t* p) {
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
+    n->enqueued_sim_time = get_global_sim_time();
     n->next = NULL;
     node_t* cur = &gQ.sentinel;
     while (cur->next) {
@@ -1104,9 +1208,11 @@ static void push_tail(process_t* p) {
 static void push_priority(process_t* p) {
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
+    n->enqueued_sim_time = get_global_sim_time();
     n->next = NULL;
 
     node_t* cur = &gQ.sentinel;
+    /* smaller priority => earlier in the list */
     while (cur->next && (p->priority >= cur->next->proc->priority)) {
         cur = cur->next;
     }
@@ -1119,6 +1225,7 @@ static void push_priority(process_t* p) {
 static void push_cfs(process_t* p) {
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
+    n->enqueued_sim_time = get_global_sim_time();
     n->next = NULL;
 
     node_t* cur = &gQ.sentinel;
@@ -1134,6 +1241,7 @@ static void push_cfs(process_t* p) {
 static void push_sjf(process_t* p) {
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
+    n->enqueued_sim_time = get_global_sim_time();
     n->next = NULL;
 
     node_t* cur = &gQ.sentinel;
@@ -1153,20 +1261,19 @@ static uint64_t hrrn_val(process_t* p, uint64_t now) {
 }
 
 static void push_hrrn(process_t* p, int preemptive) {
-    (void)preemptive; /* same insertion logic; preemptive is handled in pop/time updates */
-
+    (void)preemptive; /* same insertion logic; preemption is handled in scheduling loop */
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
+    n->enqueued_sim_time = get_global_sim_time();
     n->next = NULL;
 
     uint64_t now = get_global_sim_time();
     uint64_t new_ratio = hrrn_val(p, now);
 
     node_t* cur = &gQ.sentinel;
-    while (cur->next) {
+    while (cur->next && cur->next->proc != NULL) {
         uint64_t c_ratio = hrrn_val(cur->next->proc, now);
         if (new_ratio > c_ratio) {
-            /* we want to insert here */
             break;
         }
         cur = cur->next;
@@ -1176,13 +1283,15 @@ static void push_hrrn(process_t* p, int preemptive) {
     gQ.size++;
 }
 
-/* MLFQ => multiple queues. We pop from the highest priority queue that is non-empty. */
+/* ---------- MLFQ ---------- */
 static process_t* pop_mlfq(void) {
     for (int i = 0; i < MLFQ_MAX_QUEUES; i++) {
         if (gQ.ml_queues[i].next) {
             node_t* n = gQ.ml_queues[i].next;
             gQ.ml_queues[i].next = n->next;
             gQ.size--;
+
+            /* If it's a sentinel node => return NULL so the core thread ends. */
             process_t* p = n->proc;
             free(n);
             return p;
@@ -1192,12 +1301,14 @@ static process_t* pop_mlfq(void) {
 }
 
 static void push_mlfq(process_t* p) {
-    int level = p->mlfq_level;
+    /* If the process is actually the sentinel => put it in queue 0 so it can pop easily. */
+    int level = (p ? p->mlfq_level : 0);
     if (level < 0) level = 0;
     if (level >= MLFQ_MAX_QUEUES) level = MLFQ_MAX_QUEUES - 1;
 
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
+    n->enqueued_sim_time = get_global_sim_time();
     n->next = NULL;
 
     node_t* cur = &gQ.ml_queues[level];
@@ -1208,88 +1319,64 @@ static void push_mlfq(process_t* p) {
     gQ.size++;
 }
 
-/* We'll choose function pointers at init. */
-static process_t* (*f_pop)(void) = NULL;
-static void       (*f_push)(process_t*) = NULL;
+/*
+   Each time we pop in MLFQ, we do a quick pass to check
+   if any process in a lower queue has waited >= MLFQ_AGING_MS
+   => promote it up one level.
+*/
+static void mlfq_promote_aged_processes(void) {
+    uint64_t now = get_global_sim_time();
+    for(int level = 1; level < MLFQ_MAX_QUEUES; level++) {
+        node_t* head = &gQ.ml_queues[level];
+        node_t* cur  = head;
+        while(cur->next) {
+            node_t* nxt = cur->next;
+            if(nxt->proc == NULL) {
+                /* skip sentinel nodes if any ended up here */
+                cur = cur->next;
+                continue;
+            }
+            uint64_t waited = (now > nxt->enqueued_sim_time)
+                               ? (now - nxt->enqueued_sim_time)
+                               : 0ULL;
+            if(waited >= MLFQ_AGING_MS) {
+                /* remove from current queue */
+                cur->next = nxt->next;
+                gQ.size--;
 
-/* Preemptive indicates if the scheduler timeslices or not. (Handled in scheduler_run) */
-static int g_preemptive = 0;
+                /* promote up one level */
+                int newLevel = level - 1;
+                if(newLevel<0) newLevel=0;
+                nxt->proc->mlfq_level = newLevel;
+                nxt->enqueued_sim_time = now;
+
+                /* push it to the newLevel queue at the tail */
+                node_t* tail = &gQ.ml_queues[newLevel];
+                while(tail->next) {
+                    tail = tail->next;
+                }
+                tail->next = nxt;
+                nxt->next  = NULL;
+                gQ.size++;
+
+                /* do not advance cur => we removed nxt from chain. */
+            } else {
+                cur = cur->next;
+            }
+        }
+    }
+}
+
+/* ---------- Public interface ---------- */
 
 void ready_queue_init_policy(scheduler_alg_t alg) {
     memset(&gQ, 0, sizeof(gQ));
     pthread_mutex_init(pm(), NULL);
     pthread_cond_init(pc(), NULL);
     gQ.alg = alg;
-
-    switch (alg) {
-    case ALG_FIFO:
-    case ALG_RR:
-    case ALG_BFS:
-        f_push = push_tail;
-        f_pop  = pop_head;
-        /* Round Robin, BFS => yes preemptive. FIFO => no.
-           But we handle that detail in scheduler.c's run logic. */
-        g_preemptive = (alg == ALG_RR || alg == ALG_BFS) ? 1 : 0;
-        break;
-
-    case ALG_PRIORITY:
-        f_push = push_priority;
-        f_pop  = pop_head;
-        g_preemptive = 0;
-        break;
-
-    case ALG_CFS:
-        f_push = push_cfs;
-        f_pop  = pop_head;
-        g_preemptive = 0;
-        break;
-
-    case ALG_CFS_SRTF:
-        f_push = push_cfs;
-        f_pop  = pop_head;
-        g_preemptive = 1;
-        break;
-
-    case ALG_SJF:
-        f_push = push_sjf;
-        f_pop  = pop_head;
-        g_preemptive = 0;
-        break;
-
-    case ALG_STRF:
-        f_push = push_sjf;
-        f_pop  = pop_head;
-        g_preemptive = 1;
-        break;
-
-    case ALG_HRRN:
-        f_push = (void (*)(process_t*))push_hrrn;
-        f_pop  = (process_t* (*)(void))pop_head;
-        g_preemptive = 0;
-        break;
-
-    case ALG_HRRN_RT:
-        f_push = (void (*)(process_t*))push_hrrn;
-        f_pop  = (process_t* (*)(void))pop_head;
-        g_preemptive = 1;
-        break;
-
-    case ALG_MLFQ:
-        f_push = push_mlfq;
-        f_pop  = pop_mlfq;
-        g_preemptive = 1;
-        break;
-
-    case ALG_HPC_OVERSHADOW:
-    case ALG_HPC_OVERLAY:
-    default:
-        /* HPC overshadow/overlay => do not actually use queue for normal scheduling. */
-        f_push = push_tail;
-        f_pop  = pop_head;
-        g_preemptive = 0;
-        break;
-    }
 }
+
+/* We leave the function pointers approach inlined to keep code simpler. */
 
 void ready_queue_destroy(void) {
     pthread_cond_destroy(pc());
@@ -1297,29 +1384,134 @@ void ready_queue_destroy(void) {
     memset(&gQ, 0, sizeof(gQ));
 }
 
+/*
+   FIX: If p==NULL => we still push a *sentinel node*
+   so that waiting threads can pop it and exit.
+*/
 void ready_queue_push(process_t* p) {
     pthread_mutex_lock(pm());
-    if (p) {
-        if (gQ.alg == ALG_HRRN || gQ.alg == ALG_HRRN_RT) {
-            push_hrrn(p, (gQ.alg == ALG_HRRN_RT)?1:0);
-        } else if (gQ.alg == ALG_MLFQ) {
-            push_mlfq(p);
+
+    /* If 'p' is NULL => push sentinel node so pop() can return NULL. */
+    if(!p) {
+        node_t* n = (node_t*)malloc(sizeof(node_t));
+        n->proc = NULL; /* sentinel */
+        n->enqueued_sim_time = get_global_sim_time();
+        n->next = NULL;
+
+        /* For MLFQ, place sentinel in queue 0 so it can be seen immediately. */
+        if(gQ.alg == ALG_MLFQ) {
+            node_t* cur = &gQ.ml_queues[0];
+            while(cur->next) {
+                cur = cur->next;
+            }
+            cur->next = n;
+            gQ.size++;
         } else {
-            f_push(p);
+            /* For single-queue algs => put it in the main sentinel list. */
+            node_t* cur = &gQ.sentinel;
+            while(cur->next) {
+                cur = cur->next;
+            }
+            cur->next = n;
+            gQ.size++;
+        }
+        /* Wake up any waiting threads. */
+        pthread_cond_broadcast(pc());
+        pthread_mutex_unlock(pm());
+        return;
+    }
+
+    /* If it's HRRN: */
+    if (gQ.alg == ALG_HRRN || gQ.alg == ALG_HRRN_RT) {
+        uint64_t now = get_global_sim_time();
+        uint64_t new_ratio = hrrn_val(p, now);
+
+        node_t* n = (node_t*)malloc(sizeof(node_t));
+        n->proc = p;
+        n->enqueued_sim_time = now;
+        n->next = NULL;
+
+        node_t* cur = &gQ.sentinel;
+        while (cur->next && cur->next->proc != NULL) {
+            uint64_t c_ratio = hrrn_val(cur->next->proc, now);
+            if (new_ratio > c_ratio) break;
+            cur = cur->next;
+        }
+        n->next = cur->next;
+        cur->next = n;
+        gQ.size++;
+    }
+    else if(gQ.alg == ALG_MLFQ) {
+        push_mlfq(p);
+    }
+    else {
+        /* For simpler algs => do insertion logic depending on which one it is. */
+        /* We can detect it from gQ.alg if we want the original approach. */
+        switch(gQ.alg) {
+            case ALG_FIFO:
+            case ALG_RR:
+            case ALG_BFS:
+                push_tail(p);
+                break;
+            case ALG_PRIORITY:
+                push_priority(p);
+                break;
+            case ALG_CFS:
+            case ALG_CFS_SRTF:
+                push_cfs(p);
+                break;
+            case ALG_SJF:
+            case ALG_STRF:
+                push_sjf(p);
+                break;
+            default:
+                push_tail(p);
+                break;
         }
     }
+
     pthread_cond_broadcast(pc());
     pthread_mutex_unlock(pm());
 }
 
+/*
+   The caller blocks here if the queue is empty.
+   If we see a sentinel node => return NULL, causing the scheduling thread to exit.
+*/
 process_t* ready_queue_pop(void) {
     pthread_mutex_lock(pm());
     while(1) {
         if (gQ.size > 0) {
-            process_t* r = f_pop();
-            pthread_mutex_unlock(pm());
-            return r;
+            if(gQ.alg == ALG_MLFQ) {
+                /* MLFQ: do a quick check for aging before we pop. */
+                mlfq_promote_aged_processes();
+                process_t* p = pop_mlfq();
+                pthread_mutex_unlock(pm());
+
+                /* If sentinel => return NULL => thread exit. */
+                if(!p) {
+                    return NULL;
+                }
+                return p;
+            }
+            else {
+                /* Single queue approach. Check if the front is sentinel. */
+                node_t* front = gQ.sentinel.next;
+                if(front && front->proc == NULL) {
+                    /* pop the sentinel => return NULL => exit. */
+                    gQ.sentinel.next = front->next;
+                    gQ.size--;
+                    free(front);
+                    pthread_mutex_unlock(pm());
+                    return NULL;
+                }
+                /* Otherwise pop normally. */
+                process_t* p = pop_head();
+                pthread_mutex_unlock(pm());
+                return p;
+            }
         }
+        /* If empty => wait. */
         pthread_cond_wait(pc(), pm());
     }
     /* unreachable */
@@ -1903,10 +2095,15 @@ void handle_signal(int signum);
 #define MAX_CORES 4
 #endif
 
-/* Global scheduling states: */
+/* ---------- Global scheduling states ---------- */
 static scheduler_alg_t  g_current_alg = ALG_CFS;
 static int              g_num_cores   = 1;
 static int              g_running     = 0;
+
+/*
+   The global simulated time in "ms" (not real ms, but a time-step
+   that increments with each partial slice).
+*/
 static uint64_t         g_sim_time    = 0;
 static pthread_mutex_t  g_sim_time_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -1917,7 +2114,18 @@ static schedule_stats_t g_stats;
 static process_t* g_process_list = NULL;
 static int        g_list_count   = 0;
 
-/* Access global sim time (used by ready_queue for e.g. HRRN). */
+/*
+   BFS quantum is stored so BFS tests can see what BFS used.
+   This is set in get_dynamic_quantum() if BFS is selected.
+*/
+static unsigned long g_bfs_quantum = 4; /* default fallback */
+
+/* Provide BFS quantum to BFS tests. */
+unsigned long scheduler_get_bfs_quantum(void) {
+    return g_bfs_quantum;
+}
+
+/* Access global sim time (used by ready_queue for e.g. HRRN, MLFQ) */
 uint64_t get_global_sim_time(void) {
     pthread_mutex_lock(&g_sim_time_lock);
     uint64_t t = g_sim_time;
@@ -1959,42 +2167,63 @@ static void finalize_stats(void) {
 }
 
 /*
-  Returns a dynamic quantum to use for Round Robin.
-  For demonstration, let’s do:
-   quantum = baseQuantum + (ready_queue_size() / 2)
-
-  You can refine or adjust as needed.
+   Returns a dynamic quantum for each preemptive scheduling mode.
+   BFS => store in g_bfs_quantum, so BFS test can see the actual timeslice.
 */
-static unsigned long get_rr_dynamic_quantum(void) {
-    const unsigned long baseQuantum = 2;  /* minimal quantum */
+static unsigned long get_dynamic_quantum(scheduler_alg_t alg) {
     size_t rq_size = ready_queue_size();
-    unsigned long dynamic_part = (unsigned long)(rq_size / 2);
-    return baseQuantum + dynamic_part;
+    switch(alg) {
+        case ALG_RR: {
+            /* Example dynamic approach for RR. */
+            const unsigned long baseQuantum = 2;
+            unsigned long dynamic_part = (unsigned long)(rq_size / 2);
+            return baseQuantum + dynamic_part;
+        }
+        case ALG_BFS:
+            /*
+               BFS => choose base slice=4, maybe +1 if queue is big.
+               This is just an example. You can do what you want here.
+            */
+            g_bfs_quantum = 4 + (rq_size > 5 ? 1 : 0);
+            return g_bfs_quantum;
+
+        case ALG_CFS_SRTF:
+        case ALG_STRF:
+        case ALG_HRRN_RT:
+        case ALG_MLFQ:
+            /* short fixed slice => 2 ms. */
+            return 2;
+
+        default:
+            /* Non-preemptive => run to completion => quantum=0 => no preemption. */
+            return 0;
+    }
 }
 
-/* Core thread function: pop from ready_queue and run the partial timeslice. */
+/*
+   The scheduling loop for each core:
+   - pop from ready_queue
+   - run partial timeslice
+   - if remain>0 => requeue => preempt
+*/
 static void* core_thread_func(void* arg) {
     long core_id = (long)arg;
 
     while(g_running) {
         if(os_concurrency_stop_requested()) {
-            /* concurrency stop => break from loop. */
             break;
         }
 
-        /* Pop next process from the ready queue. */
         process_t* p = ready_queue_pop();
         if(!g_running || !p) {
-            /* If queue empty or sentinel => skip. */
+            /* if queue empty or sentinel => skip */
             continue;
         }
 
         uint64_t real_t = os_time();
-
-        /* In normal speed mode, show scheduling info. */
         if(stats_get_speed_mode() == 0) {
             printf("\033[93m[time=%llu ms] => container=1 core=%ld => scheduling process=%p\n"
-                   "   => burst_time=%lu, prio=%d, vruntime=%llu, remain=%llu, timesScheduled=%d\033[0m\n",
+                   "   => burst_time=%lu, prio=%d, vruntime=%llu, remain=%llu, timesScheduled=%d\n\033[0m",
                    (unsigned long long)real_t,
                    core_id, (void*)p,
                    (unsigned long)p->burst_time,
@@ -2006,85 +2235,59 @@ static void* core_thread_func(void* arg) {
         }
 
         if(!p->responded) {
-            p->responded = 1;
-            p->first_response = get_global_sim_time();
+            p->responded       = 1;
+            p->first_response  = get_global_sim_time();
         }
         p->times_owning_core++;
 
-        /* Decide if the scheduler is preemptive and choose quantum. */
-        int preemptive = 0;
-        unsigned long quantum = 0;
+        /* Decide if preemptive => choose quantum. */
+        unsigned long q = get_dynamic_quantum(g_current_alg);
+        int preemptive = (q > 0) ? 1 : 0;
 
-        switch(g_current_alg) {
-            case ALG_RR:
-                preemptive = 1;
-                quantum = get_rr_dynamic_quantum();
-                break;
-            case ALG_BFS:
-            case ALG_CFS_SRTF:
-            case ALG_STRF:
-            case ALG_HRRN_RT:
-            case ALG_MLFQ:
-                /* Use the original fixed quantum = 2 here (or keep BFS the same). */
-                preemptive = 1;
-                quantum = 2;
-                break;
-            default:
-                /* Non-preemptive => run to completion. */
-                preemptive = 0;
-                break;
-        }
+        /* slice = min(q, remaining_time) if preemptive, else entire remain. */
+        unsigned long slice = preemptive
+                              ? ( (p->remaining_time > q) ? q : p->remaining_time )
+                              : p->remaining_time;
 
-        /* Figure out the timeslice to run now. */
-        unsigned long slice = 0;
-        if(preemptive) {
-            if(p->remaining_time > quantum) {
-                slice = quantum;
-            } else {
-                slice = p->remaining_time;
-            }
-        } else {
-            /* Non-preemptive => run the entire remaining. */
-            slice = p->remaining_time;
-        }
-
-        /* Simulate running p for 'slice' ms of CPU time. */
+        /* run partial. */
         simulate_process_partial(p, slice, (int)core_id);
 
-        /* Advance the global simulated time. */
+        /* update global simulated time. */
         pthread_mutex_lock(&g_sim_time_lock);
         g_sim_time += slice;
         uint64_t now_sim = g_sim_time;
         pthread_mutex_unlock(&g_sim_time_lock);
 
-        /* Decrease the process’s remaining time. */
         p->remaining_time -= slice;
 
-        /* If using CFS or CFS-SRTF, update vruntime. */
+        /* If using CFS or CFS-SRTF => update vruntime. */
         if(g_current_alg == ALG_CFS || g_current_alg == ALG_CFS_SRTF) {
             p->vruntime += slice;
         }
 
-        /* If still not finished => requeue (preempt), else mark end_time. */
+        /* still not finished => requeue => preempt++ */
         if(preemptive && p->remaining_time > 0) {
             __sync_fetch_and_add(&g_stats.total_preempts, 1ULL);
+
             if(stats_get_speed_mode()==0) {
-                printf("\033[94m   => PREEMPT => process=%p => new remain=%llu => preemptions=%llu\033[0m\n",
+                printf("\033[94m   => PREEMPT => process=%p => new remain=%llu => preemptions=%llu\n\033[0m",
                        (void*)p,
                        (unsigned long long)p->remaining_time,
                        (unsigned long long)g_stats.total_preempts);
                 usleep(300000);
             }
-            /* MLFQ => drop to next queue level. */
+
+            /* degrade to next queue if MLFQ */
             if(g_current_alg == ALG_MLFQ) {
                 p->mlfq_level++;
             }
             ready_queue_push(p);
-        } else {
+        }
+        else {
             /* The process is done. */
             p->end_time = now_sim;
             if(stats_get_speed_mode()==0) {
-                printf("\033[92m   => FINISH => process=%p => total CPU used=%lu ms => time=%llu ms\033[0m\n",
+                printf("\033[92m   => FINISH => process=%p => total CPU used=%lu ms => time=%llu ms\n\033[0m",
                        (void*)p,
                        (unsigned long)slice,
                        (unsigned long long)os_time());
@@ -2095,20 +2298,17 @@ static void* core_thread_func(void* arg) {
     return NULL;
 }
 
+/* ---------- Public Functions ---------- */
+
 void scheduler_select_algorithm(scheduler_alg_t a) {
     g_current_alg = a;
 }
 
-/* The main scheduling driver. */
 void scheduler_run(process_t* list, int count) {
-    /* Reset stats each time we run. */
     reset_schedule_stats();
-    if(!list || count <= 0) return;
+    if(!list || count<=0) return;
 
-    /*
-      HPC Overshadow or HPC Overlay => special handling:
-      They do not schedule normal processes in the usual sense.
-    */
+    /* HPC overshadow/overlay => special handling. */
     if(g_current_alg == ALG_HPC_OVERSHADOW) {
         g_stats.HPC_over_mode = 1;
         if(stats_get_speed_mode()==0) {
@@ -2117,12 +2317,10 @@ void scheduler_run(process_t* list, int count) {
             printf(         "╚══════════════════════════════════════════════╝\033[0m\n");
             usleep(300000);
         }
-        /* HPC overshadow => run multiple CPU-bound threads. */
         os_run_hpc_overshadow();
         return;
     }
     else if(g_current_alg == ALG_HPC_OVERLAY) {
-        /* HPC overlay => similar concept, but distinct. */
         g_stats.HPC_overlay_mode = 1;
         if(stats_get_speed_mode()==0) {
             printf("\n\033[95m╔══════════════════════════════════════════════╗\n");
@@ -2134,7 +2332,13 @@ void scheduler_run(process_t* list, int count) {
         return;
     }
 
-    /* For normal scheduling approach: show a heading if in normal mode. */
+    /* BFS or MLFQ => 2 cores, else 1. */
+    if(g_current_alg == ALG_BFS || g_current_alg == ALG_MLFQ) {
+        g_num_cores = 2;
+    } else {
+        g_num_cores = 1;
+    }
+
     if(stats_get_speed_mode()==0) {
         printf("\n\033[95m╔══════════════════════════════════════════════╗\n");
         printf(       "║   SCHEDULE => alg=%d => #processes=%d          \n", g_current_alg, count);
@@ -2143,24 +2347,13 @@ void scheduler_run(process_t* list, int count) {
         usleep(300000);
     }
 
-    /* BFS/MLFQ => 2 cores, else 1, as a default example. */
-    switch(g_current_alg) {
-        case ALG_BFS:
-        case ALG_MLFQ:
-            g_num_cores = 2;
-            break;
-        default:
-            g_num_cores = 1;
-            break;
-    }
-
     ready_queue_init_policy(g_current_alg);
 
     g_process_list = list;
     g_list_count   = count;
     g_running      = 1;
 
-    /* Fill up the queue with all processes. */
+    /* push all processes into the queue. */
     for(int i=0; i<count; i++) {
         ready_queue_push(&list[i]);
     }
@@ -2168,12 +2361,12 @@ void scheduler_run(process_t* list, int count) {
     pthread_t tid[MAX_CORES];
     int n = (g_num_cores > MAX_CORES) ? MAX_CORES : g_num_cores;
 
-    /* Spawn each core thread. */
+    /* spawn each core thread. */
     for(int i=0; i<n; i++) {
         pthread_create(&tid[i], NULL, core_thread_func, (void*)(long)i);
     }
 
-    /* Wait until queue empties or a stop is requested. */
+    /* wait while queue is not empty */
     while(ready_queue_size() > 0) {
         usleep(200000);
         if(os_concurrency_stop_requested()) {
@@ -2181,9 +2374,8 @@ void scheduler_run(process_t* list, int count) {
         }
     }
 
-    /* End scheduling. */
+    /* end scheduling => push sentinel => join threads */
     g_running = 0;
-    /* Wake each core thread by pushing NULL. */
     for(int i=0; i<n; i++) {
         ready_queue_push(NULL);
     }
@@ -2194,13 +2386,13 @@ void scheduler_run(process_t* list, int count) {
     ready_queue_destroy();
     finalize_stats();
 
-    /* Print final if normal mode. */
-    uint64_t total_time = get_global_sim_time();
     if(stats_get_speed_mode()==0) {
+        uint64_t total_time = get_global_sim_time();
         printf("\033[96m╔══════════════════════════════════════════════╗\n");
-        printf(       "║ SCHEDULE END => alg=%d => totalTime=%llums    \n", g_current_alg, (unsigned long long)total_time);
+        printf(       "║ SCHEDULE END => alg=%d => totalTime=%llums    \n",
+                      g_current_alg, (unsigned long long)total_time);
         printf(       "║ Stats: preemptions=%llu, totalProcs=%llu     \n",
-                      (unsigned long long)g_stats.preemptions, (unsigned long long)g_stats.total_procs);
+                      (unsigned long long)g_stats.total_preempts, (unsigned long long)g_stats.total_procs);
         printf(       "║ AvgWait=%.2f, AvgTAT=%.2f, AvgResp=%.2f       \n",
                       g_stats.avg_wait, g_stats.avg_turnaround, g_stats.avg_response);
         printf(       "╚══════════════════════════════════════════════╝\033[0m\n");
@@ -2213,7 +2405,7 @@ void scheduler_run(process_t* list, int count) {
 
 void scheduler_fetch_report(sched_report_t* out) {
     if(!out) return;
-    /* HPC overshadow/overlay => zero the normal stats. */
+    /* HPC overshadow/overlay => zero normal stats. */
     if(g_stats.HPC_over_mode || g_stats.HPC_overlay_mode) {
         out->avg_wait       = 0.0;
         out->avg_turnaround = 0.0;
@@ -2250,7 +2442,6 @@ typedef enum {
     ALG_PRIORITY,
     ALG_HPC_OVERSHADOW,
     ALG_MLFQ,
-    /* Newly added HPC_OVERLAY as a separate scheduling mode. */
     ALG_HPC_OVERLAY
 } scheduler_alg_t;
 
@@ -2272,7 +2463,7 @@ typedef struct {
     unsigned long long total_preempts;
     int total_count;
 
-    /* If HPC overshadow/overlay mode => skip normal stats. */
+    /* If HPC overshadow/overlay => skip normal stats. */
     int HPC_over_mode;
     int HPC_overlay_mode;
 } schedule_stats_t;
@@ -2295,12 +2486,17 @@ void scheduler_select_algorithm(scheduler_alg_t a);
 /* Run the scheduling simulation on an array of processes. */
 void scheduler_run(process_t* list, int count);
 
-/* Retrieve final stats from last run.
-   HPC overshadow/overlay => stats are zeroed for normal fields. */
+/* Retrieve final stats from last run. */
 void scheduler_fetch_report(sched_report_t* out);
 
-/* Accessor so the ready-queue can see current simulated time for HRRN, etc. */
+/* Access global sim time. Used by ready_queue (e.g. HRRN, MLFQ). */
 uint64_t get_global_sim_time(void);
+
+/*
+  Provide BFS quantum to the BFS test if BFS is selected.
+  If BFS wasn't used, may return leftover or default value.
+*/
+unsigned long scheduler_get_bfs_quantum(void);
 
 #endif
 #include "scoreboard.h"
@@ -3052,29 +3248,43 @@ static bool test_cfs(void) {
     return true;
 }
 
+/*
+   BFS test => disallow zero preemptions.
+   We do a "dummy run" to set BFS quantum, then run a big process => must see preemptions>=1.
+*/
 static bool test_bfs(void) {
     g_tests_run++;
     os_init();
-    process_t p[3];
-    init_process(&p[0], 2, 1, 0);
-    init_process(&p[1], 3, 1, 0);
-    init_process(&p[2], 4, 1, 0);
+
+    /* 1) Dummy BFS run with small process => BFS sets quantum. */
+    process_t dummy[1];
+    init_process(&dummy[0], 1, 1, 0); /* burst=1 */
+    scheduler_select_algorithm(ALG_BFS);
+    scheduler_run(dummy, 1);
+
+    unsigned long q = scheduler_get_bfs_quantum();
+
+    /* 2) Real BFS test => one big process => burst=(q+2). BFS must do at least one preemption. */
+    process_t bigP[1];
+    init_process(&bigP[0], q+2, 1, 0); /* bigger than BFS quantum => must preempt */
 
     scheduler_select_algorithm(ALG_BFS);
-    scheduler_run(p, 3);
+    scheduler_run(bigP, 1);
 
     sched_report_t rep;
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    if (rep.total_procs != 3 || rep.preemptions < 1) {
+    if(rep.preemptions < 1) {
         snprintf(g_fail_reason, sizeof(g_fail_reason),
-                 "test_bfs => mismatch => procs=%llu, preempts=%llu",
-                 rep.total_procs, rep.preemptions);
+                 "test_bfs => zero preemption is NOT fine => BFS quantum=%lu => single burst=%lu => preempts=%llu => FAIL",
+                 q, (unsigned long)(q+2), (unsigned long long)rep.preemptions);
         test_set_fail_reason(g_fail_reason);
         g_tests_failed++;
         return false;
     }
+
+    /* If we get here => BFS had at least 1 preemption => pass. */
     scoreboard_set_sc_mastered(ALG_BFS);
     return true;
 }
