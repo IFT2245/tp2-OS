@@ -1,6 +1,7 @@
 #include "stats.h"
 #include <stdio.h>
 #include <string.h>
+#include "safe_calls_library.h"
 
 /* Global stats object. */
 static stats_t g_stats;

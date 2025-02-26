@@ -1,6 +1,6 @@
 #include "os.h"
 #include "stats.h"
-
+#include "safe_calls_library.h"
 #include <stdio.h>
 #include <unistd.h>
 #include <signal.h>

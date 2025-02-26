@@ -1,20 +1,10 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <signal.h>
-
 #include "menu.h"
-#include "stats.h"
-#include "scoreboard.h"
-#include "safe_calls_library.h"
-#include "runner.h"
-#include "os.h"
 
 /* ----------------------------------------------------------------
    SHARED UTILS
    ----------------------------------------------------------------
 */
-static void pause_enter(void) {
+void pause_enter(void) {
     printf(CLR_CYAN CLR_BOLD "\nPress ENTER to continue..." CLR_RESET);
     fflush(stdout);
     int c;
@@ -23,20 +13,29 @@ static void pause_enter(void) {
     }
 }
 
-static int read_line(char *buf, size_t sz) {
-    /* If concurrency stop was requested (SIGTERM), skip reading => return 0 */
+ssize_t read_line(char *buf, const size_t sz) {
     if (os_concurrency_stop_requested()) {
         return 0;
     }
-    if(!fgets(buf, sz, stdin)) {
-        return 0; /* error or EOF */
+
+    if (buf == NULL || sz == 0 || sz > INT_MAX) {
+        return 0;
     }
-    buf[strcspn(buf, "\n")] = '\0'; /* remove newline */
+
+    if (fgets(buf, (int)sz, stdin) == NULL) {
+        if (ferror(stdin)) {
+            clearerr(stdin);
+        }
+        return 0;
+    }
+
+    size_t newline_pos = strcspn(buf, "\n");
+    buf[newline_pos] = '\0';
     return 1;
 }
 
 /* Display scoreboard in a framed format. */
-static void menu_show_scoreboard(void) {
+void menu_show_scoreboard(void) {
     scoreboard_t sb;
     get_scoreboard(&sb);
 
@@ -113,7 +112,7 @@ static void menu_show_scoreboard(void) {
     pause_enter();
 }
 
-static void menu_clear_scoreboard(void) {
+void menu_clear_scoreboard(void) {
     scoreboard_clear();
     printf(CLR_BOLD CLR_CYAN "\n╔════════════════════════════════════════════╗\n");
     printf("║ Scoreboard cleared.                        ║\n");
@@ -121,7 +120,7 @@ static void menu_clear_scoreboard(void) {
     pause_enter();
 }
 
-static void menu_toggle_speed_mode(void) {
+void menu_toggle_speed_mode(void) {
     int current = stats_get_speed_mode();
     int next    = (current == 0) ? 1 : 0;
     stats_set_speed_mode(next);
@@ -137,7 +136,7 @@ static void menu_toggle_speed_mode(void) {
    Submenu that asks user to pick a single test from a chosen suite
    => runs exactly that test.
 */
-static void submenu_run_single_test(void) {
+void submenu_run_single_test(void) {
     printf(CLR_BOLD CLR_CYAN "╔════════════════════════════════════╗\n" CLR_RESET);
     printf(CLR_BOLD CLR_CYAN "║ RUN SINGLE TEST - SUITE SELECTION  ║\n" CLR_RESET);
     printf(CLR_BOLD CLR_CYAN "╚════════════════════════════════════╝\n" CLR_RESET);
@@ -146,11 +145,11 @@ static void submenu_run_single_test(void) {
     scoreboard_t sb;
     get_scoreboard(&sb);
 
-    int unlockedN      = scoreboard_is_unlocked(SUITE_NORMAL);
-    int unlockedExt    = scoreboard_is_unlocked(SUITE_EXTERNAL);
-    int unlockedModes  = scoreboard_is_unlocked(SUITE_MODES);
-    int unlockedEdge   = scoreboard_is_unlocked(SUITE_EDGE);
-    int unlockedHidden = scoreboard_is_unlocked(SUITE_HIDDEN);
+    const int unlockedN      = scoreboard_is_unlocked(SUITE_NORMAL);
+    const int unlockedExt    = scoreboard_is_unlocked(SUITE_EXTERNAL);
+    const int unlockedModes  = scoreboard_is_unlocked(SUITE_MODES);
+    const int unlockedEdge   = scoreboard_is_unlocked(SUITE_EDGE);
+    const int unlockedHidden = scoreboard_is_unlocked(SUITE_HIDDEN);
 
     /* Build a list of possible choices for user. We'll do a simple numeric menu. */
     /* We'll store { "BASIC", SUITE_BASIC } first, always. Then conditionally others. */
@@ -230,7 +229,7 @@ static void submenu_run_single_test(void) {
    and skip locked ones.
    We stop if user sends SIGTERM.
 */
-static void submenu_run_tests(void) {
+void submenu_run_tests(void) {
     /* We'll iterate over the chain in order: BASIC->NORMAL->EXTERNAL->MODES->EDGE->HIDDEN */
     scoreboard_t sb;
     get_scoreboard(&sb);
@@ -300,7 +299,7 @@ static void submenu_run_tests(void) {
    If "n", we skip to next.
    If "y", we directly run that suite, then chain further if more is unlocked.
 */
-static void attempt_run_next_suite(scoreboard_suite_t currentSuite) {
+void attempt_run_next_suite(scoreboard_suite_t currentSuite) {
     scoreboard_suite_t chain[] = {
         SUITE_BASIC,
         SUITE_NORMAL,
@@ -352,7 +351,7 @@ static void attempt_run_next_suite(scoreboard_suite_t currentSuite) {
 /*
    Submenu for external concurrency (only if EXTERNAL suite is >= 60%).
 */
-static void menu_submenu_external_concurrency(void) {
+void menu_submenu_external_concurrency(void) {
     int unlockedExt = scoreboard_is_unlocked(SUITE_EXTERNAL);
     if(!unlockedExt) {
         printf(CLR_BOLD CLR_RED "\n[External Concurrency] is locked (need 60%% pass on EXTERNAL suite).\n" CLR_RESET);
@@ -408,8 +407,8 @@ static void menu_submenu_external_concurrency(void) {
     int base=2;
     switch(style) {
         case 1: base=2;  break;  /* short */
-        case 2: base=5;  break;  /* medium */
-        case 3: base=10; break;  /* stress */
+        case 2: base=6;  break;  /* medium */
+        case 3: base=30; break;  /* stress */
         default: base=2; break;
     }
 
@@ -427,18 +426,26 @@ static void menu_submenu_external_concurrency(void) {
     }
 
     if(sub==1){
-        printf("\nSelect scheduling mode:\n");
-        printf(" 0=FIFO,1=RR,2=CFS,3=CFS-SRTF,4=BFS,\n");
-        printf(" 5=SJF,6=STRF,7=HRRN,8=HRRN-RT,\n");
-        printf(" 9=PRIORITY,10=HPC-OVER,11=MLFQ\n");
-        printf("Choice: ");
+        printf(CLR_BOLD CLR_YELLOW "0" CLR_RESET "=" CLR_CYAN "FIRST IN FIRST OUT\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "1" CLR_RESET "=" CLR_CYAN "ROUND ROBIN\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "2" CLR_RESET "=" CLR_CYAN "COMPLETELY FAIR SCHEDULER CFS\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "3" CLR_RESET "=" CLR_CYAN "CFS SHORTEST REMAINING TIME FIRST\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "4" CLR_RESET "=" CLR_CYAN "BRAIN FAIR SCHEDULER\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "5" CLR_RESET "=" CLR_CYAN "SHORTEST JOB FIRST\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "6" CLR_RESET "=" CLR_CYAN "SHORTEST TIME REMAINING FIRST\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "7" CLR_RESET "=" CLR_CYAN "HIGHEST RESPONSE RATIO NEXT\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "8" CLR_RESET "=" CLR_CYAN "HIGHEST RESPONSE RATIO NEXT WITH REMAINING TIME\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "9" CLR_RESET "=" CLR_CYAN "PRIORITY SCHEDULING\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "10" CLR_RESET "=" CLR_CYAN "HIGH PERFORMANCE COMPUTING OVERLAY\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW "11" CLR_RESET "=" CLR_CYAN "MULTI-LEVEL FEEDBACK QUEUE\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW"Choice: "CLR_RESET);
         if(!read_line(buf,sizeof(buf))){
             pause_enter();
             for(int i=0;i<n;i++) free(lines[i]);
             free(lines);
             return;
         }
-        int mode = parse_int_strtol(buf, -1);
+        const int mode = parse_int_strtol(buf, -1);
         if(mode<0 || mode>11){
             printf("Invalid mode.\n");
             pause_enter();
@@ -463,11 +470,11 @@ static void menu_submenu_external_concurrency(void) {
 */
 static void menu_run_external_tests(void) {
     if(!scoreboard_is_unlocked(SUITE_EXTERNAL)) {
-        printf("External tests locked (need 60%% pass on EXTERNAL suite).\n");
+        printf(CLR_RED"External tests locked\n"CLR_RESET);
         pause_enter();
         return;
     }
-    printf("\nRunning external tests...\n");
+    printf(CLR_CYAN"\nRunning external tests\n"CLR_RESET);
     run_external_tests_menu(); /* from runner.c */
     scoreboard_save();
     pause_enter();
@@ -478,39 +485,16 @@ static void menu_run_external_tests(void) {
 */
 void menu_main_loop(void) {
     while(1){
-        /* ASCII main menu header with speed mode. */
         int sp = stats_get_speed_mode();
         const char* sp_text = (sp==0) ? "NORMAL" : "FAST";
-
         printf(CLR_BOLD CLR_YELLOW " ┌────────────────────────────────────────────┐\n" CLR_RESET);
         printf(CLR_BOLD CLR_YELLOW " │             OS-SCHEDULING GAME             │\n" CLR_RESET);
         printf(CLR_BOLD CLR_YELLOW " └────────────────────────────────────────────┘\n" CLR_RESET);
         printf(CLR_RED "     A concurrency and scheduling trainer   \n" CLR_RESET);
         printf(CLR_BOLD CLR_RED "          [Current Speed Mode: %s]\n\n" CLR_RESET, sp_text);
-
         printf(CLR_BOLD CLR_YELLOW " ┌─── MAIN MENU ─────────────────────────────┐\n" CLR_RESET);
-
-        /*
-           We'll show only the items that do not require unlocking, or are unlocked if needed.
-           1) "Run All Unlocked Test Suites" => always visible
-           2) "Exit" => always visible
-           3) "External Shell Concurrency DEMO" => only if EXTERNAL suite is unlocked?
-              The instructions do not explicitly require locking concurrency behind the external suite.
-              But from the text: "external concurrency menu if EXTERNAL is unlocked."
-              So let's hide it if not unlocked.
-           4) "Run External Tests" => only if EXTERNAL is unlocked
-           5) "Show Scoreboard" => always visible
-           6) "Clear Scoreboard" => always visible
-           7) "Toggle Speed Mode" => always visible
-           8) "Run Single Test" => always visible
-        */
         printf(CLR_BOLD CLR_YELLOW " │ 1) Run All Unlocked Test Suites           │\n" CLR_RESET);
         printf(CLR_BOLD CLR_YELLOW " │ 2) Exit                                   │\n" CLR_RESET);
-
-        /* check if EXTERNAL suite is unlocked => show concurrency DEMO if you want, or show anyway?
-           We'll interpret instructions: "Option 3 => concurrency menu" might be locked or not.
-           The original code had it in gray if locked. We'll hide or gray out.
-        */
         int unlockedExt = scoreboard_is_unlocked(SUITE_EXTERNAL);
         if(unlockedExt){
             printf(CLR_BOLD CLR_YELLOW " │ 3) External Shell Concurrency DEMO        │\n" CLR_RESET);
@@ -531,13 +515,13 @@ void menu_main_loop(void) {
         printf(CLR_BOLD CLR_YELLOW " │ 8) Run Single Test                        │\n" CLR_RESET);
         printf(CLR_BOLD CLR_YELLOW " └───────────────────────────────────────────┘\n\n" CLR_RESET);
 
-        printf("Choice: ");
+        printf(CLR_BOLD CLR_YELLOW"Choice: "CLR_RESET);
 
         char input[256];
         if(!read_line(input, sizeof(input))){
-            /* Exiting if no input or EOF. */
             menu_main_loop();
         }
+
         int choice = parse_int_strtol(input, -1);
 
         switch(choice){
@@ -592,12 +576,3 @@ void menu_main_loop(void) {
         }
     }
 }
-
-/*
-   Implementation details for attempt_run_next_suite() => runs the next suite if user chooses "y".
-   The function run_entire_suite(...) is delegated to runner.
-*/
-
-/* The suite runner that runs entire suite, updates scoreboard, etc. */
-extern void run_entire_suite(scoreboard_suite_t suite); /* from runner.c below */
-

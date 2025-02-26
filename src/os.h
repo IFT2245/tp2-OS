@@ -10,10 +10,10 @@
    - pipeline
    - distributed example
    - time logging for user display logs
-   - concurrency stop check (used by SIGUSR1/SIGTERM)
+   - concurrency stop check (used by SIGTERM)
 */
 
-/* Sets the concurrency stop flag (e.g. after SIGUSR1 or SIGTERM). */
+/* Sets the concurrency stop flag (e.g. after or SIGTERM). */
 void set_os_concurrency_stop_flag(int val);
 
 /* Returns if concurrency stop was requested. */
