@@ -26,9 +26,19 @@ typedef struct {
     int hidden_total,   hidden_pass;
 
     /* Mastery flags for scheduling algorithms. */
-    int sc_fifo, sc_rr, sc_cfs, sc_cfs_srtf, sc_bfs;
-    int sc_sjf, sc_strf, sc_hrrn, sc_hrrn_rt, sc_priority;
-    int sc_hpc_over, sc_mlfq;
+    int sc_fifo;
+    int sc_rr;
+    int sc_cfs;
+    int sc_cfs_srtf;
+    int sc_bfs;
+    int sc_sjf;
+    int sc_strf;
+    int sc_hrrn;
+    int sc_hrrn_rt;
+    int sc_priority;
+    int sc_hpc_overshadow;   /* renamed from sc_hpc_over */
+    int sc_mlfq;
+    int sc_hpc_overlay;      /* newly added field */
 
     double basic_percent;
     double normal_percent;

@@ -1,6 +1,5 @@
 #ifndef TEST_COMMON_H
 #define TEST_COMMON_H
-
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -22,10 +21,4 @@ struct captured_output {
   char stdout_buf[8192];
   char stderr_buf[8192];
 };
-
-/*
-  run_function_capture_output():
-    Creates pipes, forks, runs fn() in child, captures output in out.
-*/
-int run_function_capture_output(void(*fn)(void), struct captured_output* out);
 #endif

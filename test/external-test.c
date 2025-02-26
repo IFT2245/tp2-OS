@@ -1,6 +1,6 @@
 #include "external-test.h"
 
-#include "../src/runner.h"    // for run_shell_commands_concurrently()
+#include "../src/runner.h"
 #include "../src/safe_calls_library.h"
 #include "../src/stats.h"
 #include "../src/os.h"
@@ -12,10 +12,7 @@
 #include <sys/wait.h>
 
 /*
-  We'll define 12 external tests, each one tries to run the external shell
-  with a small concurrency scenario under scheduling mode i.
-
-  If the external shell binary is not found, all fail with a message.
+  We'll define 12 external tests, one for each scheduling mode.
 */
 
 static int g_tests_run_ext    = 0;
@@ -32,39 +29,24 @@ static int check_shell_binary(void) {
     return 1;
 }
 
-/* A small helper that actually does the concurrency run for schedule mode `m`. */
+/* Do a small concurrency scenario with a chosen scheduling mode `m`. */
 static int do_external_test_for_mode(int m) {
-    // We'll do a short concurrency scenario: 2 shell commands, 1 core.
-    // The "sleep" commands must be typed into the shell.
-    // run_shell_commands_concurrently(count=2, lines=..., coreCount=1, mode=m, allModes=0)
-    // If it runs without error or SIGTERM, we consider it "pass".
-    // We'll also do HPC-OVER (mode=10), which just spawns HPC overshadow.
-    // The underlying runner checks if the shell is missing or not.
-    // We'll interpret "pass" if we do not forcibly SIGKILL or error out.
-
-    // We'll create 2 lines:
     char* lines[2];
     lines[0] = strdup("sleep 1");
     lines[1] = strdup("sleep 2");
 
-    // Clear concurrency stop flag first
     set_os_concurrency_stop_flag(0);
 
-    // We'll run it. If the shell is missing, the code prints an error,
-    // but we won't directly have a runtime "error" code. We'll assume we can detect that in check_shell_binary() above.
+    /* Single core => mode=m => short test */
     run_shell_commands_concurrently(2, lines, /*coreCount=*/1, m, /*allModes=*/0);
 
     free(lines[0]);
     free(lines[1]);
-
-    // We do not have a perfect "success/fail" signal from run_shell_commands_concurrently,
-    // but if we didn't see that the shell was missing (check_shell_binary()) and didn't forcibly SIGTERM,
-    // let's consider it "pass".
-    return 1;
+    return 1; /* We'll treat it as pass unless the shell is missing. */
 }
 
 /*
-  We define each of the 12 test functions:
+  Each of the 12 test functions
 */
 static int test_schedule_mode_0_fifo(void)          { return do_external_test_for_mode(0); }
 static int test_schedule_mode_1_rr(void)            { return do_external_test_for_mode(1); }
@@ -79,7 +61,6 @@ static int test_schedule_mode_9_priority(void)      { return do_external_test_fo
 static int test_schedule_mode_10_hpc_over(void)     { return do_external_test_for_mode(10); }
 static int test_schedule_mode_11_mlfq(void)         { return do_external_test_for_mode(11); }
 
-/* We'll store them in an array for convenience. */
 typedef int (*ext_test_fn)(void);
 static ext_test_fn external_test_fns[12] = {
     test_schedule_mode_0_fifo,
@@ -111,25 +92,20 @@ static const char* external_test_names[12] = {
     "MLFQ"
 };
 
-/* We expose external_test_count=12. */
 int external_test_count(void) {
     return 12;
 }
 
-/* Single test run => i in [0..11]. */
 void external_test_run_single(int i, int* pass_out) {
     if(!pass_out) return;
     if(i<0 || i>=12) {
         *pass_out=0;
         return;
     }
-
-    // Start from no fail reason:
+    g_tests_run_ext++;
     g_fail_reason[0] = '\0';
 
-    g_tests_run_ext++;
     if(!check_shell_binary()) {
-        // If the shell is missing, test fails
         g_tests_failed_ext++;
         *pass_out = 0;
         return;
@@ -144,25 +120,28 @@ void external_test_run_single(int i, int* pass_out) {
 }
 
 /*
-   run_external_tests(&total, &passed) => runs all 12 tests in a row,
-   printing pass/fail lines, then prints final summary.
+  run_external_tests(&total, &passed) => runs all 12 tests in a row.
 */
 void run_external_tests(int* total, int* passed) {
     if(!total || !passed) return;
 
-    // reset counters
     g_tests_run_ext    = 0;
     g_tests_failed_ext = 0;
     g_fail_reason[0]   = '\0';
 
     printf("\n" CLR_BOLD CLR_YELLOW "╔════════════ EXTERNAL TESTS START ═══════════╗" CLR_RESET "\n");
-
-    // For i=0..11
     int count = external_test_count();
+
     for(int i=0; i<count; i++){
+        if (skip_remaining_tests_requested()) {
+            printf(CLR_RED "[SIGTERM] => skipping remaining tests in this suite.\n" CLR_RESET);
+            break;
+        }
+
         int pass = 0;
         external_test_run_single(i, &pass);
         const char* name = external_test_names[i];
+
         if(pass) {
             printf("  PASS: %s\n", name);
         } else {
@@ -174,9 +153,14 @@ void run_external_tests(int* total, int* passed) {
         }
     }
 
-    // finalize
     *total  = g_tests_run_ext;
     *passed = g_tests_run_ext - g_tests_failed_ext;
+
+    /* update scoreboard */
+    scoreboard_update_external(*total, *passed);
+    /* also update global stats */
+    stats_inc_tests_passed(*passed);
+    stats_inc_tests_failed((*total)-(*passed));
 
     printf(CLR_BOLD CLR_YELLOW "╔══════════════════════════════════════════════╗\n");
     printf("║   EXTERNAL TESTS RESULTS: %d / %d passed       ║\n", *passed, *total);

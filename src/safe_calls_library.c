@@ -56,12 +56,17 @@ void handle_signal(int signum) {
         cleanup_and_exit(fs);
     }
     else if(signum == SIGTERM) {
-        /* SIGTERM => stop concurrency/tests => return to menu. */
+        /* SIGTERM => do NOT abort the test in progress; instead:
+           - Stop concurrency if we are running HPC overshadow or external shell
+           - Mark that we should skip future tests, returning to menu. */
         stats_inc_signal_sigterm();
         printf(CLR_RED "\nCaught SIGTERM => Trying to return to menu\n" CLR_RESET);
+
+        /* For concurrency (shell or HPC overshadow) we do want to stop: */
         set_os_concurrency_stop_flag(1);
-        /* Return to menu (the user can then choose to Exit or continue). */
-        menu_main_loop();
+
+        /* For normal scheduling tests, we only skip *remaining* tests: */
+        set_skip_remaining_tests(1);
     }
     else {
         /* For completeness, track any other signals. */
@@ -72,7 +77,6 @@ void handle_signal(int signum) {
 /* ----------------------------------------------------------------
    CLEANUP AND EXIT
    ----------------------------------------------------------------
-   Consolidate all final shutdown tasks in one function.
 */
 void cleanup_and_exit(int code) {
     os_cleanup();

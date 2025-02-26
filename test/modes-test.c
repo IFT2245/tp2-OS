@@ -1,11 +1,11 @@
 #include "modes-test.h"
 #include "test_common.h"
-
+#include "../src/runner.h"
 #include "../src/scheduler.h"
 #include "../src/os.h"
 #include "../src/process.h"
 #include "../src/scoreboard.h"
-
+#include "../src/stats.h"
 #include <stdio.h>
 #include <math.h>
 
@@ -198,6 +198,11 @@ void run_modes_tests(int* total, int* passed) {
 
     printf("\n\033[1m\033[93m╔══════════ MODES TESTS START ══════════╗\033[0m\n");
     for(int i=0; i<MODES_COUNT; i++){
+        if (skip_remaining_tests_requested()) {
+            printf(CLR_RED "[SIGTERM] => skipping remaining tests in this suite.\n" CLR_RESET);
+            break;
+        }
+
         bool ok = modes_tests[i].func();
         if(ok){
             printf("  PASS: %s\n", modes_tests[i].name);
@@ -208,6 +213,10 @@ void run_modes_tests(int* total, int* passed) {
 
     *total  = g_tests_run;
     *passed = (g_tests_run - g_tests_failed);
+
+    scoreboard_update_modes(*total, *passed);
+    stats_inc_tests_passed(*passed);
+    stats_inc_tests_failed((*total) - (*passed));
 
     printf("\033[1m\033[93m╔══════════════════════════════════════════════╗\n");
     printf("║       MODES TESTS RESULTS: %d / %d passed       ║\n", *passed, *total);

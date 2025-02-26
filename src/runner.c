@@ -11,7 +11,16 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+/* The new global skip flag: */
+static volatile sig_atomic_t g_skip_remaining_tests = 0;
 
+int skip_remaining_tests_requested(void) {
+    return (g_skip_remaining_tests != 0);
+}
+
+void set_skip_remaining_tests(int val) {
+    g_skip_remaining_tests = (val ? 1 : 0);
+}
 /*
   We'll maintain a lookup for scheduler_alg_t => string name
   to produce "SCHEDULE BLOCK => <Name>" in concurrency logs, if needed.

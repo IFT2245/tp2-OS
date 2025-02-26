@@ -1,39 +1,5 @@
 #include "menu.h"
 
-/* ----------------------------------------------------------------
-   SHARED UTILS
-   ----------------------------------------------------------------
-*/
-void pause_enter(void) {
-    printf(CLR_CYAN CLR_BOLD "\nPress ENTER to continue..." CLR_RESET);
-    fflush(stdout);
-    int c;
-    while ((c = getchar()) != '\n' && c != EOF) {
-        /* discard leftover */
-    }
-}
-
-ssize_t read_line(char *buf, const size_t sz) {
-    if (os_concurrency_stop_requested()) {
-        return 0;
-    }
-
-    if (buf == NULL || sz == 0 || sz > INT_MAX) {
-        return 0;
-    }
-
-    if (fgets(buf, (int)sz, stdin) == NULL) {
-        if (ferror(stdin)) {
-            clearerr(stdin);
-        }
-        return 0;
-    }
-
-    size_t newline_pos = strcspn(buf, "\n");
-    buf[newline_pos] = '\0';
-    return 1;
-}
-
 /* Display scoreboard in a framed format. */
 void menu_show_scoreboard(void) {
     scoreboard_t sb;
@@ -89,8 +55,11 @@ void menu_show_scoreboard(void) {
            sb.sc_hrrn_rt? "✔":"✘",
            sb.sc_priority? "✔":"✘");
     printf("║  HPC-OVER:%s MLFQ:%s\n",
-           sb.sc_hpc_over? "✔":"✘",
+           sb.sc_hpc_overshadow? "✔":"✘",
            sb.sc_mlfq? "✔":"✘");
+    /* If you also want to display HPC overlay mastery, you can add: */
+    // printf("║  HPC-OVERLAY:%s\n", sb.sc_hpc_overlay? "✔":"✘");
+
     printf("║--------------------------------------------║\n");
 
     /* final overall score with a progress bar. */
@@ -125,7 +94,7 @@ void menu_toggle_speed_mode(void) {
     int next    = (current == 0) ? 1 : 0;
     stats_set_speed_mode(next);
 
-    printf(CLR_BOLD CLR_CYAN "\n╔═════════════════════════════════════╗\n");
+    printf(CLR_BOLD CLR_CYAN "\n╔═════════════════════════════════════╗\n" CLR_RESET);
     printf("║ Speed mode set to: %s\n", (next == 0) ? "NORMAL" : "FAST");
     printf("╚═════════════════════════════════════╝\n" CLR_RESET);
 
@@ -152,7 +121,6 @@ void submenu_run_single_test(void) {
     const int unlockedHidden = scoreboard_is_unlocked(SUITE_HIDDEN);
 
     /* Build a list of possible choices for user. We'll do a simple numeric menu. */
-    /* We'll store { "BASIC", SUITE_BASIC } first, always. Then conditionally others. */
     struct {
         char label[32];
         scoreboard_suite_t suite;
@@ -208,7 +176,11 @@ void submenu_run_single_test(void) {
     printf(CLR_YELLOW CLR_BOLD"Choice: "CLR_RESET);
 
     char buf[256];
-    if(!read_line(buf, sizeof(buf))) return;
+    if(!read_line(buf, sizeof(buf))) {
+        /* If concurrency stop or read error, return. */
+        printf(CLR_RED "Error reading input or stop requested => Returning.\n" CLR_RESET);
+        return;
+    }
     int pick = parse_int_strtol(buf, -1);
     if(pick<1 || pick>count) {
         printf(CLR_RED"Invalid.\n"CLR_RESET);
@@ -218,8 +190,8 @@ void submenu_run_single_test(void) {
 
     scoreboard_suite_t chosen = items[pick-1].suite;
 
-    /* Now we ask how many tests in that suite => ask user which single test => run. */
-    run_single_test_in_suite(chosen); /* from old main.c logic, but we place in runner. */
+    /* Now we ask which single test => run. */
+    run_single_test_in_suite(chosen);
 
     pause_enter();
 }
@@ -227,7 +199,7 @@ void submenu_run_single_test(void) {
 /*
    "Run All Unlocked Test Suites" => skip re-running the ones already at 100%
    and skip locked ones.
-   We stop if user sends SIGTERM.
+   We stop if user sends SIGTERM so the rest do not run.
 */
 void submenu_run_tests(void) {
     /* We'll iterate over the chain in order: BASIC->NORMAL->EXTERNAL->MODES->EDGE->HIDDEN */
@@ -257,7 +229,6 @@ void submenu_run_tests(void) {
             continue;
         }
 
-
         /* skip if that suite is already at 100% pass. */
         double suite_score=0.0;
         switch(st){
@@ -275,17 +246,14 @@ void submenu_run_tests(void) {
         }
 
         if(os_concurrency_stop_requested()) {
-            printf(CLR_RED" caught SIGTERM => Leaving before next suite\n"CLR_RED);
+            printf(CLR_RED"SIGTERM => Skipping remaining suites.\n"CLR_RED);
             break;
         }
 
         /* run the entire suite now */
         run_entire_suite(st);
 
-        /* check if user wants to do next suite if it got unlocked => handle in attempt_run_next_suite */
-        /* But the instructions also say: "when basic mode is done or another level, user should be able to refuse next level."
-           That logic is in attempt_run_next_suite internally. We also do it after each run.
-        */
+        /* check if user wants to do next suite if newly unlocked => handle in attempt_run_next_suite */
         scoreboard_load(); /* refresh scoreboard after the run */
         attempt_run_next_suite(st);
     }
@@ -335,15 +303,17 @@ void attempt_run_next_suite(scoreboard_suite_t currentSuite) {
 
     char buf[256];
     if(!read_line(buf, sizeof(buf))) {
+        printf(CLR_RED "Error reading input or stop requested => Returning.\n" CLR_RESET);
         return;
     }
     if(buf[0] == 'y' || buf[0] == 'Y') {
         /* directly run that suite now. */
         run_entire_suite(next);
+
         /* that might unlock the suite after that => chain again. */
         attempt_run_next_suite(next);
     } else {
-        /* skip to next. */
+        /* skip to next => just return to main menu. */
         menu_main_loop();
     }
 }
@@ -491,7 +461,9 @@ void menu_main_loop(void) {
         printf(CLR_BOLD CLR_YELLOW " │             OS-SCHEDULING GAME             │\n" CLR_RESET);
         printf(CLR_BOLD CLR_YELLOW " └────────────────────────────────────────────┘\n" CLR_RESET);
         printf(CLR_RED "     A concurrency and scheduling trainer   \n" CLR_RESET);
-        printf(CLR_BOLD CLR_RED "          [Current Speed Mode: %s]\n\n" CLR_RESET, sp_text);
+        printf(CLR_BOLD CLR_RED "         [Current Speed Mode: %s]\n" CLR_RESET, sp_text);
+        printf(CLR_BOLD CLR_RED "          [ Current BETA V0.1 CHILL ]\n\n" CLR_RESET);
+
         printf(CLR_BOLD CLR_YELLOW " ┌─── MAIN MENU ─────────────────────────────┐\n" CLR_RESET);
         printf(CLR_BOLD CLR_YELLOW " │ 1) Run All Unlocked Test Suites           │\n" CLR_RESET);
         printf(CLR_BOLD CLR_YELLOW " │ 2) Exit                                   │\n" CLR_RESET);
@@ -519,7 +491,23 @@ void menu_main_loop(void) {
 
         char input[256];
         if(!read_line(input, sizeof(input))){
-            menu_main_loop();
+            /*
+              If read_line returned 0 => could be concurrency stop or genuine EOF.
+              - If concurrency stop or skip_remaining_tests => return to menu (continue)
+              - If it's truly EOF with no concurrency stop => exit
+            */
+            if(os_concurrency_stop_requested() || skip_remaining_tests_requested()) {
+                /* user pressed SIGTERM or concurrency stop => return to top of loop */
+                printf(CLR_RED "Stop requested => Returning to menu.\n" CLR_RESET);
+                set_skip_remaining_tests(0); /* reset skip flag to let the user continue */
+                set_os_concurrency_stop_flag(0);
+                continue;
+            } else {
+                /* Actual EOF or read error => exit. */
+                printf(CLR_RED "Error reading input => Exiting.\n" CLR_RESET);
+                const int fs = scoreboard_get_final_score();
+                cleanup_and_exit(fs);
+            }
         }
 
         int choice = parse_int_strtol(input, -1);

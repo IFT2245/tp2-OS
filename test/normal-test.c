@@ -1,11 +1,11 @@
 #include "normal-test.h"
 #include "test_common.h"
-
+#include "../src/runner.h"
 #include "../src/scheduler.h"
 #include "../src/process.h"
 #include "../src/os.h"
 #include "../src/scoreboard.h"
-
+#include "../src/stats.h"
 #include <stdio.h>
 #include <math.h>
 
@@ -142,7 +142,6 @@ static bool test_priority(void) {
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    /* just approximate check. expect no preemptions, some wait~2, TAT~4 */
     if(rep.preemptions!=0ULL ||
        !almost_equal(rep.avg_wait, 2.0, 1.0) ||
        !almost_equal(rep.avg_turnaround,4.0,1.0))
@@ -255,6 +254,11 @@ void run_normal_tests(int* total,int* passed) {
 
     printf("\n\033[1m\033[93m╔══════════ NORMAL TESTS START ══════════╗\033[0m\n");
     for(int i=0; i<NORMAL_COUNT; i++) {
+        if (skip_remaining_tests_requested()) {
+            printf(CLR_RED "[SIGTERM] => skipping remaining tests in this suite.\n" CLR_RESET);
+            break;
+        }
+
         bool ok = normal_tests[i].func();
         if(ok){
             printf("  PASS: %s\n", normal_tests[i].name);
@@ -265,6 +269,10 @@ void run_normal_tests(int* total,int* passed) {
 
     *total  = g_tests_run;
     *passed = (g_tests_run - g_tests_failed);
+
+    scoreboard_update_normal(*total, *passed);
+    stats_inc_tests_passed(*passed);
+    stats_inc_tests_failed((*total) - (*passed));
 
     printf("\033[1m\033[93m╔══════════════════════════════════════════════╗\n");
     printf("║      NORMAL TESTS RESULTS: %d / %d passed       ║\n", *passed, *total);

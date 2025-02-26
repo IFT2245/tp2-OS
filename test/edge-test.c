@@ -1,11 +1,11 @@
 #include "edge-test.h"
 #include "test_common.h"
-
+#include "../src/stats.h"
 #include "../src/process.h"
 #include "../src/scheduler.h"
 #include "../src/os.h"
 #include "../src/scoreboard.h"
-
+#include "../src/runner.h"
 #include <stdio.h>
 #include <math.h>
 
@@ -37,7 +37,6 @@ static bool test_extreme_long(void) {
         g_tests_failed++;
         return false;
     }
-    /* partial check of W/T */
     if(!almost_equal(rep.avg_wait,0.0,0.9) ||
        !almost_equal(rep.avg_turnaround,50.0,5.0))
     {
@@ -188,6 +187,11 @@ void run_edge_tests(int* total,int* passed){
 
     printf("\n\033[1m\033[93m╔════════════ EDGE TESTS START ═══════════╗\033[0m\n");
     for(int i=0;i<EDGE_COUNT;i++){
+        if (skip_remaining_tests_requested()) {
+            printf(CLR_RED "[SIGTERM] => skipping remaining tests in this suite.\n" CLR_RESET);
+            break;
+        }
+
         bool ok = edge_tests[i].func();
         if(ok){
             printf("  PASS: %s\n", edge_tests[i].name);
@@ -198,6 +202,10 @@ void run_edge_tests(int* total,int* passed){
 
     *total = g_tests_run;
     *passed= (g_tests_run - g_tests_failed);
+
+    scoreboard_update_edge(*total, *passed);
+    stats_inc_tests_passed(*passed);
+    stats_inc_tests_failed((*total)-(*passed));
 
     printf("\033[1m\033[93m╔══════════════════════════════════════════════╗\n");
     printf("║      EDGE TESTS RESULTS: %d / %d passed        ║\n", *passed, *total);

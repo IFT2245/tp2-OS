@@ -1,11 +1,11 @@
 #include "hidden-test.h"
 #include "test_common.h"
-
+#include "../src/runner.h"
 #include "../src/os.h"
 #include "../src/scheduler.h"
 #include "../src/process.h"
 #include "../src/scoreboard.h"
-
+#include "../src/stats.h"
 #include <stdio.h>
 #include <math.h>
 
@@ -194,6 +194,11 @@ void run_hidden_tests(int* total,int* passed){
 
     printf("\n\033[1m\033[93m╔══════════ HIDDEN TESTS START ══════════╗\033[0m\n");
     for(int i=0;i<HIDDEN_COUNT;i++){
+        if (skip_remaining_tests_requested()) {
+            printf(CLR_RED "[SIGTERM] => skipping remaining tests in this suite.\n" CLR_RESET);
+            break;
+        }
+
         bool ok = hidden_tests[i].func();
         if(ok){
             printf("  PASS: %s\n", hidden_tests[i].name);
@@ -204,6 +209,10 @@ void run_hidden_tests(int* total,int* passed){
 
     *total = g_tests_run;
     *passed= (g_tests_run - g_tests_failed);
+
+    scoreboard_update_hidden(*total, *passed);
+    stats_inc_tests_passed(*passed);
+    stats_inc_tests_failed((*total)-(*passed));
 
     printf("\033[1m\033[93m╔══════════════════════════════════════════════╗\n");
     printf("║      HIDDEN TESTS RESULTS: %d / %d passed      ║\n", *passed, *total);

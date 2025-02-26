@@ -1,10 +1,46 @@
-#include <stdlib.h>
-#include "safe_calls_library.h"
 
-/* ----------------------------------------------------------------
-   MAIN
-   ----------------------------------------------------------------
-*/
+add_executable(main
+        os.c
+        os.h
+        ready_queue.c
+        ready_queue.h
+        worker.c
+        worker.h
+        process.c
+        process.h
+        scheduler.c
+        scheduler.h
+        runner.c
+        runner.h
+        safe_calls_library.c
+        safe_calls_library.h
+        ../test/basic-test.c
+        ../test/basic-test.h
+        ../test/normal-test.c
+        ../test/normal-test.h
+        ../test/modes-test.c
+        ../test/modes-test.h
+        ../test/edge-test.c
+        ../test/edge-test.h
+        ../test/hidden-test.c
+        ../test/hidden-test.h
+        ../test/external-test.c
+        ../test/external-test.h
+        ../test/test_common.h
+        ../test/test_common.c
+        stats.h
+        stats.c
+        main.c
+        scoreboard.c
+        scoreboard.h
+        menu.c
+        menu.h
+)
+
+target_link_libraries(main PRIVATE Threads::Threads m)
+//   MAIN.C
+#include "menu.h"
+
 int main(const int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -27,7 +63,6 @@ int main(const int argc, char** argv) {
     /* No code below here is reachable. */
     return 0;
 }
-#include "menu.h"
 
 /* ----------------------------------------------------------------
    SHARED UTILS
@@ -44,6 +79,7 @@ void pause_enter(void) {
 
 ssize_t read_line(char *buf, const size_t sz) {
     if (os_concurrency_stop_requested()) {
+        /* If a stop is requested, return 0 so that callers can decide to exit or skip. */
         return 0;
     }
 
@@ -62,6 +98,7 @@ ssize_t read_line(char *buf, const size_t sz) {
     buf[newline_pos] = '\0';
     return 1;
 }
+#include "menu.h"
 
 /* Display scoreboard in a framed format. */
 void menu_show_scoreboard(void) {
@@ -118,8 +155,11 @@ void menu_show_scoreboard(void) {
            sb.sc_hrrn_rt? "✔":"✘",
            sb.sc_priority? "✔":"✘");
     printf("║  HPC-OVER:%s MLFQ:%s\n",
-           sb.sc_hpc_over? "✔":"✘",
+           sb.sc_hpc_overshadow? "✔":"✘",
            sb.sc_mlfq? "✔":"✘");
+    /* If you also want to display HPC overlay mastery, you can add: */
+    // printf("║  HPC-OVERLAY:%s\n", sb.sc_hpc_overlay? "✔":"✘");
+
     printf("║--------------------------------------------║\n");
 
     /* final overall score with a progress bar. */
@@ -154,7 +194,7 @@ void menu_toggle_speed_mode(void) {
     int next    = (current == 0) ? 1 : 0;
     stats_set_speed_mode(next);
 
-    printf(CLR_BOLD CLR_CYAN "\n╔═════════════════════════════════════╗\n");
+    printf(CLR_BOLD CLR_CYAN "\n╔═════════════════════════════════════╗\n" CLR_RESET);
     printf("║ Speed mode set to: %s\n", (next == 0) ? "NORMAL" : "FAST");
     printf("╚═════════════════════════════════════╝\n" CLR_RESET);
 
@@ -181,7 +221,6 @@ void submenu_run_single_test(void) {
     const int unlockedHidden = scoreboard_is_unlocked(SUITE_HIDDEN);
 
     /* Build a list of possible choices for user. We'll do a simple numeric menu. */
-    /* We'll store { "BASIC", SUITE_BASIC } first, always. Then conditionally others. */
     struct {
         char label[32];
         scoreboard_suite_t suite;
@@ -237,7 +276,11 @@ void submenu_run_single_test(void) {
     printf(CLR_YELLOW CLR_BOLD"Choice: "CLR_RESET);
 
     char buf[256];
-    if(!read_line(buf, sizeof(buf))) return;
+    if(!read_line(buf, sizeof(buf))) {
+        /* If concurrency stop or read error, return. */
+        printf(CLR_RED "Error reading input or stop requested => Returning.\n" CLR_RESET);
+        return;
+    }
     int pick = parse_int_strtol(buf, -1);
     if(pick<1 || pick>count) {
         printf(CLR_RED"Invalid.\n"CLR_RESET);
@@ -247,8 +290,8 @@ void submenu_run_single_test(void) {
 
     scoreboard_suite_t chosen = items[pick-1].suite;
 
-    /* Now we ask how many tests in that suite => ask user which single test => run. */
-    run_single_test_in_suite(chosen); /* from old main.c logic, but we place in runner. */
+    /* Now we ask which single test => run. */
+    run_single_test_in_suite(chosen);
 
     pause_enter();
 }
@@ -256,7 +299,7 @@ void submenu_run_single_test(void) {
 /*
    "Run All Unlocked Test Suites" => skip re-running the ones already at 100%
    and skip locked ones.
-   We stop if user sends SIGTERM.
+   We stop if user sends SIGTERM so the rest do not run.
 */
 void submenu_run_tests(void) {
     /* We'll iterate over the chain in order: BASIC->NORMAL->EXTERNAL->MODES->EDGE->HIDDEN */
@@ -286,7 +329,6 @@ void submenu_run_tests(void) {
             continue;
         }
 
-
         /* skip if that suite is already at 100% pass. */
         double suite_score=0.0;
         switch(st){
@@ -304,17 +346,14 @@ void submenu_run_tests(void) {
         }
 
         if(os_concurrency_stop_requested()) {
-            printf(CLR_RED" caught SIGTERM => Leaving before next suite\n"CLR_RED);
+            printf(CLR_RED"SIGTERM => Skipping remaining suites.\n"CLR_RED);
             break;
         }
 
         /* run the entire suite now */
         run_entire_suite(st);
 
-        /* check if user wants to do next suite if it got unlocked => handle in attempt_run_next_suite */
-        /* But the instructions also say: "when basic mode is done or another level, user should be able to refuse next level."
-           That logic is in attempt_run_next_suite internally. We also do it after each run.
-        */
+        /* check if user wants to do next suite if newly unlocked => handle in attempt_run_next_suite */
         scoreboard_load(); /* refresh scoreboard after the run */
         attempt_run_next_suite(st);
     }
@@ -364,15 +403,17 @@ void attempt_run_next_suite(scoreboard_suite_t currentSuite) {
 
     char buf[256];
     if(!read_line(buf, sizeof(buf))) {
+        printf(CLR_RED "Error reading input or stop requested => Returning.\n" CLR_RESET);
         return;
     }
     if(buf[0] == 'y' || buf[0] == 'Y') {
         /* directly run that suite now. */
         run_entire_suite(next);
+
         /* that might unlock the suite after that => chain again. */
         attempt_run_next_suite(next);
     } else {
-        /* skip to next. */
+        /* skip to next => just return to main menu. */
         menu_main_loop();
     }
 }
@@ -520,7 +561,9 @@ void menu_main_loop(void) {
         printf(CLR_BOLD CLR_YELLOW " │             OS-SCHEDULING GAME             │\n" CLR_RESET);
         printf(CLR_BOLD CLR_YELLOW " └────────────────────────────────────────────┘\n" CLR_RESET);
         printf(CLR_RED "     A concurrency and scheduling trainer   \n" CLR_RESET);
-        printf(CLR_BOLD CLR_RED "          [Current Speed Mode: %s]\n\n" CLR_RESET, sp_text);
+        printf(CLR_BOLD CLR_RED "         [Current Speed Mode: %s]\n" CLR_RESET, sp_text);
+        printf(CLR_BOLD CLR_RED "          [ Current BETA V0.1 CHILL ]\n\n" CLR_RESET);
+
         printf(CLR_BOLD CLR_YELLOW " ┌─── MAIN MENU ─────────────────────────────┐\n" CLR_RESET);
         printf(CLR_BOLD CLR_YELLOW " │ 1) Run All Unlocked Test Suites           │\n" CLR_RESET);
         printf(CLR_BOLD CLR_YELLOW " │ 2) Exit                                   │\n" CLR_RESET);
@@ -548,7 +591,23 @@ void menu_main_loop(void) {
 
         char input[256];
         if(!read_line(input, sizeof(input))){
-            menu_main_loop();
+            /*
+              If read_line returned 0 => could be concurrency stop or genuine EOF.
+              - If concurrency stop or skip_remaining_tests => return to menu (continue)
+              - If it's truly EOF with no concurrency stop => exit
+            */
+            if(os_concurrency_stop_requested() || skip_remaining_tests_requested()) {
+                /* user pressed SIGTERM or concurrency stop => return to top of loop */
+                printf(CLR_RED "Stop requested => Returning to menu.\n" CLR_RESET);
+                set_skip_remaining_tests(0); /* reset skip flag to let the user continue */
+                set_os_concurrency_stop_flag(0);
+                continue;
+            } else {
+                /* Actual EOF or read error => exit. */
+                printf(CLR_RED "Error reading input => Exiting.\n" CLR_RESET);
+                const int fs = scoreboard_get_final_score();
+                cleanup_and_exit(fs);
+            }
         }
 
         int choice = parse_int_strtol(input, -1);
@@ -604,7 +663,8 @@ void menu_main_loop(void) {
             break;
         }
     }
-}#ifndef MENU_H
+}
+#ifndef MENU_H
 #define MENU_H
 #include <stdio.h>
 #include <stdlib.h>
@@ -668,6 +728,7 @@ void menu_submenu_external_concurrency(void);
 #include <sys/wait.h>
 #include <time.h>
 #include <string.h>
+#include <errno.h>
 
 /*
   Global concurrency stop flag. If set, any concurrency loop stops early.
@@ -685,7 +746,40 @@ static char      g_container_paths[32][256];
 static uint64_t now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)(ts.tv_sec)*1000ULL + (ts.tv_nsec / 1000000ULL);
+    return (uint64_t)ts.tv_sec * 1000ULL + (ts.tv_nsec / 1000000ULL);
+}
+
+/*
+  A small helper that runs a CPU-bound loop in chunks:
+   - totalIters: total loop iterations
+   - chunkSize:  number of iterations per chunk
+   - partialAcc: pointer to a 'long' accumulator
+   The concurrency-stop flag is always checked once per chunk.
+*/
+static void os_hpc_cpu_loop_internal(long totalIters, long chunkSize, long *partialAcc) {
+    long localSum = 0;
+    long done = 0;
+    while (done < totalIters) {
+        /* If user requested concurrency stop, break early. */
+        if (os_concurrency_stop_requested()) {
+            break;
+        }
+        /*
+          Process from 'done' to 'end - 1', or until totalIters is reached.
+          Checking the stop flag once per chunk significantly reduces overhead
+          compared to checking it in every iteration.
+        */
+        long end = done + chunkSize;
+        if (end > totalIters) {
+            end = totalIters;
+        }
+        for (long i = done; i < end; i++) {
+            /* trivial CPU-bound random math */
+            localSum += (i % 17) + (i % 11);
+        }
+        done = end;
+    }
+    *partialAcc = localSum;
 }
 
 void set_os_concurrency_stop_flag(int val) {
@@ -703,9 +797,20 @@ int os_concurrency_stop_requested(void) {
 void os_init(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+
+    /* Capture the start time. */
     g_start_ms = now_ms();
+
+    /* Reset ephemeral container count/paths. */
     g_container_count = 0;
     memset(g_container_paths, 0, sizeof(g_container_paths));
+
+    /*
+      We seed the random generator once, so HPC overshadow/overlay won't
+      keep re-seeding. This helps produce more varied results if multiple HPC
+      calls happen back-to-back.
+    */
+    srand((unsigned int)time(NULL));
 }
 
 /* ----------------------------------------------------------------
@@ -718,9 +823,15 @@ void os_cleanup(void) {
         g_container_count--;
         const char* path = g_container_paths[g_container_count];
         if (path && path[0]) {
-            rmdir(path);
+            int rc = rmdir(path);
+            if (rc == 0) {
+                printf("\033[96m[-] Container removed (cleanup): %s\n\033[0m", path);
+            } else {
+                /* If removal fails, we print a warning. */
+                fprintf(stderr, "\033[91m[!] Failed to remove container %s: %s\n\033[0m",
+                        path, strerror(errno));
+            }
             memset(g_container_paths[g_container_count], 0, sizeof(g_container_paths[g_container_count]));
-            printf("\033[96m[-] Container removed (cleanup): %s\n\033[0m", path);
             stats_inc_containers_removed();
         }
     }
@@ -729,15 +840,19 @@ void os_cleanup(void) {
 uint64_t os_time(void) {
     /* Return real-world elapsed ms since os_init(). */
     const uint64_t now = now_ms();
-    if(now < g_start_ms) return 0ULL;
+    if (now < g_start_ms) {
+        /* If clock jumps backward, clamp to zero. */
+        return 0ULL;
+    }
     return (now - g_start_ms);
 }
 
 /* Minimal logging with a small delay in normal mode only. */
 void os_log(const char* msg) {
-    if(!msg) return;
-    if(stats_get_speed_mode() == 0) {
+    if (!msg) return;
+    if (stats_get_speed_mode() == 0) {
         printf("%s\n", msg);
+        /* small user-friendly delay in normal mode */
         usleep(500000);
     }
 }
@@ -747,75 +862,99 @@ void os_log(const char* msg) {
    ----------------------------------------------------------------
 */
 void os_create_ephemeral_container(void) {
-    if(g_container_count >= 32) return;
+    if (g_container_count >= 32) return;
+
     char tmpl[] = "/tmp/os_cont_XXXXXX";
-    if(mkdtemp(tmpl)) {
+    if (mkdtemp(tmpl)) {
         strncpy(g_container_paths[g_container_count], tmpl, 255);
         g_container_count++;
         printf("\033[96m[+] Container created: %s (count=%d)\n\033[0m",
                tmpl, g_container_count);
         stats_inc_containers_created();
+    } else {
+        fprintf(stderr, "\033[91m[!] Failed to create ephemeral container: %s\n\033[0m",
+                strerror(errno));
     }
 }
 
 /* Container removal (explicit). */
 void os_remove_ephemeral_container(void) {
-    if(g_container_count <= 0) return;
+    if (g_container_count <= 0) return;
     g_container_count--;
     const char* path = g_container_paths[g_container_count];
-    if(path[0]) {
-        rmdir(path);
+    if (path[0]) {
+        int rc = rmdir(path);
+        if (rc == 0) {
+            printf("\033[96m[-] Container removed: %s (remaining=%d)\n\033[0m",
+                   path, g_container_count);
+        } else {
+            fprintf(stderr, "\033[91m[!] Failed to remove container %s: %s\n\033[0m",
+                    path, strerror(errno));
+        }
         memset(g_container_paths[g_container_count], 0, sizeof(g_container_paths[g_container_count]));
-        printf("\033[96m[-] Container removed: %s (remaining=%d)\n\033[0m",
-               path, g_container_count);
         stats_inc_containers_removed();
     }
 }
 
 /*
-   HPC overshadow => spawns multiple CPU-bound threads to demonstrate concurrency.
-   Now refined to choose a random number of threads between 4..8.
+   HPC overshadow => spawns multiple CPU-bound threads (4..8).
+   We'll do a chunked approach in each thread to check concurrency stop
+   without too much overhead in single-step checking.
 */
 static void* overshadow_thread(void* arg) {
     long *ret = (long*)arg;
     long sum = 0;
-    for (long i=0; i<7000000; i++) {
-        if(os_concurrency_stop_requested()) break;
-        sum += (i % 17) + (i % 11);
-    }
+
+    /* We choose 7 million total iters, chunk size ~100k to reduce overhead. */
+    os_hpc_cpu_loop_internal(7000000L, 100000L, &sum);
+
     *ret = sum;
     return NULL;
 }
 
 void os_run_hpc_overshadow(void) {
-    if(os_concurrency_stop_requested()) {
-        printf("\033[91m[OS] concurrency has to stop => HPC overshadow aborted\n\033[0m");
+    if (os_concurrency_stop_requested()) {
+        printf("\033[91m[OS] concurrency stop => HPC overshadow aborted.\n\033[0m");
         return;
     }
 
-    /* NEW/UPDATED: pick a random number of CPU-bound threads from 4..8. */
-    srand((unsigned int)time(NULL));
+    /* pick a random number of CPU-bound threads from 4..8. */
     int n = 4 + (rand() % 5); /* range = [4..8]. */
 
-    long* results = (long*)calloc(n, sizeof(long));
-    pthread_t* th = (pthread_t*)malloc(n*sizeof(pthread_t));
+    long* results = (long*)calloc((size_t)n, sizeof(long));
+    pthread_t* th = (pthread_t*)malloc((size_t)n*sizeof(pthread_t));
+    if (!results || !th) {
+        fprintf(stderr, "\033[91m[!] HPC overshadow => allocation failed.\n\033[0m");
+        free(results);
+        free(th);
+        return;
+    }
 
-    if(stats_get_speed_mode()==0){
+    if (stats_get_speed_mode() == 0) {
         printf("\033[92m[HPC Overshadow] => spawning %d threads\n\033[0m", n);
         usleep(200000);
     }
 
-    for (int i=0; i<n; i++) {
-        pthread_create(&th[i], NULL, overshadow_thread, &results[i]);
-        if(stats_get_speed_mode()==0){
+    for (int i = 0; i < n; i++) {
+        int rc = pthread_create(&th[i], NULL, overshadow_thread, &results[i]);
+        if (rc != 0) {
+            fprintf(stderr, "\033[91m[!] HPC overshadow => pthread_create failed: %s\n\033[0m",
+                    strerror(rc));
+            /* On error, we won't spawn the rest. */
+            n = i;
+            break;
+        }
+        if (stats_get_speed_mode() == 0) {
             printf("\033[92m   HPC Overshadow Thread #%d => time=%llu ms => started.\n\033[0m",
                    i+1, (unsigned long long)os_time());
             usleep(150000);
         }
     }
-    for (int i=0; i<n; i++) {
+
+    /* join them */
+    for (int i = 0; i < n; i++) {
         pthread_join(th[i], NULL);
-        if(stats_get_speed_mode()==0){
+        if (stats_get_speed_mode() == 0) {
             printf("\033[92m   HPC Overshadow Thread #%d => time=%llu ms => finished.\n\033[0m",
                    i+1, (unsigned long long)os_time());
             usleep(100000);
@@ -824,55 +963,70 @@ void os_run_hpc_overshadow(void) {
 
     free(th);
     free(results);
-    if (stats_get_speed_mode()==0) {
+
+    if (stats_get_speed_mode() == 0) {
         printf("\033[92m   HPC Overshadow => time=%llu ms => END.\n\033[0m",
                (unsigned long long)os_time());
     }
 }
 
 /*
-   HPC overlay => spawns a smaller random number of CPU-bound threads, e.g. [2..4].
+   HPC overlay => spawns a smaller random number of CPU-bound threads [2..4],
+   with a shorter loop (4 million).
 */
 static void* overlay_thread(void* arg) {
     long *ret = (long*)arg;
     long sum = 0;
-    for (long i=0; i<4000000; i++) {
-        if(os_concurrency_stop_requested()) break;
-        sum += (i % 19) + (i % 13);
-    }
+
+    /* We'll do 4 million total, chunk size 100k. */
+    os_hpc_cpu_loop_internal(4000000L, 100000L, &sum);
+
     *ret = sum;
     return NULL;
 }
 
 void os_run_hpc_overlay(void) {
-    if(os_concurrency_stop_requested()) {
-        printf("\033[91m[OS] concurrency stop => HPC overlay aborted\n\033[0m");
+    if (os_concurrency_stop_requested()) {
+        printf("\033[91m[OS] concurrency stop => HPC overlay aborted.\n\033[0m");
         return;
     }
 
-    /* NEW/UPDATED: random number of threads in [2..4]. */
-    srand((unsigned int)time(NULL));
-    int n = 2 + (rand() % 3); /* range = [2..4]. */
+    /* random number of threads in [2..4] */
+    int n = 2 + (rand() % 3); /* range=[2..4]. */
 
-    long* results = (long*)calloc(n, sizeof(long));
-    pthread_t* th = (pthread_t*)malloc(n*sizeof(pthread_t));
+    long* results = (long*)calloc((size_t)n, sizeof(long));
+    pthread_t* th = (pthread_t*)malloc((size_t)n*sizeof(pthread_t));
+    if (!results || !th) {
+        fprintf(stderr, "\033[91m[!] HPC overlay => allocation failed.\n\033[0m");
+        free(results);
+        free(th);
+        return;
+    }
 
-    if(stats_get_speed_mode()==0){
+    if (stats_get_speed_mode() == 0) {
         printf("\033[92m[HPC Overlay] => spawning %d threads\n\033[0m", n);
         usleep(200000);
     }
 
-    for (int i=0; i<n; i++) {
-        pthread_create(&th[i], NULL, overlay_thread, &results[i]);
-        if(stats_get_speed_mode()==0){
+    for (int i = 0; i < n; i++) {
+        int rc = pthread_create(&th[i], NULL, overlay_thread, &results[i]);
+        if (rc != 0) {
+            fprintf(stderr, "\033[91m[!] HPC overlay => pthread_create failed: %s\n\033[0m",
+                    strerror(rc));
+            n = i;
+            break;
+        }
+        if (stats_get_speed_mode() == 0) {
             printf("\033[92m   HPC Overlay Thread #%d => time=%llu ms => started.\n\033[0m",
                    i+1, (unsigned long long)os_time());
             usleep(150000);
         }
     }
+
+    /* join them */
     for (int i=0; i<n; i++) {
         pthread_join(th[i], NULL);
-        if(stats_get_speed_mode()==0){
+        if (stats_get_speed_mode()==0) {
             printf("\033[92m   HPC Overlay Thread #%d => time=%llu ms => finished.\n\033[0m",
                    i+1, (unsigned long long)os_time());
             usleep(100000);
@@ -881,6 +1035,7 @@ void os_run_hpc_overlay(void) {
 
     free(th);
     free(results);
+
     if (stats_get_speed_mode()==0) {
         printf("\033[92m   HPC Overlay => time=%llu ms => END.\n\033[0m",
                (unsigned long long)os_time());
@@ -888,71 +1043,81 @@ void os_run_hpc_overlay(void) {
 }
 
 /*
-   Pipeline example => now refined to create multiple child processes in series,
-   simulating a multi-stage pipeline.
+   Pipeline example => multi-stage demonstration:
+   - stage1 child does some "work"
+   - passes data through pipe
+   - stage2 child uses the data.
 */
 void os_pipeline_example(void) {
     printf("\033[95m╔══════════════════════════════════════════════╗\n");
     printf("║             PIPELINE BLOCK START             ║\n");
     printf("╚══════════════════════════════════════════════╝\033[0m\n");
 
-    if(os_concurrency_stop_requested()) {
-        printf("\033[91m[OS] concurrency stop => skipping pipeline.\033[0m\n");
+    if (os_concurrency_stop_requested()) {
+        printf("\033[91m[OS] concurrency stop => skipping pipeline.\n\033[0m");
         return;
     }
 
-    /* We'll do a 2-stage pipeline:
-       stage1 child => does some "work"
-       then pipe into stage2 child => does next "work"
-       (in real shell code, you'd connect the outputs/inputs, but here we demonstrate the concept.)
-    */
     int pipefd[2];
-    if(pipe(pipefd) == -1) {
-        perror("pipe");
+    if (pipe(pipefd) == -1) {
+        fprintf(stderr, "\033[91m[!] pipeline => pipe() failed: %s\n\033[0m", strerror(errno));
         return;
     }
 
     pid_t c1 = fork();
-    if(c1==0) {
-        /* Child1 => simulate pipeline stage #1 */
+    if (c1 < 0) {
+        fprintf(stderr, "\033[91m[!] pipeline => fork() failed: %s\n\033[0m", strerror(errno));
         close(pipefd[0]);
-        if(stats_get_speed_mode()==0){
+        close(pipefd[1]);
+        return;
+    }
+    if (c1 == 0) {
+        /* Child1 => stage #1. */
+        close(pipefd[0]);
+        if (stats_get_speed_mode()==0) {
             printf("\033[92m   [Pipeline child1 => start => time=%llu ms]\033[0m\n",
                    (unsigned long long)os_time());
             usleep(100000);
         }
-        /* write some data to pipe to pass to next stage. */
+        /* Write some data to pass to next stage. */
         const char* data="Hello from stage1";
         write(pipefd[1], data, strlen(data)+1);
         close(pipefd[1]);
-
-        if(stats_get_speed_mode()==0){
+        if (stats_get_speed_mode()==0) {
             printf("\033[92m   [Pipeline child1 => end => time=%llu ms]\033[0m\n",
                    (unsigned long long)os_time());
         }
         _exit(0);
-    } else if(c1>0) {
-        /* parent => spawn stage2 */
+    } else {
+        /* Parent => spawn stage2. */
         pid_t c2 = fork();
-        if(c2==0) {
+        if (c2 < 0) {
+            fprintf(stderr, "\033[91m[!] pipeline => fork()2 failed: %s\n\033[0m", strerror(errno));
+            kill(c1, SIGKILL);
+            close(pipefd[0]);
             close(pipefd[1]);
-            /* read data from stage1. */
+            waitpid(c1, NULL, 0);
+            return;
+        }
+        if (c2 == 0) {
+            /* Child2 => read data from stage1. */
+            close(pipefd[1]);
             char buf[128];
             memset(buf,0,sizeof(buf));
             read(pipefd[0], buf, sizeof(buf)-1);
-            if(stats_get_speed_mode()==0){
+            if (stats_get_speed_mode()==0) {
                 printf("\033[92m   [Pipeline child2 => got data=\"%s\" => time=%llu ms]\033[0m\n",
                        buf, (unsigned long long)os_time());
                 usleep(150000);
             }
             close(pipefd[0]);
             _exit(0);
-        } else if(c2>0) {
-            /* parent => wait for both. */
+        } else {
+            /* Parent => close pipe, wait for both children. */
             close(pipefd[0]);
             close(pipefd[1]);
-            waitpid(c1,NULL,0);
-            waitpid(c2,NULL,0);
+            waitpid(c1, NULL, 0);
+            waitpid(c2, NULL, 0);
         }
     }
 
@@ -960,45 +1125,50 @@ void os_pipeline_example(void) {
     printf("║             PIPELINE BLOCK END               ║\n");
     printf("╚══════════════════════════════════════════════╝\033[0m\n");
 
-    if(stats_get_speed_mode()==0){
+    if (stats_get_speed_mode()==0) {
         usleep(200000);
     }
 }
 
 /*
-   Distributed example => we fork multiple HPC overshadow tasks in parallel
-   to simulate "remote nodes" doing CPU-bound HPC overshadow.
+   Distributed example => fork multiple HPC overshadow tasks in parallel
+   to simulate "remote nodes".
 */
 void os_run_distributed_example(void) {
     printf("\033[95m╔══════════════════════════════════════════════╗\n");
     printf("║          DISTRIBUTED BLOCK START             ║\n");
     printf("╚══════════════════════════════════════════════╝\033[0m\n");
 
-    if(os_concurrency_stop_requested()) {
-        printf("\033[93m[OS] concurrency stop => skipping distributed.\033[0m\n");
+    if (os_concurrency_stop_requested()) {
+        printf("\033[93m[OS] concurrency stop => skipping distributed.\n\033[0m");
         return;
     }
 
-    /* We'll spawn 2 HPC overshadow children, each doing overshadow. */
-    for(int i=0; i<2; i++) {
-        if(os_concurrency_stop_requested()) {
+    /* We'll spawn 2 HPC overshadow children. */
+    for (int i=0; i<2; i++) {
+        if (os_concurrency_stop_requested()) {
             break;
         }
         pid_t c = fork();
+        if (c < 0) {
+            fprintf(stderr, "\033[91m[!] distributed => fork failed: %s\n\033[0m",
+                    strerror(errno));
+            break;
+        }
         if (c == 0) {
-            if(stats_get_speed_mode()==0){
+            /* child => HPC overshadow. */
+            if(stats_get_speed_mode()==0) {
                 printf("\033[92m   [Distributed child => HPC overshadow => time=%llu ms]\033[0m\n",
                        (unsigned long long)os_time());
                 usleep(200000);
             }
             os_run_hpc_overshadow();
             _exit(0);
-        } else if (c > 0) {
-            /* parent just moves on to spawn the next or wait. */
         }
     }
-    /* Wait for them all. In real code we'd track pids, but let's do a simple approach. */
-    for(int i=0; i<2; i++) {
+
+    /* Wait for them all. In real code we'd track pids more carefully. */
+    for (int i=0; i<2; i++) {
         wait(NULL);
     }
 
@@ -1567,7 +1737,16 @@ size_t ready_queue_size(void);
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+/* The new global skip flag: */
+static volatile sig_atomic_t g_skip_remaining_tests = 0;
 
+int skip_remaining_tests_requested(void) {
+    return (g_skip_remaining_tests != 0);
+}
+
+void set_skip_remaining_tests(int val) {
+    g_skip_remaining_tests = (val ? 1 : 0);
+}
 /*
   We'll maintain a lookup for scheduler_alg_t => string name
   to produce "SCHEDULE BLOCK => <Name>" in concurrency logs, if needed.
@@ -1958,6 +2137,8 @@ void run_shell_commands_concurrently(int count,
                                      int mode,
                                      int allModes);
 
+int  skip_remaining_tests_requested(void);
+void set_skip_remaining_tests(int val);
 #endif
 #include "safe_calls_library.h"
 
@@ -2017,12 +2198,17 @@ void handle_signal(int signum) {
         cleanup_and_exit(fs);
     }
     else if(signum == SIGTERM) {
-        /* SIGTERM => stop concurrency/tests => return to menu. */
+        /* SIGTERM => do NOT abort the test in progress; instead:
+           - Stop concurrency if we are running HPC overshadow or external shell
+           - Mark that we should skip future tests, returning to menu. */
         stats_inc_signal_sigterm();
         printf(CLR_RED "\nCaught SIGTERM => Trying to return to menu\n" CLR_RESET);
+
+        /* For concurrency (shell or HPC overshadow) we do want to stop: */
         set_os_concurrency_stop_flag(1);
-        /* Return to menu (the user can then choose to Exit or continue). */
-        menu_main_loop();
+
+        /* For normal scheduling tests, we only skip *remaining* tests: */
+        set_skip_remaining_tests(1);
     }
     else {
         /* For completeness, track any other signals. */
@@ -2033,7 +2219,6 @@ void handle_signal(int signum) {
 /* ----------------------------------------------------------------
    CLEANUP AND EXIT
    ----------------------------------------------------------------
-   Consolidate all final shutdown tasks in one function.
 */
 void cleanup_and_exit(int code) {
     os_cleanup();
@@ -2041,7 +2226,8 @@ void cleanup_and_exit(int code) {
     scoreboard_close();
     stats_print_summary();
     exit(code);
-}#ifndef SAFE_CALLS_LIBRARY_H
+}
+#ifndef SAFE_CALLS_LIBRARY_H
 #define SAFE_CALLS_LIBRARY_H
 #include <stddef.h>
 #include <signal.h>
@@ -2090,42 +2276,53 @@ void handle_signal(int signum);
 #include <string.h>
 #include <unistd.h>
 
-/* We'll assume max of 4 cores for BFS/MLFQ demonstration. */
+/* We assume up to 4 cores max for BFS/MLFQ. */
 #ifndef MAX_CORES
 #define MAX_CORES 4
 #endif
 
 /* ---------- Global scheduling states ---------- */
-static scheduler_alg_t  g_current_alg = ALG_CFS;
-static int              g_num_cores   = 1;
-static int              g_running     = 0;
+static scheduler_alg_t  g_current_alg   = ALG_CFS;
+static int              g_num_cores     = 1;
+static int              g_running       = 0;
 
 /*
-   The global simulated time in "ms" (not real ms, but a time-step
-   that increments with each partial slice).
+   The global simulated time in "ms" (not real milliseconds, but a
+   time-step increment for each partial slice).
 */
-static uint64_t         g_sim_time    = 0;
+static uint64_t         g_sim_time      = 0;
 static pthread_mutex_t  g_sim_time_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* track final stats in a single structure. */
-static schedule_stats_t g_stats;
+/* BFS dynamic quantum (for BFS tests). */
+static unsigned long    g_bfs_quantum   = 4;
 
-/* We keep a pointer to the list of processes used in the run. */
-static process_t* g_process_list = NULL;
-static int        g_list_count   = 0;
+/* Arrays and counters for processes. */
+static process_t*       g_process_list         = NULL;
+static int              g_list_count           = 0;
+
+/* Array of pointers sorted by arrival_time, so we can feed arrivals in order. */
+static process_t**      g_proc_sorted_ptrs     = NULL;
+static int              g_next_arrival_index   = 0;
+
+/* Count how many have finished. Once finished == g_list_count => end scheduling. */
+static int              g_finished_count       = 0;
+
+/* Protect arrival feeding & finish counting. */
+static pthread_mutex_t  g_arrivals_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t  g_finish_lock   = PTHREAD_MUTEX_INITIALIZER;
 
 /*
-   BFS quantum is stored so BFS tests can see what BFS used.
-   This is set in get_dynamic_quantum() if BFS is selected.
+   schedule_stats_t tracks final stats after normal scheduling runs.
+   HPC overshadow / HPC overlay skip normal stats.
 */
-static unsigned long g_bfs_quantum = 4; /* default fallback */
+static schedule_stats_t g_stats;
 
-/* Provide BFS quantum to BFS tests. */
+/* Provide BFS quantum to BFS tests, as originally done. */
 unsigned long scheduler_get_bfs_quantum(void) {
     return g_bfs_quantum;
 }
 
-/* Access global sim time (used by ready_queue for e.g. HRRN, MLFQ) */
+/* Access global sim time (used by ready_queue, e.g. HRRN, MLFQ). */
 uint64_t get_global_sim_time(void) {
     pthread_mutex_lock(&g_sim_time_lock);
     uint64_t t = g_sim_time;
@@ -2133,56 +2330,28 @@ uint64_t get_global_sim_time(void) {
     return t;
 }
 
-/* Resets scheduling stats & sim time at run start. */
+/* Reset scheduling stats & time at run start. */
 static void reset_schedule_stats(void) {
     memset(&g_stats, 0, sizeof(g_stats));
-    g_sim_time = 0;
+    g_sim_time       = 0;
+    g_finished_count = 0;
+    g_next_arrival_index = 0;
 }
 
-/* Compute final stats after all processes finish. */
-static void finalize_stats(void) {
-    for(int i=0; i<g_list_count; i++) {
-        process_t* P = &g_process_list[i];
-        uint64_t at  = P->arrival_time;
-        uint64_t st  = P->first_response;
-        uint64_t et  = P->end_time;
-
-        uint64_t wait = (st > at) ? (st - at) : 0ULL;
-        uint64_t tat  = (et > at) ? (et - at) : 0ULL;
-        uint64_t resp = wait;
-
-        g_stats.total_wait += wait;
-        g_stats.total_tat  += tat;
-        g_stats.total_resp += resp;
-    }
-    g_stats.total_count = g_list_count;
-
-    if(g_stats.total_count > 0) {
-        g_stats.avg_wait       = (double)g_stats.total_wait / (double)g_stats.total_count;
-        g_stats.avg_turnaround = (double)g_stats.total_tat  / (double)g_stats.total_count;
-        g_stats.avg_response   = (double)g_stats.total_resp / (double)g_stats.total_count;
-    }
-    g_stats.preemptions  = g_stats.total_preempts;
-    g_stats.total_procs   = g_stats.total_count;
-}
-
-/*
-   Returns a dynamic quantum for each preemptive scheduling mode.
-   BFS => store in g_bfs_quantum, so BFS test can see the actual timeslice.
-*/
+/* ---------- Utility: dynamic quantum for preemptive algs ---------- */
 static unsigned long get_dynamic_quantum(scheduler_alg_t alg) {
     size_t rq_size = ready_queue_size();
-    switch(alg) {
+    switch (alg) {
         case ALG_RR: {
-            /* Example dynamic approach for RR. */
+            /* Example: baseQuantum=2 plus a small adjustment if queue is large. */
             const unsigned long baseQuantum = 2;
             unsigned long dynamic_part = (unsigned long)(rq_size / 2);
             return baseQuantum + dynamic_part;
         }
         case ALG_BFS:
             /*
-               BFS => choose base slice=4, maybe +1 if queue is big.
-               This is just an example. You can do what you want here.
+               BFS => choose base slice=4 + maybe +1 if queue>5.
+               Store in g_bfs_quantum for BFS tests.
             */
             g_bfs_quantum = 4 + (rq_size > 5 ? 1 : 0);
             return g_bfs_quantum;
@@ -2191,40 +2360,117 @@ static unsigned long get_dynamic_quantum(scheduler_alg_t alg) {
         case ALG_STRF:
         case ALG_HRRN_RT:
         case ALG_MLFQ:
-            /* short fixed slice => 2 ms. */
+            /* short fixed slice => 2 ms */
             return 2;
 
         default:
-            /* Non-preemptive => run to completion => quantum=0 => no preemption. */
+            /* Non-preemptive => run to completion => quantum=0 => no forced preempt. */
             return 0;
     }
 }
 
+/* ---------- Feed newly arrived processes up to current sim_time ---------- */
+static void feed_arrivals_up_to_time(uint64_t now_sim) {
+    pthread_mutex_lock(&g_arrivals_lock);
+    /*
+      We check the next arrival in the sorted pointer array. If its arrival_time
+      <= now_sim, push it into the ready_queue. Continue while more processes
+      are also ready.
+    */
+    while (g_next_arrival_index < g_list_count) {
+        process_t* arrP = g_proc_sorted_ptrs[g_next_arrival_index];
+        if (arrP->arrival_time <= now_sim) {
+            ready_queue_push(arrP);
+            g_next_arrival_index++;
+        } else {
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_arrivals_lock);
+}
+
+/* ---------- Mark a process as finished ---------- */
+static void mark_process_finished(void) {
+    pthread_mutex_lock(&g_finish_lock);
+    g_finished_count++;
+    /* If all processes done => push sentinel for each core => threads exit. */
+    if (g_finished_count >= g_list_count && g_running) {
+        g_running = 0;  /* stop further loops */
+        int n = (g_num_cores > MAX_CORES) ? MAX_CORES : g_num_cores;
+        for (int i = 0; i < n; i++) {
+            ready_queue_push(NULL); /* sentinel */
+        }
+    }
+    pthread_mutex_unlock(&g_finish_lock);
+}
+
 /*
-   The scheduling loop for each core:
-   - pop from ready_queue
-   - run partial timeslice
-   - if remain>0 => requeue => preempt
+   HPC overshadow or HPC overlay => special one-shot mode.
+   We skip normal stats because no “processes” are run in the usual sense.
 */
+static void run_hpc_mode(int overshadow) {
+    if (stats_get_speed_mode() == 0) {
+        if (overshadow) {
+            printf("\n\033[95m[HPC OVERSHADOW MODE - Start]\033[0m\n");
+            usleep(300000);
+        } else {
+            printf("\n\033[95m[HPC OVERLAY MODE - Start]\033[0m\n");
+            usleep(300000);
+        }
+    }
+    if (overshadow) {
+        g_stats.HPC_over_mode = 1;
+        os_run_hpc_overshadow();
+    } else {
+        g_stats.HPC_overlay_mode = 1;
+        os_run_hpc_overlay();
+    }
+}
+
+/* ---------- The scheduling loop for each core ---------- */
 static void* core_thread_func(void* arg) {
     long core_id = (long)arg;
 
-    while(g_running) {
-        if(os_concurrency_stop_requested()) {
+    while (1) {
+        if (os_concurrency_stop_requested()) {
             break;
         }
-
+        /* Pop next process. If sentinel => exit if g_running=0. */
         process_t* p = ready_queue_pop();
-        if(!g_running || !p) {
-            /* if queue empty or sentinel => skip */
-            continue;
+        if (!p) {
+            if (!g_running) {
+                /* Actual sentinel => time to exit. */
+                break;
+            } else {
+                /* Queue empty but not done => try again. */
+                usleep(10000);
+                continue;
+            }
         }
 
-        uint64_t real_t = os_time();
-        if(stats_get_speed_mode() == 0) {
+        /* If first time responding => record response time. */
+        if (!p->responded) {
+            p->responded = 1;
+            p->first_response = get_global_sim_time();
+        }
+        p->times_owning_core++;
+
+        /* Decide time-slice (quantum). */
+        unsigned long q = get_dynamic_quantum(g_current_alg);
+        int preemptive   = (q > 0) ? 1 : 0;
+
+        /* slice = min(q, p->remaining_time) if preemptive, else entire remain. */
+        uint64_t remain = p->remaining_time;
+        unsigned long slice = preemptive
+                              ? ((remain > q) ? q : (unsigned long)remain)
+                              : (unsigned long)remain;
+
+        /* "Run" that partial slice. */
+        uint64_t real_t_before = os_time();
+        if (stats_get_speed_mode() == 0) {
             printf("\033[93m[time=%llu ms] => container=1 core=%ld => scheduling process=%p\n"
                    "   => burst_time=%lu, prio=%d, vruntime=%llu, remain=%llu, timesScheduled=%d\n\033[0m",
-                   (unsigned long long)real_t,
+                   (unsigned long long)real_t_before,
                    core_id, (void*)p,
                    (unsigned long)p->burst_time,
                    p->priority,
@@ -2234,63 +2480,62 @@ static void* core_thread_func(void* arg) {
             usleep(300000);
         }
 
-        if(!p->responded) {
-            p->responded       = 1;
-            p->first_response  = get_global_sim_time();
-        }
-        p->times_owning_core++;
-
-        /* Decide if preemptive => choose quantum. */
-        unsigned long q = get_dynamic_quantum(g_current_alg);
-        int preemptive = (q > 0) ? 1 : 0;
-
-        /* slice = min(q, remaining_time) if preemptive, else entire remain. */
-        unsigned long slice = preemptive
-                              ? ( (p->remaining_time > q) ? q : p->remaining_time )
-                              : p->remaining_time;
-
-        /* run partial. */
         simulate_process_partial(p, slice, (int)core_id);
 
-        /* update global simulated time. */
+        /* Update remain, global sim_time, arrivals, finishing. */
         pthread_mutex_lock(&g_sim_time_lock);
-        g_sim_time += slice;
-        uint64_t now_sim = g_sim_time;
+        p->remaining_time -= slice;
+        g_sim_time        += slice; /* advance simulation time by slice. */
+        uint64_t now_sim   = g_sim_time;
         pthread_mutex_unlock(&g_sim_time_lock);
 
-        p->remaining_time -= slice;
-
-        /* If using CFS or CFS-SRTF => update vruntime. */
-        if(g_current_alg == ALG_CFS || g_current_alg == ALG_CFS_SRTF) {
+        /* If CFS or CFS-SRTF => increment vruntime. */
+        if (g_current_alg == ALG_CFS || g_current_alg == ALG_CFS_SRTF) {
             p->vruntime += slice;
         }
 
-        /* still not finished => requeue => preempt++ */
-        if(preemptive && p->remaining_time > 0) {
-            __sync_fetch_and_add(&g_stats.total_preempts, 1ULL);
+        /* Feed newly arrived processes if any. */
+        feed_arrivals_up_to_time(now_sim);
 
-            if(stats_get_speed_mode()==0) {
-                printf("\033[94m   => PREEMPT => process=%p => new remain=%llu => preemptions=%llu\n\033[0m",
-                       (void*)p,
-                       (unsigned long long)p->remaining_time,
-                       (unsigned long long)g_stats.total_preempts);
-                usleep(300000);
-            }
+        /* Check if finished or preempt. */
+        if (p->remaining_time > 0) {
+            /* Not done => requeue if preemptive => count preemptions. */
+            if (preemptive) {
+                __sync_fetch_and_add(&g_stats.total_preempts, 1ULL);
 
-            /* degrade to next queue if MLFQ */
-            if(g_current_alg == ALG_MLFQ) {
-                p->mlfq_level++;
+                if (stats_get_speed_mode() == 0) {
+                    printf("\033[94m   => PREEMPT => process=%p => new remain=%llu => preemptions=%llu\n\033[0m",
+                           (void*)p,
+                           (unsigned long long)p->remaining_time,
+                           (unsigned long long)g_stats.total_preempts);
+                    usleep(300000);
+                }
+
+                /* For MLFQ, degrade queue level. */
+                if (g_current_alg == ALG_MLFQ) {
+                    p->mlfq_level++;
+                }
+                ready_queue_push(p);
+            } else {
+                /* Non-preemptive => must have run to completion. Actually, if slice=remain, it's done. */
+                /* But let's be safe: no requeue. Mark finished. */
+                p->end_time = now_sim;
+                mark_process_finished();
+
+                if (stats_get_speed_mode() == 0) {
+                    printf("\033[92m   => FINISH => process=%p => total CPU used=%lu => time=%llu ms\n\033[0m",
+                           (void*)p, slice, (unsigned long long)os_time());
+                    usleep(300000);
+                }
             }
-            ready_queue_push(p);
-        }
-        else {
-            /* The process is done. */
+        } else {
+            /* remain_time <= 0 => done. */
             p->end_time = now_sim;
-            if(stats_get_speed_mode()==0) {
-                printf("\033[92m   => FINISH => process=%p => total CPU used=%lu ms => time=%llu ms\n\033[0m",
-                       (void*)p,
-                       (unsigned long)slice,
-                       (unsigned long long)os_time());
+            mark_process_finished();
+
+            if (stats_get_speed_mode() == 0) {
+                printf("\033[92m   => FINISH => process=%p => total CPU used=%lu => time=%llu ms\n\033[0m",
+                       (void*)p, slice, (unsigned long long)os_time());
                 usleep(300000);
             }
         }
@@ -2298,7 +2543,44 @@ static void* core_thread_func(void* arg) {
     return NULL;
 }
 
-/* ---------- Public Functions ---------- */
+/*
+   finalize_stats => compute wait/turnaround/response from each original process's
+   arrival_time, first_response, end_time, etc.
+*/
+static void finalize_stats(void) {
+    for (int i = 0; i < g_list_count; i++) {
+        process_t* P = &g_process_list[i];
+        uint64_t at  = P->arrival_time;
+        uint64_t st  = P->first_response;
+        uint64_t et  = P->end_time;
+
+        uint64_t wait = 0ULL;
+        uint64_t tat  = 0ULL;
+        uint64_t resp = 0ULL;
+
+        if (st > at) {
+            wait = st - at;
+        }
+        if (et > at) {
+            tat = et - at;
+        }
+        resp = wait; /* in this simulation, response time = time until first scheduled */
+
+        g_stats.total_wait += wait;
+        g_stats.total_tat  += tat;
+        g_stats.total_resp += resp;
+    }
+    g_stats.total_count = g_list_count;
+    if (g_stats.total_count > 0) {
+        g_stats.avg_wait       = (double)g_stats.total_wait / (double)g_stats.total_count;
+        g_stats.avg_turnaround = (double)g_stats.total_tat  / (double)g_stats.total_count;
+        g_stats.avg_response   = (double)g_stats.total_resp / (double)g_stats.total_count;
+    }
+    g_stats.preemptions = g_stats.total_preempts;
+    g_stats.total_procs  = g_stats.total_count;
+}
+
+/* ---------- Public / Exposed Functions ---------- */
 
 void scheduler_select_algorithm(scheduler_alg_t a) {
     g_current_alg = a;
@@ -2306,107 +2588,126 @@ void scheduler_select_algorithm(scheduler_alg_t a) {
 
 void scheduler_run(process_t* list, int count) {
     reset_schedule_stats();
-    if(!list || count<=0) return;
+    if (!list || count <= 0) return;
 
-    /* HPC overshadow/overlay => special handling. */
-    if(g_current_alg == ALG_HPC_OVERSHADOW) {
-        g_stats.HPC_over_mode = 1;
-        if(stats_get_speed_mode()==0) {
-            printf("\n\033[95m╔══════════════════════════════════════════════╗\n");
-            printf(         "║   SCHEDULE => HPC-OVERSHADOW (special mode)   ║\n");
-            printf(         "╚══════════════════════════════════════════════╝\033[0m\n");
-            usleep(300000);
-        }
-        os_run_hpc_overshadow();
+    /* HPC overshadow/overlay => skip normal scheduling. */
+    if (g_current_alg == ALG_HPC_OVERSHADOW) {
+        run_hpc_mode(/*overshadow=*/1);
         return;
     }
-    else if(g_current_alg == ALG_HPC_OVERLAY) {
-        g_stats.HPC_overlay_mode = 1;
-        if(stats_get_speed_mode()==0) {
-            printf("\n\033[95m╔══════════════════════════════════════════════╗\n");
-            printf(         "║    SCHEDULE => HPC-OVERLAY (special mode)     ║\n");
-            printf(         "╚══════════════════════════════════════════════╝\033[0m\n");
-            usleep(300000);
-        }
-        os_run_hpc_overlay();
+    if (g_current_alg == ALG_HPC_OVERLAY) {
+        run_hpc_mode(/*overshadow=*/0);
         return;
     }
 
-    /* BFS or MLFQ => 2 cores, else 1. */
-    if(g_current_alg == ALG_BFS || g_current_alg == ALG_MLFQ) {
+    /* BFS or MLFQ => we use 2 cores, else 1. */
+    if (g_current_alg == ALG_BFS || g_current_alg == ALG_MLFQ) {
         g_num_cores = 2;
     } else {
         g_num_cores = 1;
     }
 
-    if(stats_get_speed_mode()==0) {
-        printf("\n\033[95m╔══════════════════════════════════════════════╗\n");
-        printf(       "║   SCHEDULE => alg=%d => #processes=%d          \n", g_current_alg, count);
-        printf(       "║   RealTime start => %llu ms                   \n", (unsigned long long)os_time());
-        printf(       "╚══════════════════════════════════════════════╝\033[0m\n");
-        usleep(300000);
-    }
-
-    ready_queue_init_policy(g_current_alg);
-
+    /* Keep pointer to original array so finalize_stats can read from it. */
     g_process_list = list;
     g_list_count   = count;
-    g_running      = 1;
 
-    /* push all processes into the queue. */
-    for(int i=0; i<count; i++) {
-        ready_queue_push(&list[i]);
+    /* Build an array of pointers sorted by arrival_time. */
+    g_proc_sorted_ptrs = (process_t**)calloc((size_t)count, sizeof(process_t*));
+    for (int i = 0; i < count; i++) {
+        g_proc_sorted_ptrs[i] = &list[i];
     }
-
-    pthread_t tid[MAX_CORES];
-    int n = (g_num_cores > MAX_CORES) ? MAX_CORES : g_num_cores;
-
-    /* spawn each core thread. */
-    for(int i=0; i<n; i++) {
-        pthread_create(&tid[i], NULL, core_thread_func, (void*)(long)i);
-    }
-
-    /* wait while queue is not empty */
-    while(ready_queue_size() > 0) {
-        usleep(200000);
-        if(os_concurrency_stop_requested()) {
-            break;
+    /* Sort them by arrival_time ascending. */
+    for (int i = 0; i < count - 1; i++) {
+        for (int j = i + 1; j < count; j++) {
+            if (g_proc_sorted_ptrs[j]->arrival_time < g_proc_sorted_ptrs[i]->arrival_time) {
+                process_t* tmp                = g_proc_sorted_ptrs[i];
+                g_proc_sorted_ptrs[i]         = g_proc_sorted_ptrs[j];
+                g_proc_sorted_ptrs[j]         = tmp;
+            }
         }
     }
 
-    /* end scheduling => push sentinel => join threads */
-    g_running = 0;
-    for(int i=0; i<n; i++) {
-        ready_queue_push(NULL);
-    }
-    for(int i=0; i<n; i++) {
-        pthread_join(tid[i], NULL);
-    }
-
-    ready_queue_destroy();
-    finalize_stats();
-
-    if(stats_get_speed_mode()==0) {
-        uint64_t total_time = get_global_sim_time();
-        printf("\033[96m╔══════════════════════════════════════════════╗\n");
-        printf(       "║ SCHEDULE END => alg=%d => totalTime=%llums    \n",
-                      g_current_alg, (unsigned long long)total_time);
-        printf(       "║ Stats: preemptions=%llu, totalProcs=%llu     \n",
-                      (unsigned long long)g_stats.total_preempts, (unsigned long long)g_stats.total_procs);
-        printf(       "║ AvgWait=%.2f, AvgTAT=%.2f, AvgResp=%.2f       \n",
-                      g_stats.avg_wait, g_stats.avg_turnaround, g_stats.avg_response);
-        printf(       "╚══════════════════════════════════════════════╝\033[0m\n");
+    /* Show scheduling header. */
+    if (stats_get_speed_mode() == 0) {
+        printf("\n\033[95m╔══════════════════════════════════════════════╗\n");
+        printf(      "║ SCHEDULE => alg=%d => #processes=%d            \n", g_current_alg, count);
+        printf(      "║ RealTime start => %llu ms                     \n", (unsigned long long)os_time());
+        printf(      "╚══════════════════════════════════════════════╝\033[0m\n");
         usleep(300000);
     }
 
+    /* Initialize the ready_queue with the chosen algorithm. */
+    ready_queue_init_policy(g_current_alg);
+
+    /* We start scheduling => set g_running=1, feed arrivals with arrival_time=0. */
+    g_running = 1;
+    feed_arrivals_up_to_time(0);
+
+    /* Spawn core threads. */
+    pthread_t tid[MAX_CORES];
+    int n = (g_num_cores > MAX_CORES) ? MAX_CORES : g_num_cores;
+    for (int i = 0; i < n; i++) {
+        pthread_create(&tid[i], NULL, core_thread_func, (void*)(long)i);
+    }
+
+    /* Wait until all processes finish or concurrency stop is requested. */
+    while (1) {
+        pthread_mutex_lock(&g_finish_lock);
+        if (g_finished_count >= g_list_count) {
+            pthread_mutex_unlock(&g_finish_lock);
+            break;
+        }
+        pthread_mutex_unlock(&g_finish_lock);
+
+        if (os_concurrency_stop_requested()) {
+            /* If user sends SIGTERM => break out early. */
+            break;
+        }
+        usleep(50000); /* poll period */
+    }
+
+    /* Now push sentinel to ensure threads exit if not already done. */
+    g_running = 0;
+    for (int i = 0; i < n; i++) {
+        ready_queue_push(NULL);
+    }
+    for (int i = 0; i < n; i++) {
+        pthread_join(tid[i], NULL);
+    }
+
+    /* done => destroy queue, finalize stats. */
+    ready_queue_destroy();
+    finalize_stats();
+
+    /* Print final stats. */
+    if (stats_get_speed_mode() == 0) {
+        uint64_t total_time = get_global_sim_time();
+        printf("\033[96m╔══════════════════════════════════════════════╗\n");
+        printf(      "║ SCHEDULE END => alg=%d => totalTime=%llums    \n",
+                     g_current_alg, (unsigned long long)total_time);
+        printf(      "║ Stats: preemptions=%llu, totalProcs=%llu     \n",
+                     (unsigned long long)g_stats.total_preempts,
+                     (unsigned long long)g_stats.total_procs);
+        printf(      "║ AvgWait=%.2f, AvgTAT=%.2f, AvgResp=%.2f       \n",
+                     g_stats.avg_wait, g_stats.avg_turnaround, g_stats.avg_response);
+        printf(      "╚══════════════════════════════════════════════╝\033[0m\n");
+        usleep(300000);
+    }
+
+    /* Free the pointer array. */
+    if (g_proc_sorted_ptrs) {
+        free(g_proc_sorted_ptrs);
+        g_proc_sorted_ptrs = NULL;
+    }
+    g_list_count = 0;
     g_process_list = NULL;
-    g_list_count   = 0;
 }
 
 void scheduler_fetch_report(sched_report_t* out) {
-    if(!out) return;
+    if (!out) return;
+
     /* HPC overshadow/overlay => zero normal stats. */
-    if(g_stats.HPC_over_mode || g_stats.HPC_overlay_mode) {
+    if (g_stats.HPC_over_mode || g_stats.HPC_overlay_mode) {
         out->avg_wait       = 0.0;
         out->avg_turnaround = 0.0;
         out->avg_response   = 0.0;
@@ -2506,7 +2807,7 @@ unsigned long scheduler_get_bfs_quantum(void);
 #include <sys/stat.h>
 
 /*
- * scoreboard.c => Implementation with new weighting:
+ * scoreboard.c => Implementation with weighting:
  *   BASIC      => 25%
  *   NORMAL     => 25%
  *   MODES      => 10%
@@ -2514,21 +2815,17 @@ unsigned long scheduler_get_bfs_quantum(void);
  *   HIDDEN     => 10%
  *   EXTERNAL   => 10%
  *   SCHED MAST => 10%
- *
- * The sum is 100% across 7 categories.
- * Scheduling mastery is scored from up to 15 points, scaled to 0..100,
- * then that result is multiplied by 10% (0.10) for final contribution.
  */
 
 /* Global scoreboard structure */
 static scoreboard_t gSB = {
     /* test totals and passes: */
     0,0, 0,0, 0,0, 0,0, 0,0, 0,0,
-    /* scheduling mastery flags: */
-    0,0,0,0,0, 0,0,0,0,0,0,0,
-    /* computed percentages for each suite: */
+    /* scheduling mastery flags (FIFO, RR, CFS, etc.) */
+    0,0,0,0,0, 0,0,0,0,0, 0,0, 0,
+    /* computed percentages */
     0.0,0.0,0.0,0.0,0.0,0.0,
-    /* pass threshold (e.g. 60.0) */
+    /* pass threshold */
     60.0
 };
 
@@ -2612,18 +2909,20 @@ static void write_scoreboard_json(const scoreboard_t* sb) {
     fprintf(f, "  \"hidden_pass\": %d,\n",    sb->hidden_pass);
 
     /* schedule mastery flags */
-    fprintf(f, "  \"sc_fifo\": %d,\n",      sb->sc_fifo);
-    fprintf(f, "  \"sc_rr\": %d,\n",        sb->sc_rr);
-    fprintf(f, "  \"sc_cfs\": %d,\n",       sb->sc_cfs);
-    fprintf(f, "  \"sc_cfs_srtf\": %d,\n",  sb->sc_cfs_srtf);
-    fprintf(f, "  \"sc_bfs\": %d,\n",       sb->sc_bfs);
-    fprintf(f, "  \"sc_sjf\": %d,\n",       sb->sc_sjf);
-    fprintf(f, "  \"sc_strf\": %d,\n",      sb->sc_strf);
-    fprintf(f, "  \"sc_hrrn\": %d,\n",      sb->sc_hrrn);
-    fprintf(f, "  \"sc_hrrn_rt\": %d,\n",   sb->sc_hrrn_rt);
-    fprintf(f, "  \"sc_priority\": %d,\n",  sb->sc_priority);
-    fprintf(f, "  \"sc_hpc_over\": %d,\n",  sb->sc_hpc_over);
-    fprintf(f, "  \"sc_mlfq\": %d,\n",      sb->sc_mlfq);
+    fprintf(f, "  \"sc_fifo\": %d,\n",       sb->sc_fifo);
+    fprintf(f, "  \"sc_rr\": %d,\n",         sb->sc_rr);
+    fprintf(f, "  \"sc_cfs\": %d,\n",        sb->sc_cfs);
+    fprintf(f, "  \"sc_cfs_srtf\": %d,\n",   sb->sc_cfs_srtf);
+    fprintf(f, "  \"sc_bfs\": %d,\n",        sb->sc_bfs);
+    fprintf(f, "  \"sc_sjf\": %d,\n",        sb->sc_sjf);
+    fprintf(f, "  \"sc_strf\": %d,\n",       sb->sc_strf);
+    fprintf(f, "  \"sc_hrrn\": %d,\n",       sb->sc_hrrn);
+    fprintf(f, "  \"sc_hrrn_rt\": %d,\n",    sb->sc_hrrn_rt);
+    fprintf(f, "  \"sc_priority\": %d,\n",   sb->sc_priority);
+    fprintf(f, "  \"sc_hpc_overshadow\": %d,\n", sb->sc_hpc_overshadow);
+    fprintf(f, "  \"sc_mlfq\": %d,\n",       sb->sc_mlfq);
+    /* new HPC overlay field */
+    fprintf(f, "  \"sc_hpc_overlay\": %d,\n", sb->sc_hpc_overlay);
 
     /* percentages */
     fprintf(f, "  \"basic_percent\": %.3f,\n",    sb->basic_percent);
@@ -2662,18 +2961,19 @@ void scoreboard_load(void) {
     gSB.hidden_total   = parse_json_int(json,"hidden_total",   gSB.hidden_total);
     gSB.hidden_pass    = parse_json_int(json,"hidden_pass",    gSB.hidden_pass);
 
-    gSB.sc_fifo     = parse_json_int(json,"sc_fifo",     gSB.sc_fifo);
-    gSB.sc_rr       = parse_json_int(json,"sc_rr",       gSB.sc_rr);
-    gSB.sc_cfs      = parse_json_int(json,"sc_cfs",      gSB.sc_cfs);
-    gSB.sc_cfs_srtf = parse_json_int(json,"sc_cfs_srtf", gSB.sc_cfs_srtf);
-    gSB.sc_bfs      = parse_json_int(json,"sc_bfs",      gSB.sc_bfs);
-    gSB.sc_sjf      = parse_json_int(json,"sc_sjf",      gSB.sc_sjf);
-    gSB.sc_strf     = parse_json_int(json,"sc_strf",     gSB.sc_strf);
-    gSB.sc_hrrn     = parse_json_int(json,"sc_hrrn",     gSB.sc_hrrn);
-    gSB.sc_hrrn_rt  = parse_json_int(json,"sc_hrrn_rt",  gSB.sc_hrrn_rt);
-    gSB.sc_priority = parse_json_int(json,"sc_priority", gSB.sc_priority);
-    gSB.sc_hpc_over = parse_json_int(json,"sc_hpc_over", gSB.sc_hpc_over);
-    gSB.sc_mlfq     = parse_json_int(json,"sc_mlfq",     gSB.sc_mlfq);
+    gSB.sc_fifo          = parse_json_int(json,"sc_fifo",          gSB.sc_fifo);
+    gSB.sc_rr            = parse_json_int(json,"sc_rr",            gSB.sc_rr);
+    gSB.sc_cfs           = parse_json_int(json,"sc_cfs",           gSB.sc_cfs);
+    gSB.sc_cfs_srtf      = parse_json_int(json,"sc_cfs_srtf",      gSB.sc_cfs_srtf);
+    gSB.sc_bfs           = parse_json_int(json,"sc_bfs",           gSB.sc_bfs);
+    gSB.sc_sjf           = parse_json_int(json,"sc_sjf",           gSB.sc_sjf);
+    gSB.sc_strf          = parse_json_int(json,"sc_strf",          gSB.sc_strf);
+    gSB.sc_hrrn          = parse_json_int(json,"sc_hrrn",          gSB.sc_hrrn);
+    gSB.sc_hrrn_rt       = parse_json_int(json,"sc_hrrn_rt",       gSB.sc_hrrn_rt);
+    gSB.sc_priority      = parse_json_int(json,"sc_priority",      gSB.sc_priority);
+    gSB.sc_hpc_overshadow= parse_json_int(json,"sc_hpc_overshadow",gSB.sc_hpc_overshadow);
+    gSB.sc_mlfq          = parse_json_int(json,"sc_mlfq",          gSB.sc_mlfq);
+    gSB.sc_hpc_overlay   = parse_json_int(json,"sc_hpc_overlay",   gSB.sc_hpc_overlay);
 
     gSB.basic_percent    = parse_json_double(json,"basic_percent",    gSB.basic_percent);
     gSB.normal_percent   = parse_json_double(json,"normal_percent",   gSB.normal_percent);
@@ -2725,7 +3025,7 @@ static void recompute_pass_percents(void) {
     BASIC => always unlocked
     NORMAL => unlocked if BASIC >= pass_threshold
     EXTERNAL => unlocked if NORMAL >= pass_threshold
-    MODES => unlocked if EXTERNAL >= pass_threshold
+    MODES => unlocked if NORMAL >= pass_threshold
     EDGE => unlocked if MODES >= pass_threshold
     HIDDEN => unlocked if EDGE >= pass_threshold
 */
@@ -2750,21 +3050,26 @@ static int is_suite_unlocked(scoreboard_suite_t suite) {
     }
 }
 
-/* BFS=2, HPC=2, MLFQ=2, others=1 => up to 15 points */
+/*
+   BFS=2, RR=2, SJF=2,
+   HPC overshadow=1, HPC overlay=1,
+   other standard algs=1 each, up to 15 total => scaled to 100 => then 10%.
+*/
 static int get_scheduler_points(void) {
     int points = 0;
-    if(gSB.sc_fifo)         points += 2;
-    if(gSB.sc_rr)           points += 2;
-    if(gSB.sc_cfs)          points += 1;
-    if(gSB.sc_cfs_srtf)     points += 1;
-    if(gSB.sc_bfs)          points += 1;
-    if(gSB.sc_sjf)          points += 2;
-    if(gSB.sc_strf)         points += 1;
-    if(gSB.sc_hrrn)         points += 1;
-    if(gSB.sc_hrrn_rt)      points += 1;
-    if(gSB.sc_priority)     points += 1;
-    if(gSB.sc_hpc_over)     points += 1;
-    if(gSB.sc_mlfq)         points += 1;
+    if(gSB.sc_fifo)           points += 2;
+    if(gSB.sc_rr)             points += 2;
+    if(gSB.sc_cfs)            points += 1;
+    if(gSB.sc_cfs_srtf)       points += 1;
+    if(gSB.sc_bfs)            points += 1;
+    if(gSB.sc_sjf)            points += 2;
+    if(gSB.sc_strf)           points += 1;
+    if(gSB.sc_hrrn)           points += 1;
+    if(gSB.sc_hrrn_rt)        points += 1;
+    if(gSB.sc_priority)       points += 1;
+    if(gSB.sc_hpc_overshadow) points += 1;  /* overshadow */
+    if(gSB.sc_mlfq)           points += 1;
+    if(gSB.sc_hpc_overlay)    points += 1;  /* overlay */
     return points;
 }
 
@@ -2809,7 +3114,7 @@ int scoreboard_get_final_score(void) {
     double ex = gSB.external_percent * 0.10;  /* 10%  */
 
     /* scheduling mastery => 10% portion */
-    int sched_pts = get_scheduler_points();  /* up to 15 => map to 0..100 => scaled => then 10% portion */
+    int sched_pts = get_scheduler_points();  /* up to 15 => map to 0..100 => scaled => then *0.10 */
     double sched_percent = ((double)sched_pts / 15.0) * 100.0;
     double s = sched_percent * 0.10;
 
@@ -2828,18 +3133,19 @@ int scoreboard_is_unlocked(scoreboard_suite_t suite) {
 /* Mark an algorithm as "mastered" => for scheduling mastery points */
 void scoreboard_set_sc_mastered(scheduler_alg_t alg) {
     switch(alg) {
-        case ALG_FIFO:          gSB.sc_fifo      = 1; break;
-        case ALG_RR:            gSB.sc_rr        = 1; break;
-        case ALG_CFS:           gSB.sc_cfs       = 1; break;
+        case ALG_FIFO:          gSB.sc_fifo = 1; break;
+        case ALG_RR:            gSB.sc_rr   = 1; break;
+        case ALG_CFS:           gSB.sc_cfs  = 1; break;
         case ALG_CFS_SRTF:      gSB.sc_cfs_srtf  = 1; break;
-        case ALG_BFS:           gSB.sc_bfs       = 1; break;
-        case ALG_SJF:           gSB.sc_sjf       = 1; break;
-        case ALG_STRF:          gSB.sc_strf      = 1; break;
-        case ALG_HRRN:          gSB.sc_hrrn      = 1; break;
-        case ALG_HRRN_RT:       gSB.sc_hrrn_rt   = 1; break;
-        case ALG_PRIORITY:      gSB.sc_priority  = 1; break;
-        case ALG_HPC_OVERSHADOW:gSB.sc_hpc_over  = 1; break;
-        case ALG_MLFQ:          gSB.sc_mlfq      = 1; break;
+        case ALG_BFS:           gSB.sc_bfs  = 1; break;
+        case ALG_SJF:           gSB.sc_sjf  = 1; break;
+        case ALG_STRF:          gSB.sc_strf = 1; break;
+        case ALG_HRRN:          gSB.sc_hrrn = 1; break;
+        case ALG_HRRN_RT:       gSB.sc_hrrn_rt = 1; break;
+        case ALG_PRIORITY:      gSB.sc_priority = 1; break;
+        case ALG_HPC_OVERSHADOW:gSB.sc_hpc_overshadow = 1; break;
+        case ALG_MLFQ:          gSB.sc_mlfq = 1; break;
+        case ALG_HPC_OVERLAY:   gSB.sc_hpc_overlay = 1; break;
         default:
             break;
     }
@@ -2908,9 +3214,19 @@ typedef struct {
     int hidden_total,   hidden_pass;
 
     /* Mastery flags for scheduling algorithms. */
-    int sc_fifo, sc_rr, sc_cfs, sc_cfs_srtf, sc_bfs;
-    int sc_sjf, sc_strf, sc_hrrn, sc_hrrn_rt, sc_priority;
-    int sc_hpc_over, sc_mlfq;
+    int sc_fifo;
+    int sc_rr;
+    int sc_cfs;
+    int sc_cfs_srtf;
+    int sc_bfs;
+    int sc_sjf;
+    int sc_strf;
+    int sc_hrrn;
+    int sc_hrrn_rt;
+    int sc_priority;
+    int sc_hpc_overshadow;   /* renamed from sc_hpc_over */
+    int sc_mlfq;
+    int sc_hpc_overlay;      /* newly added field */
 
     double basic_percent;
     double normal_percent;
@@ -3135,17 +3451,16 @@ void simulate_process_partial(process_t* p, unsigned long slice_ms, int core_id)
 #endif
 #include "basic-test.h"
 #include "test_common.h"
-
+#include "../src/stats.h"
 #include "../src/scheduler.h"
 #include "../src/process.h"
 #include "../src/os.h"
 #include "../src/scoreboard.h"
 #include "../src/worker.h"
-
+#include "../src/runner.h"
 #include <stdio.h>
 #include <math.h>
 
-/* Global counters for run_basic_tests() usage: */
 static int g_tests_run=0, g_tests_failed=0;
 static char g_fail_reason[256];
 
@@ -3250,7 +3565,6 @@ static bool test_cfs(void) {
 
 /*
    BFS test => disallow zero preemptions.
-   We do a "dummy run" to set BFS quantum, then run a big process => must see preemptions>=1.
 */
 static bool test_bfs(void) {
     g_tests_run++;
@@ -3277,14 +3591,14 @@ static bool test_bfs(void) {
 
     if(rep.preemptions < 1) {
         snprintf(g_fail_reason, sizeof(g_fail_reason),
-                 "test_bfs => zero preemption is NOT fine => BFS quantum=%lu => single burst=%lu => preempts=%llu => FAIL",
-                 q, (unsigned long)(q+2), (unsigned long long)rep.preemptions);
+                 "test_bfs => zero preemption => FAIL. quantum=%lu => preempts=%llu",
+                 q, (unsigned long long)rep.preemptions);
         test_set_fail_reason(g_fail_reason);
         g_tests_failed++;
         return false;
     }
 
-    /* If we get here => BFS had at least 1 preemption => pass. */
+    /* BFS had at least 1 preemption => pass. */
     scoreboard_set_sc_mastered(ALG_BFS);
     return true;
 }
@@ -3321,8 +3635,7 @@ static bool test_fifo_strict(void) {
 
     if (rep.preemptions != 0ULL) {
         snprintf(g_fail_reason, sizeof(g_fail_reason),
-                 "test_fifo_strict => mismatch => preempt=%llu",
-                 rep.preemptions);
+                 "test_fifo_strict => mismatch => preempt=%llu", rep.preemptions);
         test_set_fail_reason(g_fail_reason);
         g_tests_failed++;
         return false;
@@ -3351,15 +3664,7 @@ int basic_test_count(void) {
     return BASIC_COUNT;
 }
 
-/* Public API: get name of ith test in Basic suite */
-const char* basic_test_name(int i) {
-    if(i<0 || i>=BASIC_COUNT) return NULL;
-    return basic_tests[i].name;
-}
-
-/* Public API: run the ith single test in Basic suite.
-   pass_out=1 if test passed, else 0.
-*/
+/* Public API: run the ith single test in Basic suite. */
 void basic_test_run_single(int i, int* pass_out) {
     if(!pass_out) return;
     if(i<0 || i>=BASIC_COUNT) {
@@ -3389,6 +3694,12 @@ void run_basic_tests(int* total, int* passed){
 
     printf("\n" CLR_BOLD CLR_YELLOW "╔════════════ BASIC TESTS START ═════════════╗" CLR_RESET "\n");
     for(int i=0; i<BASIC_COUNT; i++){
+        /* Check concurrency_stop before starting next test */
+        if (skip_remaining_tests_requested()) {
+            printf(CLR_RED "[SIGTERM] => skipping remaining tests in this suite.\n" CLR_RESET);
+            break;
+        }
+
         bool ok = basic_tests[i].func();
         if(ok) {
             printf("  PASS: %s\n", basic_tests[i].name);
@@ -3401,6 +3712,13 @@ void run_basic_tests(int* total, int* passed){
 
     *total  = g_tests_run;
     *passed = g_tests_run - g_tests_failed;
+
+    /* Update scoreboard for basic suite */
+    scoreboard_update_basic(*total, *passed);
+
+    /* Also update stats so final stats are correct */
+    stats_inc_tests_passed(*passed);
+    stats_inc_tests_failed((*total) - (*passed));
 
     printf(CLR_BOLD CLR_YELLOW "╔══════════════════════════════════════════════╗\n");
     printf("║       BASIC TESTS RESULTS: %d / %d passed      ║\n", *passed, *total);
@@ -3424,12 +3742,12 @@ void basic_test_run_single(int i, int* pass_out);
 #endif
 #include "edge-test.h"
 #include "test_common.h"
-
+#include "../src/stats.h"
 #include "../src/process.h"
 #include "../src/scheduler.h"
 #include "../src/os.h"
 #include "../src/scoreboard.h"
-
+#include "../src/runner.h"
 #include <stdio.h>
 #include <math.h>
 
@@ -3461,7 +3779,6 @@ static bool test_extreme_long(void) {
         g_tests_failed++;
         return false;
     }
-    /* partial check of W/T */
     if(!almost_equal(rep.avg_wait,0.0,0.9) ||
        !almost_equal(rep.avg_turnaround,50.0,5.0))
     {
@@ -3612,6 +3929,11 @@ void run_edge_tests(int* total,int* passed){
 
     printf("\n\033[1m\033[93m╔════════════ EDGE TESTS START ═══════════╗\033[0m\n");
     for(int i=0;i<EDGE_COUNT;i++){
+        if (skip_remaining_tests_requested()) {
+            printf(CLR_RED "[SIGTERM] => skipping remaining tests in this suite.\n" CLR_RESET);
+            break;
+        }
+
         bool ok = edge_tests[i].func();
         if(ok){
             printf("  PASS: %s\n", edge_tests[i].name);
@@ -3622,6 +3944,10 @@ void run_edge_tests(int* total,int* passed){
 
     *total = g_tests_run;
     *passed= (g_tests_run - g_tests_failed);
+
+    scoreboard_update_edge(*total, *passed);
+    stats_inc_tests_passed(*passed);
+    stats_inc_tests_failed((*total)-(*passed));
 
     printf("\033[1m\033[93m╔══════════════════════════════════════════════╗\n");
     printf("║      EDGE TESTS RESULTS: %d / %d passed        ║\n", *passed, *total);
@@ -3642,7 +3968,7 @@ void edge_test_run_single(int i, int* pass_out);
 #endif
 #include "external-test.h"
 
-#include "../src/runner.h"    // for run_shell_commands_concurrently()
+#include "../src/runner.h"
 #include "../src/safe_calls_library.h"
 #include "../src/stats.h"
 #include "../src/os.h"
@@ -3654,10 +3980,7 @@ void edge_test_run_single(int i, int* pass_out);
 #include <sys/wait.h>
 
 /*
-  We'll define 12 external tests, each one tries to run the external shell
-  with a small concurrency scenario under scheduling mode i.
-
-  If the external shell binary is not found, all fail with a message.
+  We'll define 12 external tests, one for each scheduling mode.
 */
 
 static int g_tests_run_ext    = 0;
@@ -3674,39 +3997,24 @@ static int check_shell_binary(void) {
     return 1;
 }
 
-/* A small helper that actually does the concurrency run for schedule mode `m`. */
+/* Do a small concurrency scenario with a chosen scheduling mode `m`. */
 static int do_external_test_for_mode(int m) {
-    // We'll do a short concurrency scenario: 2 shell commands, 1 core.
-    // The "sleep" commands must be typed into the shell.
-    // run_shell_commands_concurrently(count=2, lines=..., coreCount=1, mode=m, allModes=0)
-    // If it runs without error or SIGTERM, we consider it "pass".
-    // We'll also do HPC-OVER (mode=10), which just spawns HPC overshadow.
-    // The underlying runner checks if the shell is missing or not.
-    // We'll interpret "pass" if we do not forcibly SIGKILL or error out.
-
-    // We'll create 2 lines:
     char* lines[2];
     lines[0] = strdup("sleep 1");
     lines[1] = strdup("sleep 2");
 
-    // Clear concurrency stop flag first
     set_os_concurrency_stop_flag(0);
 
-    // We'll run it. If the shell is missing, the code prints an error,
-    // but we won't directly have a runtime "error" code. We'll assume we can detect that in check_shell_binary() above.
+    /* Single core => mode=m => short test */
     run_shell_commands_concurrently(2, lines, /*coreCount=*/1, m, /*allModes=*/0);
 
     free(lines[0]);
     free(lines[1]);
-
-    // We do not have a perfect "success/fail" signal from run_shell_commands_concurrently,
-    // but if we didn't see that the shell was missing (check_shell_binary()) and didn't forcibly SIGTERM,
-    // let's consider it "pass".
-    return 1;
+    return 1; /* We'll treat it as pass unless the shell is missing. */
 }
 
 /*
-  We define each of the 12 test functions:
+  Each of the 12 test functions
 */
 static int test_schedule_mode_0_fifo(void)          { return do_external_test_for_mode(0); }
 static int test_schedule_mode_1_rr(void)            { return do_external_test_for_mode(1); }
@@ -3721,7 +4029,6 @@ static int test_schedule_mode_9_priority(void)      { return do_external_test_fo
 static int test_schedule_mode_10_hpc_over(void)     { return do_external_test_for_mode(10); }
 static int test_schedule_mode_11_mlfq(void)         { return do_external_test_for_mode(11); }
 
-/* We'll store them in an array for convenience. */
 typedef int (*ext_test_fn)(void);
 static ext_test_fn external_test_fns[12] = {
     test_schedule_mode_0_fifo,
@@ -3753,25 +4060,20 @@ static const char* external_test_names[12] = {
     "MLFQ"
 };
 
-/* We expose external_test_count=12. */
 int external_test_count(void) {
     return 12;
 }
 
-/* Single test run => i in [0..11]. */
 void external_test_run_single(int i, int* pass_out) {
     if(!pass_out) return;
     if(i<0 || i>=12) {
         *pass_out=0;
         return;
     }
-
-    // Start from no fail reason:
+    g_tests_run_ext++;
     g_fail_reason[0] = '\0';
 
-    g_tests_run_ext++;
     if(!check_shell_binary()) {
-        // If the shell is missing, test fails
         g_tests_failed_ext++;
         *pass_out = 0;
         return;
@@ -3786,25 +4088,28 @@ void external_test_run_single(int i, int* pass_out) {
 }
 
 /*
-   run_external_tests(&total, &passed) => runs all 12 tests in a row,
-   printing pass/fail lines, then prints final summary.
+  run_external_tests(&total, &passed) => runs all 12 tests in a row.
 */
 void run_external_tests(int* total, int* passed) {
     if(!total || !passed) return;
 
-    // reset counters
     g_tests_run_ext    = 0;
     g_tests_failed_ext = 0;
     g_fail_reason[0]   = '\0';
 
     printf("\n" CLR_BOLD CLR_YELLOW "╔════════════ EXTERNAL TESTS START ═══════════╗" CLR_RESET "\n");
-
-    // For i=0..11
     int count = external_test_count();
+
     for(int i=0; i<count; i++){
+        if (skip_remaining_tests_requested()) {
+            printf(CLR_RED "[SIGTERM] => skipping remaining tests in this suite.\n" CLR_RESET);
+            break;
+        }
+
         int pass = 0;
         external_test_run_single(i, &pass);
         const char* name = external_test_names[i];
+
         if(pass) {
             printf("  PASS: %s\n", name);
         } else {
@@ -3816,9 +4121,14 @@ void run_external_tests(int* total, int* passed) {
         }
     }
 
-    // finalize
     *total  = g_tests_run_ext;
     *passed = g_tests_run_ext - g_tests_failed_ext;
+
+    /* update scoreboard */
+    scoreboard_update_external(*total, *passed);
+    /* also update global stats */
+    stats_inc_tests_passed(*passed);
+    stats_inc_tests_failed((*total)-(*passed));
 
     printf(CLR_BOLD CLR_YELLOW "╔══════════════════════════════════════════════╗\n");
     printf("║   EXTERNAL TESTS RESULTS: %d / %d passed       ║\n", *passed, *total);
@@ -3852,12 +4162,12 @@ void external_test_run_single(int i, int* pass_out);
 #endif
 #include "hidden-test.h"
 #include "test_common.h"
-
+#include "../src/runner.h"
 #include "../src/os.h"
 #include "../src/scheduler.h"
 #include "../src/process.h"
 #include "../src/scoreboard.h"
-
+#include "../src/stats.h"
 #include <stdio.h>
 #include <math.h>
 
@@ -4046,6 +4356,11 @@ void run_hidden_tests(int* total,int* passed){
 
     printf("\n\033[1m\033[93m╔══════════ HIDDEN TESTS START ══════════╗\033[0m\n");
     for(int i=0;i<HIDDEN_COUNT;i++){
+        if (skip_remaining_tests_requested()) {
+            printf(CLR_RED "[SIGTERM] => skipping remaining tests in this suite.\n" CLR_RESET);
+            break;
+        }
+
         bool ok = hidden_tests[i].func();
         if(ok){
             printf("  PASS: %s\n", hidden_tests[i].name);
@@ -4056,6 +4371,10 @@ void run_hidden_tests(int* total,int* passed){
 
     *total = g_tests_run;
     *passed= (g_tests_run - g_tests_failed);
+
+    scoreboard_update_hidden(*total, *passed);
+    stats_inc_tests_passed(*passed);
+    stats_inc_tests_failed((*total)-(*passed));
 
     printf("\033[1m\033[93m╔══════════════════════════════════════════════╗\n");
     printf("║      HIDDEN TESTS RESULTS: %d / %d passed      ║\n", *passed, *total);
@@ -4075,12 +4394,12 @@ void hidden_test_run_single(int i, int* pass_out);
 #endif
 #include "modes-test.h"
 #include "test_common.h"
-
+#include "../src/runner.h"
 #include "../src/scheduler.h"
 #include "../src/os.h"
 #include "../src/process.h"
 #include "../src/scoreboard.h"
-
+#include "../src/stats.h"
 #include <stdio.h>
 #include <math.h>
 
@@ -4273,6 +4592,11 @@ void run_modes_tests(int* total, int* passed) {
 
     printf("\n\033[1m\033[93m╔══════════ MODES TESTS START ══════════╗\033[0m\n");
     for(int i=0; i<MODES_COUNT; i++){
+        if (skip_remaining_tests_requested()) {
+            printf(CLR_RED "[SIGTERM] => skipping remaining tests in this suite.\n" CLR_RESET);
+            break;
+        }
+
         bool ok = modes_tests[i].func();
         if(ok){
             printf("  PASS: %s\n", modes_tests[i].name);
@@ -4283,6 +4607,10 @@ void run_modes_tests(int* total, int* passed) {
 
     *total  = g_tests_run;
     *passed = (g_tests_run - g_tests_failed);
+
+    scoreboard_update_modes(*total, *passed);
+    stats_inc_tests_passed(*passed);
+    stats_inc_tests_failed((*total) - (*passed));
 
     printf("\033[1m\033[93m╔══════════════════════════════════════════════╗\n");
     printf("║       MODES TESTS RESULTS: %d / %d passed       ║\n", *passed, *total);
@@ -4303,12 +4631,12 @@ void modes_test_run_single(int i, int* pass_out);
 #endif
 #include "normal-test.h"
 #include "test_common.h"
-
+#include "../src/runner.h"
 #include "../src/scheduler.h"
 #include "../src/process.h"
 #include "../src/os.h"
 #include "../src/scoreboard.h"
-
+#include "../src/stats.h"
 #include <stdio.h>
 #include <math.h>
 
@@ -4445,7 +4773,6 @@ static bool test_priority(void) {
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    /* just approximate check. expect no preemptions, some wait~2, TAT~4 */
     if(rep.preemptions!=0ULL ||
        !almost_equal(rep.avg_wait, 2.0, 1.0) ||
        !almost_equal(rep.avg_turnaround,4.0,1.0))
@@ -4558,6 +4885,11 @@ void run_normal_tests(int* total,int* passed) {
 
     printf("\n\033[1m\033[93m╔══════════ NORMAL TESTS START ══════════╗\033[0m\n");
     for(int i=0; i<NORMAL_COUNT; i++) {
+        if (skip_remaining_tests_requested()) {
+            printf(CLR_RED "[SIGTERM] => skipping remaining tests in this suite.\n" CLR_RESET);
+            break;
+        }
+
         bool ok = normal_tests[i].func();
         if(ok){
             printf("  PASS: %s\n", normal_tests[i].name);
@@ -4568,6 +4900,10 @@ void run_normal_tests(int* total,int* passed) {
 
     *total  = g_tests_run;
     *passed = (g_tests_run - g_tests_failed);
+
+    scoreboard_update_normal(*total, *passed);
+    stats_inc_tests_passed(*passed);
+    stats_inc_tests_failed((*total) - (*passed));
 
     printf("\033[1m\033[93m╔══════════════════════════════════════════════╗\n");
     printf("║      NORMAL TESTS RESULTS: %d / %d passed       ║\n", *passed, *total);
@@ -4610,64 +4946,8 @@ const char* test_get_fail_reason(void) {
         return "???";
     }
     return g_fail_reason;
-}
-
-static ssize_t read_all_fd(int fd, char* buf, size_t cap) {
-    size_t used = 0;
-    while(used + 1 < cap) {
-        ssize_t r = read(fd, buf + used, cap - 1 - used);
-        if(r < 0 && errno == EINTR) continue;
-        if(r <= 0) break;
-        used += (size_t)r;
-    }
-    buf[used] = '\0';
-    return (ssize_t)used;
-}
-
-int run_function_capture_output(void(*fn)(void), struct captured_output* out) {
-    if(!fn || !out) return -1;
-    int p_out[2], p_err[2];
-    if(pipe(p_out)==-1 || pipe(p_err)==-1) return -1;
-    int save_out = dup(STDOUT_FILENO);
-    int save_err = dup(STDERR_FILENO);
-    if(save_out<0 || save_err<0) return -1;
-
-    pid_t c = fork();
-    if(c<0) {
-        return -1;
-    }
-    if(c==0) {
-        close(p_out[0]);
-        close(p_err[0]);
-        dup2(p_out[1], STDOUT_FILENO);
-        dup2(p_err[1], STDERR_FILENO);
-        close(p_out[1]);
-        close(p_err[1]);
-
-        fn();
-        _exit(0);
-    } else {
-        close(p_out[1]);
-        close(p_err[1]);
-        read_all_fd(p_out[0], out->stdout_buf, sizeof(out->stdout_buf));
-        read_all_fd(p_err[0], out->stderr_buf, sizeof(out->stderr_buf));
-        close(p_out[0]);
-        close(p_err[0]);
-
-        dup2(save_out, STDOUT_FILENO);
-        dup2(save_err, STDERR_FILENO);
-        close(save_out);
-        close(save_err);
-
-        int st=0;
-        waitpid(c,&st,0);
-        return st;
-    }
-    return 0;
-}
-#ifndef TEST_COMMON_H
+}#ifndef TEST_COMMON_H
 #define TEST_COMMON_H
-
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -4689,10 +4969,4 @@ struct captured_output {
   char stdout_buf[8192];
   char stderr_buf[8192];
 };
-
-/*
-  run_function_capture_output():
-    Creates pipes, forks, runs fn() in child, captures output in out.
-*/
-int run_function_capture_output(void(*fn)(void), struct captured_output* out);
 #endif

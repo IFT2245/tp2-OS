@@ -1,16 +1,15 @@
 #include "basic-test.h"
 #include "test_common.h"
-
+#include "../src/stats.h"
 #include "../src/scheduler.h"
 #include "../src/process.h"
 #include "../src/os.h"
 #include "../src/scoreboard.h"
 #include "../src/worker.h"
-
+#include "../src/runner.h"
 #include <stdio.h>
 #include <math.h>
 
-/* Global counters for run_basic_tests() usage: */
 static int g_tests_run=0, g_tests_failed=0;
 static char g_fail_reason[256];
 
@@ -115,7 +114,6 @@ static bool test_cfs(void) {
 
 /*
    BFS test => disallow zero preemptions.
-   We do a "dummy run" to set BFS quantum, then run a big process => must see preemptions>=1.
 */
 static bool test_bfs(void) {
     g_tests_run++;
@@ -142,14 +140,14 @@ static bool test_bfs(void) {
 
     if(rep.preemptions < 1) {
         snprintf(g_fail_reason, sizeof(g_fail_reason),
-                 "test_bfs => zero preemption is NOT fine => BFS quantum=%lu => single burst=%lu => preempts=%llu => FAIL",
-                 q, (unsigned long)(q+2), (unsigned long long)rep.preemptions);
+                 "test_bfs => zero preemption => FAIL. quantum=%lu => preempts=%llu",
+                 q, (unsigned long long)rep.preemptions);
         test_set_fail_reason(g_fail_reason);
         g_tests_failed++;
         return false;
     }
 
-    /* If we get here => BFS had at least 1 preemption => pass. */
+    /* BFS had at least 1 preemption => pass. */
     scoreboard_set_sc_mastered(ALG_BFS);
     return true;
 }
@@ -186,8 +184,7 @@ static bool test_fifo_strict(void) {
 
     if (rep.preemptions != 0ULL) {
         snprintf(g_fail_reason, sizeof(g_fail_reason),
-                 "test_fifo_strict => mismatch => preempt=%llu",
-                 rep.preemptions);
+                 "test_fifo_strict => mismatch => preempt=%llu", rep.preemptions);
         test_set_fail_reason(g_fail_reason);
         g_tests_failed++;
         return false;
@@ -216,15 +213,7 @@ int basic_test_count(void) {
     return BASIC_COUNT;
 }
 
-/* Public API: get name of ith test in Basic suite */
-const char* basic_test_name(int i) {
-    if(i<0 || i>=BASIC_COUNT) return NULL;
-    return basic_tests[i].name;
-}
-
-/* Public API: run the ith single test in Basic suite.
-   pass_out=1 if test passed, else 0.
-*/
+/* Public API: run the ith single test in Basic suite. */
 void basic_test_run_single(int i, int* pass_out) {
     if(!pass_out) return;
     if(i<0 || i>=BASIC_COUNT) {
@@ -254,6 +243,12 @@ void run_basic_tests(int* total, int* passed){
 
     printf("\n" CLR_BOLD CLR_YELLOW "╔════════════ BASIC TESTS START ═════════════╗" CLR_RESET "\n");
     for(int i=0; i<BASIC_COUNT; i++){
+        /* Check concurrency_stop before starting next test */
+        if (skip_remaining_tests_requested()) {
+            printf(CLR_RED "[SIGTERM] => skipping remaining tests in this suite.\n" CLR_RESET);
+            break;
+        }
+
         bool ok = basic_tests[i].func();
         if(ok) {
             printf("  PASS: %s\n", basic_tests[i].name);
@@ -266,6 +261,13 @@ void run_basic_tests(int* total, int* passed){
 
     *total  = g_tests_run;
     *passed = g_tests_run - g_tests_failed;
+
+    /* Update scoreboard for basic suite */
+    scoreboard_update_basic(*total, *passed);
+
+    /* Also update stats so final stats are correct */
+    stats_inc_tests_passed(*passed);
+    stats_inc_tests_failed((*total) - (*passed));
 
     printf(CLR_BOLD CLR_YELLOW "╔══════════════════════════════════════════════╗\n");
     printf("║       BASIC TESTS RESULTS: %d / %d passed      ║\n", *passed, *total);

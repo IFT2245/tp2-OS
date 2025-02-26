@@ -1,11 +1,7 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include "safe_calls_library.h"
 
-/* ----------------------------------------------------------------
-   MAIN
-   ----------------------------------------------------------------
-*/
+//   MAIN.C
+#include "menu.h"
+
 int main(const int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -27,4 +23,39 @@ int main(const int argc, char** argv) {
     cleanup_and_exit(fs);
     /* No code below here is reachable. */
     return 0;
+}
+
+/* ----------------------------------------------------------------
+   SHARED UTILS
+   ----------------------------------------------------------------
+*/
+void pause_enter(void) {
+    printf(CLR_CYAN CLR_BOLD "\nPress ENTER to continue..." CLR_RESET);
+    fflush(stdout);
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF) {
+        /* discard leftover */
+    }
+}
+
+ssize_t read_line(char *buf, const size_t sz) {
+    if (os_concurrency_stop_requested()) {
+        /* If a stop is requested, return 0 so that callers can decide to exit or skip. */
+        return 0;
+    }
+
+    if (buf == NULL || sz == 0 || sz > INT_MAX) {
+        return 0;
+    }
+
+    if (fgets(buf, (int)sz, stdin) == NULL) {
+        if (ferror(stdin)) {
+            clearerr(stdin);
+        }
+        return 0;
+    }
+
+    size_t newline_pos = strcspn(buf, "\n");
+    buf[newline_pos] = '\0';
+    return 1;
 }

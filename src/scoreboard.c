@@ -5,7 +5,7 @@
 #include <sys/stat.h>
 
 /*
- * scoreboard.c => Implementation with new weighting:
+ * scoreboard.c => Implementation with weighting:
  *   BASIC      => 25%
  *   NORMAL     => 25%
  *   MODES      => 10%
@@ -13,21 +13,17 @@
  *   HIDDEN     => 10%
  *   EXTERNAL   => 10%
  *   SCHED MAST => 10%
- *
- * The sum is 100% across 7 categories.
- * Scheduling mastery is scored from up to 15 points, scaled to 0..100,
- * then that result is multiplied by 10% (0.10) for final contribution.
  */
 
 /* Global scoreboard structure */
 static scoreboard_t gSB = {
     /* test totals and passes: */
     0,0, 0,0, 0,0, 0,0, 0,0, 0,0,
-    /* scheduling mastery flags: */
-    0,0,0,0,0, 0,0,0,0,0,0,0,
-    /* computed percentages for each suite: */
+    /* scheduling mastery flags (FIFO, RR, CFS, etc.) */
+    0,0,0,0,0, 0,0,0,0,0, 0,0, 0,
+    /* computed percentages */
     0.0,0.0,0.0,0.0,0.0,0.0,
-    /* pass threshold (e.g. 60.0) */
+    /* pass threshold */
     60.0
 };
 
@@ -111,18 +107,20 @@ static void write_scoreboard_json(const scoreboard_t* sb) {
     fprintf(f, "  \"hidden_pass\": %d,\n",    sb->hidden_pass);
 
     /* schedule mastery flags */
-    fprintf(f, "  \"sc_fifo\": %d,\n",      sb->sc_fifo);
-    fprintf(f, "  \"sc_rr\": %d,\n",        sb->sc_rr);
-    fprintf(f, "  \"sc_cfs\": %d,\n",       sb->sc_cfs);
-    fprintf(f, "  \"sc_cfs_srtf\": %d,\n",  sb->sc_cfs_srtf);
-    fprintf(f, "  \"sc_bfs\": %d,\n",       sb->sc_bfs);
-    fprintf(f, "  \"sc_sjf\": %d,\n",       sb->sc_sjf);
-    fprintf(f, "  \"sc_strf\": %d,\n",      sb->sc_strf);
-    fprintf(f, "  \"sc_hrrn\": %d,\n",      sb->sc_hrrn);
-    fprintf(f, "  \"sc_hrrn_rt\": %d,\n",   sb->sc_hrrn_rt);
-    fprintf(f, "  \"sc_priority\": %d,\n",  sb->sc_priority);
-    fprintf(f, "  \"sc_hpc_over\": %d,\n",  sb->sc_hpc_over);
-    fprintf(f, "  \"sc_mlfq\": %d,\n",      sb->sc_mlfq);
+    fprintf(f, "  \"sc_fifo\": %d,\n",       sb->sc_fifo);
+    fprintf(f, "  \"sc_rr\": %d,\n",         sb->sc_rr);
+    fprintf(f, "  \"sc_cfs\": %d,\n",        sb->sc_cfs);
+    fprintf(f, "  \"sc_cfs_srtf\": %d,\n",   sb->sc_cfs_srtf);
+    fprintf(f, "  \"sc_bfs\": %d,\n",        sb->sc_bfs);
+    fprintf(f, "  \"sc_sjf\": %d,\n",        sb->sc_sjf);
+    fprintf(f, "  \"sc_strf\": %d,\n",       sb->sc_strf);
+    fprintf(f, "  \"sc_hrrn\": %d,\n",       sb->sc_hrrn);
+    fprintf(f, "  \"sc_hrrn_rt\": %d,\n",    sb->sc_hrrn_rt);
+    fprintf(f, "  \"sc_priority\": %d,\n",   sb->sc_priority);
+    fprintf(f, "  \"sc_hpc_overshadow\": %d,\n", sb->sc_hpc_overshadow);
+    fprintf(f, "  \"sc_mlfq\": %d,\n",       sb->sc_mlfq);
+    /* new HPC overlay field */
+    fprintf(f, "  \"sc_hpc_overlay\": %d,\n", sb->sc_hpc_overlay);
 
     /* percentages */
     fprintf(f, "  \"basic_percent\": %.3f,\n",    sb->basic_percent);
@@ -161,18 +159,19 @@ void scoreboard_load(void) {
     gSB.hidden_total   = parse_json_int(json,"hidden_total",   gSB.hidden_total);
     gSB.hidden_pass    = parse_json_int(json,"hidden_pass",    gSB.hidden_pass);
 
-    gSB.sc_fifo     = parse_json_int(json,"sc_fifo",     gSB.sc_fifo);
-    gSB.sc_rr       = parse_json_int(json,"sc_rr",       gSB.sc_rr);
-    gSB.sc_cfs      = parse_json_int(json,"sc_cfs",      gSB.sc_cfs);
-    gSB.sc_cfs_srtf = parse_json_int(json,"sc_cfs_srtf", gSB.sc_cfs_srtf);
-    gSB.sc_bfs      = parse_json_int(json,"sc_bfs",      gSB.sc_bfs);
-    gSB.sc_sjf      = parse_json_int(json,"sc_sjf",      gSB.sc_sjf);
-    gSB.sc_strf     = parse_json_int(json,"sc_strf",     gSB.sc_strf);
-    gSB.sc_hrrn     = parse_json_int(json,"sc_hrrn",     gSB.sc_hrrn);
-    gSB.sc_hrrn_rt  = parse_json_int(json,"sc_hrrn_rt",  gSB.sc_hrrn_rt);
-    gSB.sc_priority = parse_json_int(json,"sc_priority", gSB.sc_priority);
-    gSB.sc_hpc_over = parse_json_int(json,"sc_hpc_over", gSB.sc_hpc_over);
-    gSB.sc_mlfq     = parse_json_int(json,"sc_mlfq",     gSB.sc_mlfq);
+    gSB.sc_fifo          = parse_json_int(json,"sc_fifo",          gSB.sc_fifo);
+    gSB.sc_rr            = parse_json_int(json,"sc_rr",            gSB.sc_rr);
+    gSB.sc_cfs           = parse_json_int(json,"sc_cfs",           gSB.sc_cfs);
+    gSB.sc_cfs_srtf      = parse_json_int(json,"sc_cfs_srtf",      gSB.sc_cfs_srtf);
+    gSB.sc_bfs           = parse_json_int(json,"sc_bfs",           gSB.sc_bfs);
+    gSB.sc_sjf           = parse_json_int(json,"sc_sjf",           gSB.sc_sjf);
+    gSB.sc_strf          = parse_json_int(json,"sc_strf",          gSB.sc_strf);
+    gSB.sc_hrrn          = parse_json_int(json,"sc_hrrn",          gSB.sc_hrrn);
+    gSB.sc_hrrn_rt       = parse_json_int(json,"sc_hrrn_rt",       gSB.sc_hrrn_rt);
+    gSB.sc_priority      = parse_json_int(json,"sc_priority",      gSB.sc_priority);
+    gSB.sc_hpc_overshadow= parse_json_int(json,"sc_hpc_overshadow",gSB.sc_hpc_overshadow);
+    gSB.sc_mlfq          = parse_json_int(json,"sc_mlfq",          gSB.sc_mlfq);
+    gSB.sc_hpc_overlay   = parse_json_int(json,"sc_hpc_overlay",   gSB.sc_hpc_overlay);
 
     gSB.basic_percent    = parse_json_double(json,"basic_percent",    gSB.basic_percent);
     gSB.normal_percent   = parse_json_double(json,"normal_percent",   gSB.normal_percent);
@@ -224,7 +223,7 @@ static void recompute_pass_percents(void) {
     BASIC => always unlocked
     NORMAL => unlocked if BASIC >= pass_threshold
     EXTERNAL => unlocked if NORMAL >= pass_threshold
-    MODES => unlocked if EXTERNAL >= pass_threshold
+    MODES => unlocked if NORMAL >= pass_threshold
     EDGE => unlocked if MODES >= pass_threshold
     HIDDEN => unlocked if EDGE >= pass_threshold
 */
@@ -249,21 +248,26 @@ static int is_suite_unlocked(scoreboard_suite_t suite) {
     }
 }
 
-/* BFS=2, HPC=2, MLFQ=2, others=1 => up to 15 points */
+/*
+   BFS=2, RR=2, SJF=2,
+   HPC overshadow=1, HPC overlay=1,
+   other standard algs=1 each, up to 15 total => scaled to 100 => then 10%.
+*/
 static int get_scheduler_points(void) {
     int points = 0;
-    if(gSB.sc_fifo)         points += 2;
-    if(gSB.sc_rr)           points += 2;
-    if(gSB.sc_cfs)          points += 1;
-    if(gSB.sc_cfs_srtf)     points += 1;
-    if(gSB.sc_bfs)          points += 1;
-    if(gSB.sc_sjf)          points += 2;
-    if(gSB.sc_strf)         points += 1;
-    if(gSB.sc_hrrn)         points += 1;
-    if(gSB.sc_hrrn_rt)      points += 1;
-    if(gSB.sc_priority)     points += 1;
-    if(gSB.sc_hpc_over)     points += 1;
-    if(gSB.sc_mlfq)         points += 1;
+    if(gSB.sc_fifo)           points += 2;
+    if(gSB.sc_rr)             points += 2;
+    if(gSB.sc_cfs)            points += 1;
+    if(gSB.sc_cfs_srtf)       points += 1;
+    if(gSB.sc_bfs)            points += 1;
+    if(gSB.sc_sjf)            points += 2;
+    if(gSB.sc_strf)           points += 1;
+    if(gSB.sc_hrrn)           points += 1;
+    if(gSB.sc_hrrn_rt)        points += 1;
+    if(gSB.sc_priority)       points += 1;
+    if(gSB.sc_hpc_overshadow) points += 1;  /* overshadow */
+    if(gSB.sc_mlfq)           points += 1;
+    if(gSB.sc_hpc_overlay)    points += 1;  /* overlay */
     return points;
 }
 
@@ -308,7 +312,7 @@ int scoreboard_get_final_score(void) {
     double ex = gSB.external_percent * 0.10;  /* 10%  */
 
     /* scheduling mastery => 10% portion */
-    int sched_pts = get_scheduler_points();  /* up to 15 => map to 0..100 => scaled => then 10% portion */
+    int sched_pts = get_scheduler_points();  /* up to 15 => map to 0..100 => scaled => then *0.10 */
     double sched_percent = ((double)sched_pts / 15.0) * 100.0;
     double s = sched_percent * 0.10;
 
@@ -327,18 +331,19 @@ int scoreboard_is_unlocked(scoreboard_suite_t suite) {
 /* Mark an algorithm as "mastered" => for scheduling mastery points */
 void scoreboard_set_sc_mastered(scheduler_alg_t alg) {
     switch(alg) {
-        case ALG_FIFO:          gSB.sc_fifo      = 1; break;
-        case ALG_RR:            gSB.sc_rr        = 1; break;
-        case ALG_CFS:           gSB.sc_cfs       = 1; break;
+        case ALG_FIFO:          gSB.sc_fifo = 1; break;
+        case ALG_RR:            gSB.sc_rr   = 1; break;
+        case ALG_CFS:           gSB.sc_cfs  = 1; break;
         case ALG_CFS_SRTF:      gSB.sc_cfs_srtf  = 1; break;
-        case ALG_BFS:           gSB.sc_bfs       = 1; break;
-        case ALG_SJF:           gSB.sc_sjf       = 1; break;
-        case ALG_STRF:          gSB.sc_strf      = 1; break;
-        case ALG_HRRN:          gSB.sc_hrrn      = 1; break;
-        case ALG_HRRN_RT:       gSB.sc_hrrn_rt   = 1; break;
-        case ALG_PRIORITY:      gSB.sc_priority  = 1; break;
-        case ALG_HPC_OVERSHADOW:gSB.sc_hpc_over  = 1; break;
-        case ALG_MLFQ:          gSB.sc_mlfq      = 1; break;
+        case ALG_BFS:           gSB.sc_bfs  = 1; break;
+        case ALG_SJF:           gSB.sc_sjf  = 1; break;
+        case ALG_STRF:          gSB.sc_strf = 1; break;
+        case ALG_HRRN:          gSB.sc_hrrn = 1; break;
+        case ALG_HRRN_RT:       gSB.sc_hrrn_rt = 1; break;
+        case ALG_PRIORITY:      gSB.sc_priority = 1; break;
+        case ALG_HPC_OVERSHADOW:gSB.sc_hpc_overshadow = 1; break;
+        case ALG_MLFQ:          gSB.sc_mlfq = 1; break;
+        case ALG_HPC_OVERLAY:   gSB.sc_hpc_overlay = 1; break;
         default:
             break;
     }
