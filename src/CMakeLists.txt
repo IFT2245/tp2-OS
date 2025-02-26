@@ -13,17 +13,24 @@ add_executable(main
         runner.c
         runner.h
         safe_calls_library.c
+        safe_calls_library.h
         ../test/basic-test.c
+        ../test/basic-test.h
         ../test/normal-test.c
+        ../test/normal-test.h
         ../test/modes-test.c
+        ../test/modes-test.h
         ../test/edge-test.c
+        ../test/edge-test.h
         ../test/hidden-test.c
+        ../test/hidden-test.h
         ../test/external-test.c
+        ../test/external-test.h
+        ../test/test_common.h
         ../test/test_common.c
         stats.h
         stats.c
         main.c
-        main.h
         scoreboard.c
         scoreboard.h
         menu.c

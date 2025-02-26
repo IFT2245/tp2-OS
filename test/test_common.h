@@ -28,23 +28,4 @@ struct captured_output {
     Creates pipes, forks, runs fn() in child, captures output in out.
 */
 int run_function_capture_output(void(*fn)(void), struct captured_output* out);
-
-/* A macro for test function definitions. */
-#define TEST(name) static bool test_##name(void)
-
-/* RUN_TEST macro to unify pass/fail printing. */
-#define RUN_TEST(name) do {                          \
-bool ok = test_##name();                             \
-tests_run++;                                         \
-if(!ok){                                             \
-tests_failed++;                                      \
-printf("  %s " CLR_GRAY "%s" CLR_RESET "%s%s%s\n",   \
-test_failed ? "✘" : "✔",                             \
-#name,                                               \
-test_failed ? " => " CLR_RED : "",                   \
-test_failed ? test_get_fail_reason() : "",           \
-test_failed ? CLR_RESET : "");                       \
-}                                                    \
-} while(0)
-
 #endif

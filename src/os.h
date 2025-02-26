@@ -7,13 +7,14 @@
   OS-level stubs and abstractions:
    - ephemeral containers
    - HPC overshadow
+   - HPC overlay (newly added)
    - pipeline
    - distributed example
    - time logging for user display logs
-   - concurrency stop check (used by SIGTERM)
+   - concurrency stop check
 */
 
-/* Sets the concurrency stop flag (e.g. after or SIGTERM). */
+/* Sets the concurrency stop flag (e.g. after SIGTERM). */
 void set_os_concurrency_stop_flag(int val);
 
 /* Returns if concurrency stop was requested. */
@@ -35,8 +36,11 @@ void os_log(const char* msg);
 void os_create_ephemeral_container(void);
 void os_remove_ephemeral_container(void);
 
-/* HPC overshadow => spawns multiple CPU-bound threads to demonstrate concurrency. */
+/* HPC overshadow => spawns multiple (4) CPU-bound threads to demonstrate concurrency. */
 void os_run_hpc_overshadow(void);
+
+/* HPC overlay => spawns fewer (2) CPU-bound threads, a different HPC demonstration. */
+void os_run_hpc_overlay(void);
 
 /* Pipeline example => fork a child, show pipeline start/end with ASCII. */
 void os_pipeline_example(void);

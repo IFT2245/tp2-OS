@@ -19,7 +19,8 @@ void ready_queue_destroy(void);
 /* Push a process into the queue. (thread-safe) */
 void ready_queue_push(process_t* proc);
 
-/* Pop a process from the queue. (thread-safe, blocks if empty) */
+/* Pop a process from the queue. (thread-safe, blocks if empty).
+   Returns NULL if a sentinel is pushed or if the queue is ended. */
 process_t* ready_queue_pop(void);
 
 /* Returns the current size. (thread-safe) */

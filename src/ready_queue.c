@@ -6,22 +6,35 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 /* We'll keep up to 10 MLFQ levels. */
 #define MLFQ_MAX_QUEUES 10
 
+/*
+   We implement optional *aging* for MLFQ:
+   If a process remains in a lower queue for more than MLFQ_AGING_MS
+   (in simulated time), we promote it up one level.
+*/
+#define MLFQ_AGING_MS  10
+
+/*
+   A single node in our queue/linked-list.
+   If proc == NULL, it is a "sentinel" node that signals termination.
+*/
 typedef struct node_s {
     process_t*       proc;
+    uint64_t         enqueued_sim_time;
     struct node_s*   next;
 } node_t;
 
 /*
-  We store everything in a single static struct 'gQ' with:
-  - sentinel for main list
-  - ml_queues[] for MLFQ
-  - size
-  - chosen alg
-  - locks/conds
+   The global queue structure with:
+   - sentinel for normal single-queue algorithms
+   - ml_queues[] for MLFQ
+   - size
+   - chosen alg
+   - locks/conds
 */
 static struct {
     node_t           sentinel;
@@ -29,16 +42,13 @@ static struct {
     pthread_mutex_t  m;
     pthread_cond_t   c;
     scheduler_alg_t  alg;
+    /* The MLFQ queues (0=highest priority, MLFQ_MAX_QUEUES-1=lowest) */
     node_t           ml_queues[MLFQ_MAX_QUEUES];
 } gQ;
 
-/* Helper accessors for mutex/cond. */
+/* Helper for mutex/cond. */
 static pthread_mutex_t* pm(void) { return &gQ.m; }
 static pthread_cond_t*  pc(void) { return &gQ.c; }
-
-/*
- * Some local static push/pop functions for each scheduling approach.
- */
 
 /* ---------- Linked-list queue basics ---------- */
 static process_t* pop_head(void) {
@@ -46,6 +56,8 @@ static process_t* pop_head(void) {
     if (!head) return NULL;
     gQ.sentinel.next = head->next;
     gQ.size--;
+
+    /* If this is a sentinel node => return NULL so the thread can exit. */
     process_t* p = head->proc;
     free(head);
     return p;
@@ -54,6 +66,7 @@ static process_t* pop_head(void) {
 static void push_tail(process_t* p) {
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
+    n->enqueued_sim_time = get_global_sim_time();
     n->next = NULL;
     node_t* cur = &gQ.sentinel;
     while (cur->next) {
@@ -67,9 +80,11 @@ static void push_tail(process_t* p) {
 static void push_priority(process_t* p) {
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
+    n->enqueued_sim_time = get_global_sim_time();
     n->next = NULL;
 
     node_t* cur = &gQ.sentinel;
+    /* smaller priority => earlier in the list */
     while (cur->next && (p->priority >= cur->next->proc->priority)) {
         cur = cur->next;
     }
@@ -82,6 +97,7 @@ static void push_priority(process_t* p) {
 static void push_cfs(process_t* p) {
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
+    n->enqueued_sim_time = get_global_sim_time();
     n->next = NULL;
 
     node_t* cur = &gQ.sentinel;
@@ -97,6 +113,7 @@ static void push_cfs(process_t* p) {
 static void push_sjf(process_t* p) {
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
+    n->enqueued_sim_time = get_global_sim_time();
     n->next = NULL;
 
     node_t* cur = &gQ.sentinel;
@@ -108,7 +125,7 @@ static void push_sjf(process_t* p) {
     gQ.size++;
 }
 
-/* Helper for HRRN. ratio = (wait + remain). Higher => schedule sooner. */
+/* Helper for HRRN ratio: (wait + remain). Higher => schedule first. */
 static uint64_t hrrn_val(process_t* p, uint64_t now) {
     uint64_t wait   = (now > p->arrival_time) ? (now - p->arrival_time) : 0ULL;
     uint64_t remain = (p->remaining_time > 0) ? p->remaining_time : 1ULL;
@@ -116,17 +133,17 @@ static uint64_t hrrn_val(process_t* p, uint64_t now) {
 }
 
 static void push_hrrn(process_t* p, int preemptive) {
-    (void)preemptive; /* not used for the insertion itself */
-
+    (void)preemptive; /* same insertion logic; preemption is handled in scheduling loop */
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
+    n->enqueued_sim_time = get_global_sim_time();
     n->next = NULL;
 
     uint64_t now = get_global_sim_time();
     uint64_t new_ratio = hrrn_val(p, now);
 
     node_t* cur = &gQ.sentinel;
-    while (cur->next) {
+    while (cur->next && cur->next->proc != NULL) {
         uint64_t c_ratio = hrrn_val(cur->next->proc, now);
         if (new_ratio > c_ratio) {
             break;
@@ -138,13 +155,15 @@ static void push_hrrn(process_t* p, int preemptive) {
     gQ.size++;
 }
 
-/* MLFQ => multiple queues. We pop from the highest priority queue that is non-empty. */
+/* ---------- MLFQ ---------- */
 static process_t* pop_mlfq(void) {
     for (int i = 0; i < MLFQ_MAX_QUEUES; i++) {
         if (gQ.ml_queues[i].next) {
             node_t* n = gQ.ml_queues[i].next;
             gQ.ml_queues[i].next = n->next;
             gQ.size--;
+
+            /* If it's a sentinel node => return NULL so the core thread ends. */
             process_t* p = n->proc;
             free(n);
             return p;
@@ -154,12 +173,14 @@ static process_t* pop_mlfq(void) {
 }
 
 static void push_mlfq(process_t* p) {
-    int level = p->mlfq_level;
+    /* If the process is actually the sentinel => put it in queue 0 so it can pop easily. */
+    int level = (p ? p->mlfq_level : 0);
     if (level < 0) level = 0;
     if (level >= MLFQ_MAX_QUEUES) level = MLFQ_MAX_QUEUES - 1;
 
     node_t* n = (node_t*)malloc(sizeof(node_t));
     n->proc = p;
+    n->enqueued_sim_time = get_global_sim_time();
     n->next = NULL;
 
     node_t* cur = &gQ.ml_queues[level];
@@ -170,87 +191,64 @@ static void push_mlfq(process_t* p) {
     gQ.size++;
 }
 
-/* We'll choose function pointers at init. */
-static process_t* (*f_pop)(void) = NULL;
-static void       (*f_push)(process_t*) = NULL;
+/*
+   Each time we pop in MLFQ, we do a quick pass to check
+   if any process in a lower queue has waited >= MLFQ_AGING_MS
+   => promote it up one level.
+*/
+static void mlfq_promote_aged_processes(void) {
+    uint64_t now = get_global_sim_time();
+    for(int level = 1; level < MLFQ_MAX_QUEUES; level++) {
+        node_t* head = &gQ.ml_queues[level];
+        node_t* cur  = head;
+        while(cur->next) {
+            node_t* nxt = cur->next;
+            if(nxt->proc == NULL) {
+                /* skip sentinel nodes if any ended up here */
+                cur = cur->next;
+                continue;
+            }
+            uint64_t waited = (now > nxt->enqueued_sim_time)
+                               ? (now - nxt->enqueued_sim_time)
+                               : 0ULL;
+            if(waited >= MLFQ_AGING_MS) {
+                /* remove from current queue */
+                cur->next = nxt->next;
+                gQ.size--;
 
-/* Preemptive indicates if the scheduler preempts after a quantum or not. */
-static int g_preemptive = 0;
+                /* promote up one level */
+                int newLevel = level - 1;
+                if(newLevel<0) newLevel=0;
+                nxt->proc->mlfq_level = newLevel;
+                nxt->enqueued_sim_time = now;
 
-/* Implementation of ready_queue public API */
+                /* push it to the newLevel queue at the tail */
+                node_t* tail = &gQ.ml_queues[newLevel];
+                while(tail->next) {
+                    tail = tail->next;
+                }
+                tail->next = nxt;
+                nxt->next  = NULL;
+                gQ.size++;
+
+                /* do not advance cur => we removed nxt from chain. */
+            } else {
+                cur = cur->next;
+            }
+        }
+    }
+}
+
+/* ---------- Public interface ---------- */
 
 void ready_queue_init_policy(scheduler_alg_t alg) {
     memset(&gQ, 0, sizeof(gQ));
     pthread_mutex_init(pm(), NULL);
     pthread_cond_init(pc(), NULL);
     gQ.alg = alg;
-
-    switch (alg) {
-    case ALG_FIFO:
-    case ALG_RR:
-    case ALG_BFS:
-        f_push = push_tail;
-        f_pop  = pop_head;
-        g_preemptive = (alg == ALG_RR || alg == ALG_BFS) ? 1 : 0;
-        break;
-
-    case ALG_PRIORITY:
-        f_push = push_priority;
-        f_pop  = pop_head;
-        g_preemptive = 0;
-        break;
-
-    case ALG_CFS:
-        f_push = push_cfs;
-        f_pop  = pop_head;
-        g_preemptive = 0;
-        break;
-
-    case ALG_CFS_SRTF:
-        f_push = push_cfs;
-        f_pop  = pop_head;
-        g_preemptive = 1;
-        break;
-
-    case ALG_SJF:
-        f_push = push_sjf;
-        f_pop  = pop_head;
-        g_preemptive = 0;
-        break;
-
-    case ALG_STRF:
-        f_push = push_sjf;
-        f_pop  = pop_head;
-        g_preemptive = 1;
-        break;
-
-    case ALG_HRRN:
-        f_push = (void (*)(process_t*))push_hrrn;
-        f_pop  = (process_t* (*)(void))pop_head;
-        g_preemptive = 0;
-        break;
-
-    case ALG_HRRN_RT:
-        f_push = (void (*)(process_t*))push_hrrn;
-        f_pop  = (process_t* (*)(void))pop_head;
-        g_preemptive = 1;
-        break;
-
-    case ALG_MLFQ:
-        f_push = push_mlfq;
-        f_pop  = pop_mlfq;
-        g_preemptive = 1;
-        break;
-
-    case ALG_HPC_OVERSHADOW:
-    default:
-        /* HPC overshadow doesn't use the queue in normal sense */
-        f_push = push_tail;
-        f_pop  = pop_head;
-        g_preemptive = 0;
-        break;
-    }
 }
+
+/* We leave the function pointers approach inlined to keep code simpler. */
 
 void ready_queue_destroy(void) {
     pthread_cond_destroy(pc());
@@ -258,32 +256,137 @@ void ready_queue_destroy(void) {
     memset(&gQ, 0, sizeof(gQ));
 }
 
+/*
+   FIX: If p==NULL => we still push a *sentinel node*
+   so that waiting threads can pop it and exit.
+*/
 void ready_queue_push(process_t* p) {
     pthread_mutex_lock(pm());
-    if (p) {
-        if (gQ.alg == ALG_HRRN || gQ.alg == ALG_HRRN_RT) {
-            push_hrrn(p, (gQ.alg == ALG_HRRN_RT) ? 1 : 0);
-        } else if (gQ.alg == ALG_MLFQ) {
-            push_mlfq(p);
+
+    /* If 'p' is NULL => push sentinel node so pop() can return NULL. */
+    if(!p) {
+        node_t* n = (node_t*)malloc(sizeof(node_t));
+        n->proc = NULL; /* sentinel */
+        n->enqueued_sim_time = get_global_sim_time();
+        n->next = NULL;
+
+        /* For MLFQ, place sentinel in queue 0 so it can be seen immediately. */
+        if(gQ.alg == ALG_MLFQ) {
+            node_t* cur = &gQ.ml_queues[0];
+            while(cur->next) {
+                cur = cur->next;
+            }
+            cur->next = n;
+            gQ.size++;
         } else {
-            f_push(p);
+            /* For single-queue algs => put it in the main sentinel list. */
+            node_t* cur = &gQ.sentinel;
+            while(cur->next) {
+                cur = cur->next;
+            }
+            cur->next = n;
+            gQ.size++;
+        }
+        /* Wake up any waiting threads. */
+        pthread_cond_broadcast(pc());
+        pthread_mutex_unlock(pm());
+        return;
+    }
+
+    /* If it's HRRN: */
+    if (gQ.alg == ALG_HRRN || gQ.alg == ALG_HRRN_RT) {
+        uint64_t now = get_global_sim_time();
+        uint64_t new_ratio = hrrn_val(p, now);
+
+        node_t* n = (node_t*)malloc(sizeof(node_t));
+        n->proc = p;
+        n->enqueued_sim_time = now;
+        n->next = NULL;
+
+        node_t* cur = &gQ.sentinel;
+        while (cur->next && cur->next->proc != NULL) {
+            uint64_t c_ratio = hrrn_val(cur->next->proc, now);
+            if (new_ratio > c_ratio) break;
+            cur = cur->next;
+        }
+        n->next = cur->next;
+        cur->next = n;
+        gQ.size++;
+    }
+    else if(gQ.alg == ALG_MLFQ) {
+        push_mlfq(p);
+    }
+    else {
+        /* For simpler algs => do insertion logic depending on which one it is. */
+        /* We can detect it from gQ.alg if we want the original approach. */
+        switch(gQ.alg) {
+            case ALG_FIFO:
+            case ALG_RR:
+            case ALG_BFS:
+                push_tail(p);
+                break;
+            case ALG_PRIORITY:
+                push_priority(p);
+                break;
+            case ALG_CFS:
+            case ALG_CFS_SRTF:
+                push_cfs(p);
+                break;
+            case ALG_SJF:
+            case ALG_STRF:
+                push_sjf(p);
+                break;
+            default:
+                push_tail(p);
+                break;
         }
     }
+
     pthread_cond_broadcast(pc());
     pthread_mutex_unlock(pm());
 }
 
+/*
+   The caller blocks here if the queue is empty.
+   If we see a sentinel node => return NULL, causing the scheduling thread to exit.
+*/
 process_t* ready_queue_pop(void) {
     pthread_mutex_lock(pm());
     while(1) {
         if (gQ.size > 0) {
-            process_t* r = f_pop();
-            pthread_mutex_unlock(pm());
-            return r;
+            if(gQ.alg == ALG_MLFQ) {
+                /* MLFQ: do a quick check for aging before we pop. */
+                mlfq_promote_aged_processes();
+                process_t* p = pop_mlfq();
+                pthread_mutex_unlock(pm());
+
+                /* If sentinel => return NULL => thread exit. */
+                if(!p) {
+                    return NULL;
+                }
+                return p;
+            }
+            else {
+                /* Single queue approach. Check if the front is sentinel. */
+                node_t* front = gQ.sentinel.next;
+                if(front && front->proc == NULL) {
+                    /* pop the sentinel => return NULL => exit. */
+                    gQ.sentinel.next = front->next;
+                    gQ.size--;
+                    free(front);
+                    pthread_mutex_unlock(pm());
+                    return NULL;
+                }
+                /* Otherwise pop normally. */
+                process_t* p = pop_head();
+                pthread_mutex_unlock(pm());
+                return p;
+            }
         }
+        /* If empty => wait. */
         pthread_cond_wait(pc(), pm());
     }
-    /* theoretically unreachable, but let's keep it */
+    /* unreachable */
     pthread_mutex_unlock(pm());
     return NULL;
 }

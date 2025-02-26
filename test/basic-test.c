@@ -113,29 +113,43 @@ static bool test_cfs(void) {
     return true;
 }
 
+/*
+   BFS test => disallow zero preemptions.
+   We do a "dummy run" to set BFS quantum, then run a big process => must see preemptions>=1.
+*/
 static bool test_bfs(void) {
     g_tests_run++;
     os_init();
-    process_t p[3];
-    init_process(&p[0], 2, 1, 0);
-    init_process(&p[1], 3, 1, 0);
-    init_process(&p[2], 4, 1, 0);
+
+    /* 1) Dummy BFS run with small process => BFS sets quantum. */
+    process_t dummy[1];
+    init_process(&dummy[0], 1, 1, 0); /* burst=1 */
+    scheduler_select_algorithm(ALG_BFS);
+    scheduler_run(dummy, 1);
+
+    unsigned long q = scheduler_get_bfs_quantum();
+
+    /* 2) Real BFS test => one big process => burst=(q+2). BFS must do at least one preemption. */
+    process_t bigP[1];
+    init_process(&bigP[0], q+2, 1, 0); /* bigger than BFS quantum => must preempt */
 
     scheduler_select_algorithm(ALG_BFS);
-    scheduler_run(p, 3);
+    scheduler_run(bigP, 1);
 
     sched_report_t rep;
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    if (rep.total_procs != 3 || rep.preemptions < 1) {
+    if(rep.preemptions < 1) {
         snprintf(g_fail_reason, sizeof(g_fail_reason),
-                 "test_bfs => mismatch => procs=%llu, preempts=%llu",
-                 rep.total_procs, rep.preemptions);
+                 "test_bfs => zero preemption is NOT fine => BFS quantum=%lu => single burst=%lu => preempts=%llu => FAIL",
+                 q, (unsigned long)(q+2), (unsigned long long)rep.preemptions);
         test_set_fail_reason(g_fail_reason);
         g_tests_failed++;
         return false;
     }
+
+    /* If we get here => BFS had at least 1 preemption => pass. */
     scoreboard_set_sc_mastered(ALG_BFS);
     return true;
 }

@@ -19,12 +19,13 @@ typedef enum {
     ALG_BFS,
     ALG_PRIORITY,
     ALG_HPC_OVERSHADOW,
-    ALG_MLFQ
+    ALG_MLFQ,
+    ALG_HPC_OVERLAY
 } scheduler_alg_t;
 
 /*
    We store final results of scheduling in a schedule_stats_t.
-   This helps keep track of average times, preemptions, HPC mode, etc.
+   This helps keep track of average times, preemptions, HPC modes, etc.
 */
 typedef struct {
     double avg_wait;
@@ -40,11 +41,15 @@ typedef struct {
     unsigned long long total_preempts;
     int total_count;
 
-    /* Flag if HPC overshadow mode => skip normal stats. */
+    /* If HPC overshadow/overlay => skip normal stats. */
     int HPC_over_mode;
+    int HPC_overlay_mode;
 } schedule_stats_t;
 
-/* A simpler struct to retrieve final scheduling stats. */
+/*
+  A simpler struct to retrieve final scheduling stats
+  after a call to scheduler_run().
+*/
 typedef struct {
     double avg_wait;
     double avg_turnaround;
@@ -59,10 +64,16 @@ void scheduler_select_algorithm(scheduler_alg_t a);
 /* Run the scheduling simulation on an array of processes. */
 void scheduler_run(process_t* list, int count);
 
-/* Retrieve final stats from last run. HPC overshadow => zeroed stats. */
+/* Retrieve final stats from last run. */
 void scheduler_fetch_report(sched_report_t* out);
 
-/* Accessor so the ready-queue can see current simulated time for HRRN, etc. */
+/* Access global sim time. Used by ready_queue (e.g. HRRN, MLFQ). */
 uint64_t get_global_sim_time(void);
+
+/*
+  Provide BFS quantum to the BFS test if BFS is selected.
+  If BFS wasn't used, may return leftover or default value.
+*/
+unsigned long scheduler_get_bfs_quantum(void);
 
 #endif
