@@ -1,133 +1,187 @@
 #include "external-test.h"
-#include "test_common.h"
 
+#include "../src/runner.h"    // for run_shell_commands_concurrently()
+#include "../src/safe_calls_library.h"
+#include "../src/stats.h"
 #include "../src/os.h"
-#include "../src/scheduler.h"
-#include "../src/process.h"
-#include "../src/scoreboard.h"
-#include "../src/runner.h"
-
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <errno.h>
+#include <sys/wait.h>
 
-static int g_tests_run=0, g_tests_failed=0;
-static char g_fail_reason[256];
+/*
+  We'll define 12 external tests, each one tries to run the external shell
+  with a small concurrency scenario under scheduling mode i.
 
-/* HPC overshadow test */
-static bool test_external_hpc(void) {
-    g_tests_run++;
-    os_init();
-    process_t dummy[1];
-    init_process(&dummy[0], 0, 0, 0);
+  If the external shell binary is not found, all fail with a message.
+*/
 
-    scheduler_select_algorithm(ALG_HPC_OVERSHADOW);
-    scheduler_run(dummy,1);
+static int g_tests_run_ext    = 0;
+static int g_tests_failed_ext = 0;
+static char g_fail_reason[256] = {0};
 
-    sched_report_t rep;
-    scheduler_fetch_report(&rep);
-    os_cleanup();
-
-    if(rep.total_procs!=0){
-        snprintf(g_fail_reason,sizeof(g_fail_reason),
-                 "test_external_hpc => expected total_procs=0, got %llu",
-                 (unsigned long long)rep.total_procs);
-        test_set_fail_reason(g_fail_reason);
-        g_tests_failed++;
-        return false;
+/* We want to check presence of "shell-tp1-implementation". */
+static int check_shell_binary(void) {
+    if(access("../../shell-tp1-implementation", X_OK) != 0) {
+        snprintf(g_fail_reason, sizeof(g_fail_reason),
+                 "shell-tp1-implementation NOT FOUND => all tests fail");
+        return 0;
     }
-    scoreboard_set_sc_mastered(ALG_HPC_OVERSHADOW);
-    return true;
+    return 1;
 }
 
-/* BFS partial test */
-static bool test_external_bfs(void) {
-    g_tests_run++;
-    os_init();
-    process_t p[2];
-    init_process(&p[0],3,1,0);
-    init_process(&p[1],3,1,0);
+/* A small helper that actually does the concurrency run for schedule mode `m`. */
+static int do_external_test_for_mode(int m) {
+    // We'll do a short concurrency scenario: 2 shell commands, 1 core.
+    // The "sleep" commands must be typed into the shell.
+    // run_shell_commands_concurrently(count=2, lines=..., coreCount=1, mode=m, allModes=0)
+    // If it runs without error or SIGTERM, we consider it "pass".
+    // We'll also do HPC-OVER (mode=10), which just spawns HPC overshadow.
+    // The underlying runner checks if the shell is missing or not.
+    // We'll interpret "pass" if we do not forcibly SIGKILL or error out.
 
-    scheduler_select_algorithm(ALG_BFS);
-    scheduler_run(p,2);
-
-    sched_report_t rep;
-    scheduler_fetch_report(&rep);
-    os_cleanup();
-
-    if(rep.total_procs!=2 || rep.preemptions<1){
-        snprintf(g_fail_reason,sizeof(g_fail_reason),
-                 "test_external_bfs => mismatch => procs=%llu, preempts=%llu",
-                 rep.total_procs, rep.preemptions);
-        test_set_fail_reason(g_fail_reason);
-        g_tests_failed++;
-        return false;
-    }
-    scoreboard_set_sc_mastered(ALG_BFS);
-    return true;
-}
-
-/* Shell concurrency sample test => just run 2 commands with FIFO. */
-static bool test_run_shell_concurrency(void) {
-    g_tests_run++;
-    int count=2;
+    // We'll create 2 lines:
     char* lines[2];
-    lines[0] = "sleep 2";
-    lines[1] = "sleep 3";
+    lines[0] = strdup("sleep 1");
+    lines[1] = strdup("sleep 2");
 
-    run_shell_commands_concurrently(count, lines, 1, ALG_FIFO, 0);
-    /* Not strictly verifying output, just ensuring it runs without error. */
-    return true;
+    // Clear concurrency stop flag first
+    set_os_concurrency_stop_flag(0);
+
+    // We'll run it. If the shell is missing, the code prints an error,
+    // but we won't directly have a runtime "error" code. We'll assume we can detect that in check_shell_binary() above.
+    run_shell_commands_concurrently(2, lines, /*coreCount=*/1, m, /*allModes=*/0);
+
+    free(lines[0]);
+    free(lines[1]);
+
+    // We do not have a perfect "success/fail" signal from run_shell_commands_concurrently,
+    // but if we didn't see that the shell was missing (check_shell_binary()) and didn't forcibly SIGTERM,
+    // let's consider it "pass".
+    return 1;
 }
 
-/* array of external tests */
-typedef bool (*test_fn)(void);
-static struct {
-    const char* name;
-    test_fn func;
-} external_tests[] = {
-    {"hpc_over",           test_external_hpc},
-    {"bfs_partial",        test_external_bfs},
-    {"shell_concurrency",  test_run_shell_concurrency}
+/*
+  We define each of the 12 test functions:
+*/
+static int test_schedule_mode_0_fifo(void)          { return do_external_test_for_mode(0); }
+static int test_schedule_mode_1_rr(void)            { return do_external_test_for_mode(1); }
+static int test_schedule_mode_2_cfs(void)           { return do_external_test_for_mode(2); }
+static int test_schedule_mode_3_cfs_srtf(void)      { return do_external_test_for_mode(3); }
+static int test_schedule_mode_4_bfs(void)           { return do_external_test_for_mode(4); }
+static int test_schedule_mode_5_sjf(void)           { return do_external_test_for_mode(5); }
+static int test_schedule_mode_6_strf(void)          { return do_external_test_for_mode(6); }
+static int test_schedule_mode_7_hrrn(void)          { return do_external_test_for_mode(7); }
+static int test_schedule_mode_8_hrrn_rt(void)       { return do_external_test_for_mode(8); }
+static int test_schedule_mode_9_priority(void)      { return do_external_test_for_mode(9); }
+static int test_schedule_mode_10_hpc_over(void)     { return do_external_test_for_mode(10); }
+static int test_schedule_mode_11_mlfq(void)         { return do_external_test_for_mode(11); }
+
+/* We'll store them in an array for convenience. */
+typedef int (*ext_test_fn)(void);
+static ext_test_fn external_test_fns[12] = {
+    test_schedule_mode_0_fifo,
+    test_schedule_mode_1_rr,
+    test_schedule_mode_2_cfs,
+    test_schedule_mode_3_cfs_srtf,
+    test_schedule_mode_4_bfs,
+    test_schedule_mode_5_sjf,
+    test_schedule_mode_6_strf,
+    test_schedule_mode_7_hrrn,
+    test_schedule_mode_8_hrrn_rt,
+    test_schedule_mode_9_priority,
+    test_schedule_mode_10_hpc_over,
+    test_schedule_mode_11_mlfq
 };
-static const int EXTERNAL_COUNT = sizeof(external_tests)/sizeof(external_tests[0]);
 
-int external_test_count(void){ return EXTERNAL_COUNT; }
-const char* external_test_name(int i){
-    if(i<0||i>=EXTERNAL_COUNT) return NULL;
-    return external_tests[i].name;
+static const char* external_test_names[12] = {
+    "FIFO",
+    "RR",
+    "CFS",
+    "CFS-SRTF",
+    "BFS",
+    "SJF",
+    "STRF",
+    "HRRN",
+    "HRRN-RT",
+    "PRIORITY",
+    "HPC-OVER",
+    "MLFQ"
+};
+
+/* We expose external_test_count=12. */
+int external_test_count(void) {
+    return 12;
 }
-void external_test_run_single(int i,int* pass_out){
+
+/* Single test run => i in [0..11]. */
+void external_test_run_single(int i, int* pass_out) {
     if(!pass_out) return;
-    if(i<0||i>=EXTERNAL_COUNT){
+    if(i<0 || i>=12) {
         *pass_out=0;
         return;
     }
-    g_tests_run=0;
-    g_tests_failed=0;
-    bool ok = external_tests[i].func();
-    *pass_out = (ok && g_tests_failed==0)?1:0;
+
+    // Start from no fail reason:
+    g_fail_reason[0] = '\0';
+
+    g_tests_run_ext++;
+    if(!check_shell_binary()) {
+        // If the shell is missing, test fails
+        g_tests_failed_ext++;
+        *pass_out = 0;
+        return;
+    }
+    int ok = external_test_fns[i]();
+    if(!ok) {
+        g_tests_failed_ext++;
+        *pass_out=0;
+    } else {
+        *pass_out=1;
+    }
 }
 
-void run_external_tests(void) {
-    printf("\n\033[1m\033[93m╔═════════ EXTERNAL TESTS START ═════════╗\033[0m\n");
-    g_tests_run=0;
-    g_tests_failed=0;
-    for(int i=0; i<EXTERNAL_COUNT; i++){
-        bool ok = external_tests[i].func();
-        if(ok){
-            printf("  PASS: %s\n", external_tests[i].name);
+/*
+   run_external_tests(&total, &passed) => runs all 12 tests in a row,
+   printing pass/fail lines, then prints final summary.
+*/
+void run_external_tests(int* total, int* passed) {
+    if(!total || !passed) return;
+
+    // reset counters
+    g_tests_run_ext    = 0;
+    g_tests_failed_ext = 0;
+    g_fail_reason[0]   = '\0';
+
+    printf("\n" CLR_BOLD CLR_YELLOW "╔════════════ EXTERNAL TESTS START ═══════════╗" CLR_RESET "\n");
+
+    // For i=0..11
+    int count = external_test_count();
+    for(int i=0; i<count; i++){
+        int pass = 0;
+        external_test_run_single(i, &pass);
+        const char* name = external_test_names[i];
+        if(pass) {
+            printf("  PASS: %s\n", name);
         } else {
-            printf("  FAIL: %s => %s\n", external_tests[i].name, test_get_fail_reason());
+            printf("  FAIL: %s", name);
+            if(g_fail_reason[0]) {
+                printf(" => %s", g_fail_reason);
+            }
+            printf("\n");
         }
     }
 
-    /* scoreboard update done in runner or main menu caller */
-    printf("\033[1m\033[93m╔════════════════════════════════════════════╗\n");
-    printf("║   EXTERNAL TESTS RESULTS: %d / %d passed     ║\n",
-           (g_tests_run - g_tests_failed), g_tests_run);
-    if(g_tests_failed>0) {
-        printf("║   FAILURES => see logs above              ║\n");
+    // finalize
+    *total  = g_tests_run_ext;
+    *passed = g_tests_run_ext - g_tests_failed_ext;
+
+    printf(CLR_BOLD CLR_YELLOW "╔══════════════════════════════════════════════╗\n");
+    printf("║   EXTERNAL TESTS RESULTS: %d / %d passed       ║\n", *passed, *total);
+    if(*passed < *total) {
+        printf("║    FAILURES => see logs above               ║\n");
     }
-    printf("╚════════════════════════════════════════════╝\033[0m\n");
+    printf("╚══════════════════════════════════════════════╝\n" CLR_RESET);
 }

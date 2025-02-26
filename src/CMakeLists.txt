@@ -26,6 +26,8 @@ add_executable(main
         main.h
         scoreboard.c
         scoreboard.h
+        menu.c
+        menu.h
 )
 
 target_link_libraries(main PRIVATE Threads::Threads m)

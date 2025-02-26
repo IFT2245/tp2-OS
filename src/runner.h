@@ -1,26 +1,29 @@
 #ifndef RUNNER_H
 #define RUNNER_H
 
+#include "scoreboard.h"
+
 /*
-  runner.h => code to run entire test suites or concurrency commands
-              with chosen scheduling modes.
+  runner.h => concurrency logic & test-suites runner utilities
 */
 
-#include <stddef.h>
+/* Runs the entire suite (all tests in that suite) and updates scoreboard. */
+void run_entire_suite(scoreboard_suite_t suite);
 
-/* Deprecated stub, replaced by menu logic. */
-void run_all_levels(void);
-
-/* Runs the external tests menu, checks scoreboard, etc. */
+/* Runs external tests (if unlocked) -> updates scoreboard. */
 void run_external_tests_menu(void);
 
 /*
-  Run shell commands concurrently with a chosen scheduling mode or all modes.
-   - count        => how many commands
-   - lines        => array of string commands
-   - coreCount    => how many CPU cores
-   - mode         => which mode to use; if -1 => run all
-   - allModes     => 1 => run all modes, 0 => single mode only
+  Runs a single test from a chosen suite index => scoreboard updated with +1 test, +1 pass if success.
+*/
+void run_single_test_in_suite(scoreboard_suite_t suite);
+
+/*
+  Concurrency function: run shell commands concurrently under a single or all scheduling modes.
+   - count, lines => list of commands
+   - coreCount => how many CPU cores
+   - mode => which single scheduling mode or -1 for all
+   - allModes => 1 => do all from 0..11, 0 => do just 'mode'
 */
 void run_shell_commands_concurrently(int count,
                                      char** lines,

@@ -1,62 +1,238 @@
 #include "runner.h"
-#include "scheduler.h"
 #include "scoreboard.h"
-#include "os.h"
-#include "safe_calls_library.h"
 #include "stats.h"
+#include "safe_calls_library.h"
+#include "os.h"
+#include "scheduler.h"
 
 #include <stdio.h>
-#include <string.h>
-#include <sys/wait.h>
-#include <stdlib.h>
-#include <errno.h>
-#include <sys/ptrace.h>
-#include <unistd.h>
-#include <signal.h>
 #include <stdarg.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
 
-#include "../test/external-test.h"  /* so we can call run_external_tests() */
+/*
+  We'll maintain a lookup for scheduler_alg_t => string name
+  to produce "SCHEDULE BLOCK => <Name>" in concurrency logs, if needed.
+*/
+static const char* scheduler_alg_to_str(scheduler_alg_t alg) {
+    switch(alg) {
+        case ALG_FIFO:          return "FIFO";
+        case ALG_RR:            return "Round Robin";
+        case ALG_CFS:           return "CFS";
+        case ALG_CFS_SRTF:      return "CFS-SRTF";
+        case ALG_BFS:           return "BFS";
+        case ALG_SJF:           return "SJF";
+        case ALG_STRF:          return "STRF";
+        case ALG_HRRN:          return "HRRN";
+        case ALG_HRRN_RT:       return "HRRN-RT";
+        case ALG_PRIORITY:      return "PRIORITY";
+        case ALG_HPC_OVERSHADOW:return "HPC-OVER";
+        case ALG_MLFQ:          return "MLFQ";
+        default:                return "Unknown";
+    }
+}
+
+/* forward declarations for test suite runners */
+extern void run_basic_tests(int* total,int* passed);
+extern void run_normal_tests(int* total,int* passed);
+extern void run_modes_tests(int* total,int* passed);
+extern void run_edge_tests(int* total,int* passed);
+extern void run_hidden_tests(int* total,int* passed);
+
+/* new external tests approach: */
+extern void run_external_tests(int* total,int* passed);
+
+/* single-test extern: */
+extern int basic_test_count(void);
+extern void basic_test_run_single(int idx, int* pass_out);
+
+extern int normal_test_count(void);
+extern void normal_test_run_single(int idx, int* pass_out);
+
+extern int modes_test_count(void);
+extern void modes_test_run_single(int idx, int* pass_out);
+
+extern int edge_test_count(void);
+extern void edge_test_run_single(int idx, int* pass_out);
+
+extern int hidden_test_count(void);
+extern void hidden_test_run_single(int idx, int* pass_out);
+
+extern int external_test_count(void);
+extern void external_test_run_single(int idx,int* pass_out);
 
 
-/* Private: map of scheduling mode enums to string names. */
-static const char* modeNames[] = {
-    "FIFO","RR","CFS","CFS-SRTF","BFS",
-    "SJF","STRF","HRRN","HRRN-RT","PRIORITY",
-    "HPC-OVER","MLFQ"
-};
-
-/* We no longer implement run_all_levels(); replaced by menu. */
-void run_all_levels(void) {
-    printf("[runner] run_all_levels => replaced by main menu logic.\n");
+/* ----------------------------------------------------------------
+   run_entire_suite => same pattern for each suite
+   Then scoreboard_update_* after we get total/passed.
+---------------------------------------------------------------- */
+void run_entire_suite(scoreboard_suite_t suite) {
+    switch(suite) {
+    case SUITE_BASIC: {
+        int t=0, p=0;
+        printf("\n[Running BASIC suite...]\n");
+        run_basic_tests(&t,&p);
+        scoreboard_update_basic(t,p);
+        scoreboard_save();
+        break;
+    }
+    case SUITE_NORMAL: {
+        int t=0, p=0;
+        printf("\n[Running NORMAL suite...]\n");
+        run_normal_tests(&t,&p);
+        scoreboard_update_normal(t,p);
+        scoreboard_save();
+        break;
+    }
+    case SUITE_EXTERNAL: {
+        int t=0, p=0;
+        printf("\n[Running EXTERNAL suite...]\n");
+        run_external_tests(&t, &p);
+        scoreboard_update_external(t,p);
+        scoreboard_save();
+        break;
+    }
+    case SUITE_MODES: {
+        int t=0, p=0;
+        printf("\n[Running MODES suite...]\n");
+        run_modes_tests(&t,&p);
+        scoreboard_update_modes(t,p);
+        scoreboard_save();
+        break;
+    }
+    case SUITE_EDGE: {
+        int t=0, p=0;
+        printf("\n[Running EDGE suite...]\n");
+        run_edge_tests(&t,&p);
+        scoreboard_update_edge(t,p);
+        scoreboard_save();
+        break;
+    }
+    case SUITE_HIDDEN: {
+        int t=0, p=0;
+        printf("\n[Running HIDDEN suite...]\n");
+        run_hidden_tests(&t,&p);
+        scoreboard_update_hidden(t,p);
+        scoreboard_save();
+        break;
+    }
+    default:
+        break;
+    }
 }
 
 /*
-  Runs external tests if unlocked.
+   run_external_tests_menu => original code had "run_external_tests()",
+   but now we don't store results here, we do that in run_entire_suite(SUITE_EXTERNAL).
+   If the menu just wants to run external suite, it can either call run_entire_suite or
+   do partial logic. We'll keep a function to run it "on-demand," though.
 */
 void run_external_tests_menu(void) {
-    if(!scoreboard_is_unlocked(SUITE_EXTERNAL)) {
-        return;
-    }
-    run_external_tests();
+    int t=0, p=0;
+    run_external_tests(&t, &p);
+    scoreboard_update_external(t,p);
+    scoreboard_save();
 }
 
 /*
-  Child info structure for concurrency tests.
+   run_single_test_in_suite => used by the "Run Single Test" menu item
 */
-typedef struct {
-    pid_t   pid;
-    char*   cmd;
-    int     core;
-    uint64_t start_ms;
-    int     p_out[2];
-    int     p_err[2];
-    int     p_in[2];
-} child_t;
+void run_single_test_in_suite(scoreboard_suite_t chosen) {
+    int count = 0;
+    switch(chosen) {
+        case SUITE_BASIC:   count = basic_test_count();   break;
+        case SUITE_NORMAL:  count = normal_test_count();  break;
+        case SUITE_MODES:   count = modes_test_count();   break;
+        case SUITE_EDGE:    count = edge_test_count();    break;
+        case SUITE_HIDDEN:  count = hidden_test_count();  break;
+        case SUITE_EXTERNAL:count = external_test_count();break;
+        default: break;
+    }
+    if(count<=0) {
+        printf("No tests found in that suite or suite missing.\n");
+        return;
+    }
 
-/* For concurrency logs, skip if speed=FAST. */
-static void concurrency_log(const char* fmt, ...) {
-    if(stats_get_speed_mode() == 1) {
-        return; /* FAST => skip printing to accelerate */
+    printf("\nWhich single test do you want to run (1..%d)? ", count);
+    char buf[256];
+    if(!fgets(buf, sizeof(buf), stdin)) {
+        return;
+    }
+    buf[strcspn(buf, "\n")] = '\0';
+    int pick = parse_int_strtol(buf, -1);
+    if(pick<1 || pick>count) {
+        printf("Invalid test index.\n");
+        return;
+    }
+
+    int passResult = 0; /* 0 => fail, 1 => pass */
+    switch(chosen){
+        case SUITE_BASIC:
+            basic_test_run_single(pick-1, &passResult);
+            scoreboard_update_basic(1, passResult);
+            scoreboard_save();
+            break;
+        case SUITE_NORMAL:
+            normal_test_run_single(pick-1, &passResult);
+            scoreboard_update_normal(1, passResult);
+            scoreboard_save();
+            break;
+        case SUITE_MODES:
+            modes_test_run_single(pick-1, &passResult);
+            scoreboard_update_modes(1, passResult);
+            scoreboard_save();
+            break;
+        case SUITE_EDGE:
+            edge_test_run_single(pick-1, &passResult);
+            scoreboard_update_edge(1, passResult);
+            scoreboard_save();
+            break;
+        case SUITE_HIDDEN:
+            hidden_test_run_single(pick-1, &passResult);
+            scoreboard_update_hidden(1, passResult);
+            scoreboard_save();
+            break;
+        case SUITE_EXTERNAL:
+            external_test_run_single(pick-1, &passResult);
+            scoreboard_update_external(1, passResult);
+            scoreboard_save();
+            break;
+        default:
+            break;
+    }
+}
+
+/* ----------------------------------------------------------------
+   Shell concurrency logic
+   If speed=FAST => skip block prints, else show them.
+   If mode=-1 => run all from 0..11, else single mode.
+---------------------------------------------------------------- */
+static const char* scheduler_alg_to_str2(int mode) {
+    switch(mode) {
+        case 0:  return "FIFO";
+        case 1:  return "Round Robin";
+        case 2:  return "CFS";
+        case 3:  return "CFS-SRTF";
+        case 4:  return "BFS";
+        case 5:  return "SJF";
+        case 6:  return "STRF";
+        case 7:  return "HRRN";
+        case 8:  return "HRRN-RT";
+        case 9:  return "PRIORITY";
+        case 10: return "HPC-OVER";
+        case 11: return "MLFQ";
+        default: return "UNKNOWN";
+    }
+}
+
+static void concurrency_log(const char* fmt, ...) __attribute__((format(printf,1,2)));
+static void concurrency_log(const char* fmt, ...)
+{
+    if(stats_get_speed_mode()==1) {
+        /* FAST => skip printing */
+        return;
     }
     va_list args;
     va_start(args, fmt);
@@ -64,216 +240,132 @@ static void concurrency_log(const char* fmt, ...) {
     va_end(args);
 }
 
-/* Use ptrace to attach and single-step for demonstration. */
-static void advanced_debug_child(pid_t pid) {
-    int sm = stats_get_speed_mode();
-    if(ptrace(PTRACE_ATTACH, pid, NULL, NULL) == -1) {
-        if(sm==0) {
-            fprintf(stderr,"[Runner] ptrace attach fail (pid=%d): %s\n",
-                    pid, strerror(errno));
-        }
-        return;
+static int check_shell_binary(void) {
+    if(access("../../shell-tp1-implementation", X_OK) != 0){
+        printf(CLR_RED "\n╔══════════════════════════════════════════════╗\n");
+        printf("║shell-tp1-implementation NOT FOUND in .       ║\n");
+        printf("║External concurrency test cannot run.         ║\n");
+        printf("╚══════════════════════════════════════════════╝\n" CLR_RESET);
+        return 0;
     }
-    waitpid(pid, NULL, 0);
-
-    /* Single step */
-    if(ptrace(PTRACE_SINGLESTEP, pid, NULL, NULL) == -1) {
-        if(sm==0) {
-            fprintf(stderr,"[Runner] ptrace singlestep fail: %s\n", strerror(errno));
-        }
-    }
-    waitpid(pid, NULL, 0);
-
-    /* Syscall step */
-    if(ptrace(PTRACE_SYSCALL, pid, NULL, NULL) == -1) {
-        if(sm==0) {
-            fprintf(stderr,"[Runner] ptrace syscall fail: %s\n", strerror(errno));
-        }
-    }
-    waitpid(pid, NULL, 0);
-
-    ptrace(PTRACE_DETACH, pid, NULL, NULL);
+    return 1;
 }
 
-/*
-  Spawns a child running the external "shell-tp1-implementation" binary,
-  sets up pipes, sends the command, attaches with ptrace for one step, etc.
-*/
-static pid_t spawn_child(const char* cmd, child_t* ch, int core) {
-    pipe(ch->p_out);
-    pipe(ch->p_err);
-    pipe(ch->p_in);
-
-    pid_t c = fork();
-    if (c < 0) {
-        fprintf(stderr,"fork() error\n");
-        return -1;
-    } else if (c == 0) {
-        close(ch->p_out[0]);
-        close(ch->p_err[0]);
-        close(ch->p_in[0]);
-
-        dup2(ch->p_out[1], STDOUT_FILENO);
-        dup2(ch->p_err[1], STDERR_FILENO);
-        dup2(ch->p_in[1],  STDIN_FILENO);
-
-        close(ch->p_out[1]);
-        close(ch->p_err[1]);
-        close(ch->p_in[1]);
-
-        execl("../../shell-tp1-implementation", "shell-tp1-implementation", (char*)NULL);
-        _exit(0);
-    } else {
-        ch->pid = c;
-        ch->cmd = (cmd ? strdup(cmd) : NULL);
-        ch->core = core;
-        ch->start_ms = os_time();
-        stats_inc_processes_spawned();
-
-        close(ch->p_out[1]);
-        close(ch->p_err[1]);
-        close(ch->p_in[0]);
-
-        /* send the command + exit to child's stdin */
-        dprintf(ch->p_in[1], "%s\nexit\n", cmd ? cmd : "");
-        close(ch->p_in[1]);
-
-        advanced_debug_child(c);
-    }
-    return c;
-}
-
-/*
-  Run shell commands concurrently with a chosen scheduling mode
-  or all modes. We produce schedule blocks around each mode run
-  in normal mode. In fast mode, we skip the schedule block prints.
-*/
 void run_shell_commands_concurrently(int count,
                                      char** lines,
                                      int coreCount,
                                      int mode,
                                      int allModes)
 {
-    if(count <= 0 || !lines) return;
-
-    /* check if external shell is present */
-    if(access("./shell-tp1-implementation", X_OK) != 0){
-        printf(CLR_RED "\n╔══════════════════════════════════════════════╗\n");
-        printf("║shell-tp1-implementation NOT FOUND in root dir║\n");
-        printf("║Concurrency test cannot run.                  ║\n");
-        printf("╚══════════════════════════════════════════════╝\n" CLR_RESET);
+    if(count<=0 || !lines) return;
+    if(!check_shell_binary()) {
+        /* if missing => just fail quietly or print the message above => done */
         return;
     }
 
     stats_inc_concurrency_runs();
 
-    /* Overall concurrency block */
     if(stats_get_speed_mode()==0) {
         printf(CLR_MAGENTA "\n╔═══════════════════════════════════════════════════════════════╗\n");
-        printf(             "║                  Shell Commands SCHEDULE BLOCK                ║\n");
+        printf(             "║        Shell Commands SCHEDULE BLOCK (EXTERNAL)               ║\n");
         printf(             "╚═══════════════════════════════════════════════════════════════╝\n" CLR_RESET);
     }
 
-    /* Single mode => from=mode..mode, All => from=0..11 */
-    int from = 0;
-    int to   = 11;
+    int from=0, to=11;
     if(!allModes) {
-        if(mode<0 || mode>to) {
-            /* invalid mode => skip */
-            if(stats_get_speed_mode()==0) {
-                printf(CLR_MAGENTA "\n╔═════════════════════════════════════════════════════════════╗\n");
-                printf("║ CONCURRENCY BLOCK => Invalid mode specified                 ║\n");
-                printf("╚═════════════════════════════════════════════════════════════╝\n" CLR_RESET);
-            }
+        if(mode<0 || mode>11) {
+            concurrency_log("\n[Invalid scheduling mode => skipping concurrency.]\n");
             return;
         }
         from = mode;
         to   = mode;
     }
 
-    /* track concurrency commands run */
-    stats_inc_concurrency_commands(count * ((allModes)? (to-from+1):1));
-
-    for(int m = from; m <= to; m++) {
+    for(int m=from; m<=to; m++){
         if(os_concurrency_stop_requested()) {
-            concurrency_log(CLR_MAGENTA "\n╔═════════════════════════════════════════════════════════════╗\n");
-            concurrency_log("║ CONCURRENCY STOP REQUESTED => returning...                  ║\n");
-            concurrency_log("╚═════════════════════════════════════════════════════════════╝\n" CLR_RESET);
+            concurrency_log("\n[Concurrency STOP => returning.]\n");
             break;
         }
+        const char* alg_name = scheduler_alg_to_str2(m);
 
-        /* Show mode name if normal speed */
-        if(stats_get_speed_mode()==0){
+        if(stats_get_speed_mode()==0) {
             concurrency_log(CLR_MAGENTA "\n╔═════════════════════════════════════════════════════════════╗\n");
-            concurrency_log("║ SCHEDULE BLOCK START => %s\n", modeNames[m]);
-            concurrency_log("╚═════════════════════════════════════════════════════════════╝" CLR_RESET "\n");
+            concurrency_log("║ SCHEDULE BLOCK START => %s\n", alg_name);
+            concurrency_log("╚═════════════════════════════════════════════════════════════╝\n" CLR_RESET);
         }
 
-        child_t* ch = (child_t*)calloc(count, sizeof(child_t));
-        if(!ch) return;
+        pid_t* pids = (pid_t*)calloc(count, sizeof(pid_t));
+        if(!pids) return;
+        stats_inc_concurrency_commands(count);
 
-        uint64_t global_start = os_time();
-        int next_core = 0;
-
-        /* spawn each child process */
         for(int i=0; i<count; i++){
             if(os_concurrency_stop_requested()){
-                concurrency_log("[runner] concurrency stop => skip remaining spawns.\n");
+                concurrency_log("[STOP => skip spawn child#%d]\n", i+1);
                 break;
             }
-            spawn_child(lines[i], &ch[i], next_core);
-
-            concurrency_log(CLR_GREEN"[time=%llu ms] container=1 core=%d => Launch child#%d cmd=\"%s\"\n"CLR_RESET,
+            concurrency_log(CLR_GREEN "[time=%llu ms] core=%d => Launch child#%d cmd=\"%s\"\n" CLR_RESET,
                             (unsigned long long)os_time(),
-                            next_core, i+1, lines[i] ? lines[i] : "");
-            next_core = (next_core + 1) % coreCount;
-        }
-
-        /* wait each child. If stop requested => kill the rest. */
-        for(int i=0; i<count; i++){
-            if(!ch[i].pid) continue;
-            if(os_concurrency_stop_requested()){
-                concurrency_log("[runner] concurrency stop => kill remaining children.\n");
-                kill(ch[i].pid, SIGKILL);
+                            (i % coreCount), i+1,
+                            lines[i]?lines[i]:"");
+            /* We'll do a simple fork + send command to shell's stdin,
+               as a minimal approach. */
+            int pipefd[2];
+            if(pipe(pipefd)==-1) {
+                perror("pipe");
                 continue;
             }
-            waitpid(ch[i].pid, NULL, 0);
-            uint64_t end_ms = os_time();
-            concurrency_log(CLR_YELLOW"[time=%llu ms] container=1 core=%d => Child#%d ended => cmd=\"%s\" total_duration=%llums\n"CLR_RESET,
-                            (unsigned long long)os_time(),
-                            ch[i].core, i+1,
-                            (ch[i].cmd ? ch[i].cmd : ""),
-                            (unsigned long long)(end_ms - ch[i].start_ms));
+            pid_t c = fork();
+            if(c<0) {
+                perror("fork");
+                close(pipefd[0]);
+                close(pipefd[1]);
+                continue;
+            }
+            else if(c==0){
+                /* child => read from pipefd[0] as STDIN, then execl the shell. */
+                close(pipefd[1]);
+                dup2(pipefd[0], STDIN_FILENO);
+                close(pipefd[0]);
+                execl("./shell-tp1-implementation",
+                      "shell-tp1-implementation", (char*)NULL);
+                _exit(1);
+            }
+            else {
+                /* parent */
+                pids[i]=c;
+                close(pipefd[0]);
+                dprintf(pipefd[1], "%s\nexit\n", lines[i]?lines[i]:"");
+                close(pipefd[1]);
+            }
         }
 
-        uint64_t global_end = os_time();
-        uint64_t total_time = (global_end > global_start) ? (global_end - global_start) : 0ULL;
-
-        /* read from child pipes to consume output, then free */
+        /* wait for them */
         for(int i=0; i<count; i++){
-            if(!ch[i].pid) continue;
-            char outb[256]={0}, errb[256]={0};
-            read(ch[i].p_out[0], outb, sizeof(outb)-1);
-            read(ch[i].p_err[0], errb, sizeof(errb)-1);
-            close(ch[i].p_out[0]);
-            close(ch[i].p_err[0]);
-            if(ch[i].cmd) free(ch[i].cmd);
+            if(!pids[i]) continue;
+            if(os_concurrency_stop_requested()){
+                concurrency_log("[STOP => kill child pid=%d]\n", pids[i]);
+                kill(pids[i], SIGKILL);
+                continue;
+            }
+            waitpid(pids[i], NULL, 0);
+            concurrency_log(CLR_YELLOW "[time=%llu ms] => Child#%d ended => cmd=\"%s\"\n" CLR_RESET,
+                            (unsigned long long)os_time(),
+                            i+1,
+                            lines[i]?lines[i]:"");
         }
-        free(ch);
+        free(pids);
 
         if(stats_get_speed_mode()==0){
-            concurrency_log(CLR_MAGENTA"╔═════════════════════════════════════════════════════════════╗\n");
-            concurrency_log("║ SCHEDULE BLOCK END => %s, total_time=%llums\n",
-                             modeNames[m], (unsigned long long)total_time);
-            concurrency_log("╚═════════════════════════════════════════════════════════════╝"CLR_RESET"\n");
+            concurrency_log(CLR_MAGENTA "╔═════════════════════════════════════════════════════════════╗\n");
+            concurrency_log("║ SCHEDULE BLOCK END => %s\n", alg_name);
+            concurrency_log("╚═════════════════════════════════════════════════════════════╝\n" CLR_RESET);
         }
     }
 
     if(stats_get_speed_mode()==0){
         printf(CLR_MAGENTA "\n╔═══════════════════════════════════════════════════════════════╗\n");
-        printf(             "║  END CONCURRENCY SCHEDULE BLOCK                               ║\n");
+        printf(             "║      END CONCURRENCY SCHEDULE BLOCK (EXTERNAL)                ║\n");
         printf(             "╚═══════════════════════════════════════════════════════════════╝\n" CLR_RESET);
     }
-
     set_os_concurrency_stop_flag(0);
 }
