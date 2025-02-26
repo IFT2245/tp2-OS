@@ -121,8 +121,8 @@ static pid_t spawn_child(const char* cmd, child_t* ch, int core) {
         close(ch->p_err[1]);
         close(ch->p_in[1]);
 
-        execl("./shell-tp1-implementation", "shell-tp1-implementation", (char*)NULL);
-        _exit(127);
+        execl("../../shell-tp1-implementation", "shell-tp1-implementation", (char*)NULL);
+        _exit(0);
     } else {
         ch->pid = c;
         ch->cmd = (cmd ? strdup(cmd) : NULL);
@@ -158,9 +158,9 @@ void run_shell_commands_concurrently(int count,
 
     /* check if external shell is present */
     if(access("./shell-tp1-implementation", X_OK) != 0){
-        printf(CLR_MAGENTA "\n╔══════════════════════════════════════════════╗\n");
-        printf("║ shell-tp1-implementation not found in CWD.   ║\n");
-        printf("║ Concurrency test cannot run.                 ║\n");
+        printf(CLR_RED "\n╔══════════════════════════════════════════════╗\n");
+        printf("║shell-tp1-implementation NOT FOUND in root dir║\n");
+        printf("║Concurrency test cannot run.                  ║\n");
         printf("╚══════════════════════════════════════════════╝\n" CLR_RESET);
         return;
     }
@@ -170,7 +170,7 @@ void run_shell_commands_concurrently(int count,
     /* Overall concurrency block */
     if(stats_get_speed_mode()==0) {
         printf(CLR_MAGENTA "\n╔═══════════════════════════════════════════════════════════════╗\n");
-        printf(             "║  CONCURRENCY SCHEDULE BLOCK => Shell Commands Scheduling       ║\n");
+        printf(             "║                  Shell Commands SCHEDULE BLOCK                ║\n");
         printf(             "╚═══════════════════════════════════════════════════════════════╝\n" CLR_RESET);
     }
 
@@ -197,7 +197,7 @@ void run_shell_commands_concurrently(int count,
     for(int m = from; m <= to; m++) {
         if(os_concurrency_stop_requested()) {
             concurrency_log(CLR_MAGENTA "\n╔═════════════════════════════════════════════════════════════╗\n");
-            concurrency_log("║ CONCURRENCY STOP REQUESTED => returning                      ║\n");
+            concurrency_log("║ CONCURRENCY STOP REQUESTED => returning...                  ║\n");
             concurrency_log("╚═════════════════════════════════════════════════════════════╝\n" CLR_RESET);
             break;
         }

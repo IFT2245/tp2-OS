@@ -22,7 +22,7 @@ void pause_enter(void);
 /* Reads one line (up to sz-1 chars). Returns 1 if success, 0 if error/EOF. */
 int read_line(char *buf, size_t sz);
 
-/* Prints the ASCII art main menu header. */
+/* Prints the ASCII art main menu header (includes speed mode info). */
 void ascii_main_menu_header(void);
 
 /* Submenu to run all unlocked tests (skipping already 100% passed). */

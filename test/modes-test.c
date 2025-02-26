@@ -9,15 +9,16 @@
 #include <stdio.h>
 #include <math.h>
 
-static int tests_run=0, tests_failed=0;
-static char g_test_fail_reason[256];
+static int g_tests_run=0, g_tests_failed=0;
+static char g_fail_reason[256];
 
 static int almost_equal(double a, double b, double eps) {
     return (fabs(a - b) < eps);
 }
 
-/* HPC overshadow test within modes suite. */
-TEST(hpc_over) {
+/* HPC overshadow */
+static bool test_hpc_over(void) {
+    g_tests_run++;
     os_init();
     process_t dummy[1];
     init_process(&dummy[0], 0, 0, 0);
@@ -29,28 +30,33 @@ TEST(hpc_over) {
     scheduler_fetch_report(&rep);
     os_cleanup();
 
-    if (rep.total_procs != 0 || rep.preemptions != 0ULL) {
-        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
-                 "test_hpc_over => HPC overshadow => expected 0 stats, got procs=%llu, pre=%llu",
+    if(rep.total_procs!=0 || rep.preemptions!=0ULL) {
+        snprintf(g_fail_reason,sizeof(g_fail_reason),
+                 "test_hpc_over => mismatch => procs=%llu, pre=%llu",
                  rep.total_procs, rep.preemptions);
-        test_set_fail_reason(g_test_fail_reason);
+        test_set_fail_reason(g_fail_reason);
+        g_tests_failed++;
         return false;
     }
     scoreboard_set_sc_mastered(ALG_HPC_OVERSHADOW);
     return true;
 }
 
-/* multiple ephemeral containers in normal usage. */
-TEST(multi_containers) {
+static bool test_multi_containers(void) {
+    g_tests_run++;
     os_init();
-    for (int i=0; i<2; i++) os_create_ephemeral_container();
-    for (int i=0; i<2; i++) os_remove_ephemeral_container();
+    for(int i=0;i<2;i++){
+        os_create_ephemeral_container();
+    }
+    for(int i=0;i<2;i++){
+        os_remove_ephemeral_container();
+    }
     os_cleanup();
     return true;
 }
 
-/* multiple distributed calls. */
-TEST(multi_distrib) {
+static bool test_multi_distrib(void) {
+    g_tests_run++;
     os_init();
     os_run_distributed_example();
     os_run_distributed_example();
@@ -58,16 +64,16 @@ TEST(multi_distrib) {
     return true;
 }
 
-/* pipeline test again in modes suite. */
-TEST(pipeline_modes) {
+static bool test_pipeline_modes(void) {
+    g_tests_run++;
     os_init();
     os_pipeline_example();
     os_cleanup();
     return true;
 }
 
-/* test mixing multiple algorithms sequentially. */
-TEST(mix_algos) {
+static bool test_mix_algos(void) {
+    g_tests_run++;
     os_init();
     process_t p[2];
     init_process(&p[0],2,1,0);
@@ -86,25 +92,19 @@ TEST(mix_algos) {
     scheduler_fetch_report(&r2);
 
     os_cleanup();
-
-    /* Just minimal checks */
-    if (r1.total_procs != 2) {
-        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
-                 "test_mix_algos => FIFO => mismatch => total=%llu", r1.total_procs);
-        test_set_fail_reason(g_test_fail_reason);
-        return false;
-    }
-    if (r2.total_procs != 2) {
-        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
-                 "test_mix_algos => BFS => mismatch => total=%llu", r2.total_procs);
-        test_set_fail_reason(g_test_fail_reason);
+    if(r1.total_procs!=2 || r2.total_procs!=2) {
+        snprintf(g_fail_reason,sizeof(g_fail_reason),
+                 "test_mix_algos => mismatch => r1procs=%llu, r2procs=%llu",
+                 r1.total_procs, r2.total_procs);
+        test_set_fail_reason(g_fail_reason);
+        g_tests_failed++;
         return false;
     }
     return true;
 }
 
-/* double HPC overshadow test. */
-TEST(double_hpc) {
+static bool test_double_hpc(void) {
+    g_tests_run++;
     os_init();
     process_t dummy[1];
     init_process(&dummy[0], 0, 0, 0);
@@ -121,18 +121,19 @@ TEST(double_hpc) {
 
     os_cleanup();
 
-    if (r1.total_procs != 0 || r2.total_procs != 0) {
-        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
-                 "test_double_hpc => overshadow => expected 0 procs each, got r1=%llu,r2=%llu",
+    if(r1.total_procs!=0 || r2.total_procs!=0) {
+        snprintf(g_fail_reason,sizeof(g_fail_reason),
+                 "test_double_hpc => mismatch => r1=%llu, r2=%llu",
                  r1.total_procs, r2.total_procs);
-        test_set_fail_reason(g_test_fail_reason);
+        test_set_fail_reason(g_fail_reason);
+        g_tests_failed++;
         return false;
     }
     return true;
 }
 
-/* MLFQ check test. */
-TEST(mlfq_check) {
+static bool test_mlfq_check(void) {
+    g_tests_run++;
     os_init();
     process_t p[3];
     init_process(&p[0],2,10,0);
@@ -146,38 +147,72 @@ TEST(mlfq_check) {
     scheduler_fetch_report(&r);
     os_cleanup();
 
-    if (r.total_procs != 3 || r.preemptions < 1) {
-        snprintf(g_test_fail_reason, sizeof(g_test_fail_reason),
-                 "test_mlfq_check => mismatch => total=%llu, preempt=%llu",
+    if(r.total_procs!=3 || r.preemptions<1) {
+        snprintf(g_fail_reason,sizeof(g_fail_reason),
+                 "test_mlfq_check => mismatch => procs=%llu, preempts=%llu",
                  r.total_procs, r.preemptions);
-        test_set_fail_reason(g_test_fail_reason);
+        test_set_fail_reason(g_fail_reason);
+        g_tests_failed++;
         return false;
     }
     scoreboard_set_sc_mastered(ALG_MLFQ);
     return true;
 }
 
+/* array of all modes tests */
+typedef bool (*test_fn)(void);
+static struct {
+    const char* name;
+    test_fn func;
+} modes_tests[] = {
+    {"hpc_over",        test_hpc_over},
+    {"multi_containers",test_multi_containers},
+    {"multi_distrib",   test_multi_distrib},
+    {"pipeline_modes",  test_pipeline_modes},
+    {"mix_algos",       test_mix_algos},
+    {"double_hpc",      test_double_hpc},
+    {"mlfq_check",      test_mlfq_check}
+};
+static const int MODES_COUNT = sizeof(modes_tests)/sizeof(modes_tests[0]);
+
+int modes_test_count(void){ return MODES_COUNT; }
+const char* modes_test_name(int i){
+    if(i<0 || i>=MODES_COUNT) return NULL;
+    return modes_tests[i].name;
+}
+void modes_test_run_single(int i, int* pass_out){
+    if(!pass_out) return;
+    if(i<0 || i>=MODES_COUNT) {
+        *pass_out=0;
+        return;
+    }
+    g_tests_run=0;
+    g_tests_failed=0;
+    bool ok = modes_tests[i].func();
+    *pass_out = (ok && g_tests_failed==0) ? 1 : 0;
+}
+
 void run_modes_tests(int* total, int* passed) {
-    tests_run   = 0;
-    tests_failed= 0;
+    g_tests_run=0;
+    g_tests_failed=0;
 
     printf("\n\033[1m\033[93m╔══════════ MODES TESTS START ══════════╗\033[0m\n");
+    for(int i=0; i<MODES_COUNT; i++){
+        bool ok = modes_tests[i].func();
+        if(ok){
+            printf("  PASS: %s\n", modes_tests[i].name);
+        } else {
+            printf("  FAIL: %s => %s\n", modes_tests[i].name, test_get_fail_reason());
+        }
+    }
 
-    RUN_TEST(hpc_over);
-    RUN_TEST(multi_containers);
-    RUN_TEST(multi_distrib);
-    RUN_TEST(pipeline_modes);
-    RUN_TEST(mix_algos);
-    RUN_TEST(double_hpc);
-    RUN_TEST(mlfq_check);
-
-    *total  = tests_run;
-    *passed = tests_run - tests_failed;
+    *total  = g_tests_run;
+    *passed = (g_tests_run - g_tests_failed);
 
     printf("\033[1m\033[93m╔══════════════════════════════════════════════╗\n");
     printf("║       MODES TESTS RESULTS: %d / %d passed       ║\n", *passed, *total);
-    if(*passed < *total) {
-        printf("║    FAILURES => see above logs for reasons    ║\n");
+    if(*passed < *total){
+        printf("║    FAILURES => see logs above               ║\n");
     }
     printf("╚══════════════════════════════════════════════╝\033[0m\n");
 }

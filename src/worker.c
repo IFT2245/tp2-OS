@@ -4,24 +4,24 @@
 #include <unistd.h>
 
 /*
-  We simulate partial CPU usage by sleeping. If FAST mode => we drastically reduce.
+  We drastically reduce real-time sleeps to ensure that
+  in FAST mode, all tests can finish under ~5 seconds total.
+
+  We'll define a new scaling:
+    - In NORMAL mode: usleep(slice_ms * 20000)
+    - In FAST mode:   usleep(slice_ms * 2000)
+  This is a ~10x difference. That should keep normal mode somewhat slow
+  and fast mode quite quick.
 */
-static void sim_sleep(unsigned int us) {
-    int sm = stats_get_speed_mode();
-    if(sm==1) {
-        /* fast => ~1/10 the sleeping or even less. */
-        usleep(us / 10 + 1);
-    } else {
-        usleep(us);
-    }
-}
 
 void simulate_process_partial(process_t* p, unsigned long slice_ms, int core_id) {
-    if(!p || slice_ms==0) return;
-    if(stats_get_speed_mode()==0) {
-        printf("\033[94m[Worker] Core=%d => Partial run => priority=%d, slice=%lu ms\n\033[0m",
-               core_id, p->priority, slice_ms);
+    if (!p || slice_ms == 0) return;
+
+    if(stats_get_speed_mode() == 0) {
+        /* NORMAL mode => bigger sleep for user-friendly pacing */
+        usleep((useconds_t)(slice_ms * 20000U));
+    } else {
+        /* FAST mode => short sleep to finish quickly slice_ms = 1/50 */
+        usleep((useconds_t)(slice_ms * 2000U));
     }
-    unsigned int real_us = (unsigned int)(slice_ms * 220000);
-    sim_sleep(real_us);
 }

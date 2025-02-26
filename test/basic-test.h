@@ -7,5 +7,7 @@
 */
 
 void run_basic_tests(int* total,int* passed);
+int basic_test_count(void);
+void basic_test_run_single(int i, int* pass_out);
 
 #endif

@@ -210,9 +210,9 @@ void scheduler_run(process_t* list, int count) {
     /* Normal scheduling run */
     if(stats_get_speed_mode()==0){
         printf("\n\033[95m╔══════════════════════════════════════════════╗\n");
-        printf(         "║   SCHEDULE NAME => %d (enum)                 ║\n", g_current_alg);
-        printf(         "║   Number of processes => %d                  ║\n", count);
-        printf(         "║   Time start => %llu ms                      ║\n", (unsigned long long)os_time());
+        printf(         "║   SCHEDULE NAME => %d (enum)                 \n", g_current_alg);
+        printf(         "║   Number of processes => %d                  \n", count);
+        printf(         "║   Time start => %llu ms                      \n", (unsigned long long)os_time());
         printf(         "╚══════════════════════════════════════════════╝\033[0m\n");
         usleep(300000);
     }

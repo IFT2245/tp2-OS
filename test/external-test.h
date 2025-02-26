@@ -6,5 +6,7 @@
 */
 
 void run_external_tests(void);
+int external_test_count(void);
+void external_test_run_single(int i, int* pass_out);
 
 #endif

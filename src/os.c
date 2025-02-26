@@ -11,7 +11,9 @@
 #include <time.h>
 #include <string.h>
 
-/* Global concurrency stop flag. */
+/*
+  Global concurrency stop flag. If set, any concurrency loop stops early.
+*/
 static volatile sig_atomic_t g_concurrency_stop_flag = 0;
 
 /* For measuring time since os_init() */
@@ -21,7 +23,7 @@ static uint64_t g_start_ms = 0;
 static int       g_container_count = 0;
 static char      g_container_paths[32][256];
 
-/* Returns current time in ms, monotonic */
+/* Returns monotonic current time in ms */
 static uint64_t now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -36,6 +38,10 @@ int os_concurrency_stop_requested(void) {
     return (int)g_concurrency_stop_flag;
 }
 
+/* ----------------------------------------------------------------
+   Initialize "OS"
+   ----------------------------------------------------------------
+*/
 void os_init(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -44,17 +50,20 @@ void os_init(void) {
     g_container_count = 0;
     memset(g_container_paths, 0, sizeof(g_container_paths));
 
-    /* OS init block output */
+    /* OS init block in normal mode */
     printf(CLR_BOLD CLR_MAGENTA "╔══════════════════════════════════════════════╗\n");
     printf("║               OS INIT COMPLETE               ║\n");
     printf("╚══════════════════════════════════════════════╝" CLR_RESET "\n");
 
-    /* small delay in normal mode */
     if(stats_get_speed_mode() == 0) {
-        usleep(250000);
+        usleep(200000); /* short pause in normal mode */
     }
 }
 
+/* ----------------------------------------------------------------
+   Cleanup: remove ephemeral containers, etc.
+   ----------------------------------------------------------------
+*/
 void os_cleanup(void) {
     while (g_container_count > 0) {
         g_container_count--;
@@ -64,13 +73,14 @@ void os_cleanup(void) {
             memset(g_container_paths[g_container_count], 0, sizeof(g_container_paths[g_container_count]));
             printf(CLR_CYAN "[-] Container removed (cleanup): %s\n" CLR_RESET, path);
             stats_inc_containers_removed();
+
             if(stats_get_speed_mode()==0) {
                 usleep(200000);
             }
         }
     }
     printf(CLR_BOLD CLR_MAGENTA "╔══════════════════════════════════════════════╗\n");
-    printf(               "║             OS CLEANUP COMPLETE             ║\n");
+    printf(               "║             OS CLEANUP COMPLETE              ║\n");
     printf("╚══════════════════════════════════════════════╝" CLR_RESET "\n");
 
     if(stats_get_speed_mode() == 0) {
@@ -80,84 +90,77 @@ void os_cleanup(void) {
 
 uint64_t os_time(void) {
     uint64_t now = now_ms();
-    if (now < g_start_ms) return 0ULL;
+    if(now < g_start_ms) return 0ULL;
     return (now - g_start_ms);
 }
 
-/*
-  Optionally log a message with a short delay for user-friendly
-  pacing in normal mode; skip if FAST.
-*/
+/* Minimal logging with a small delay in normal mode only */
 void os_log(const char* msg) {
     if(!msg) return;
-    if (stats_get_speed_mode() == 0) {
+    if(stats_get_speed_mode() == 0) {
         printf("%s\n", msg);
         usleep(150000);
     }
 }
 
-/* Create ephemeral container in /tmp. */
+/* ----------------------------------------------------------------
+   Container creation
+   ----------------------------------------------------------------
+*/
 void os_create_ephemeral_container(void) {
-    if (g_container_count >= 32) return;
+    if(g_container_count >= 32) return;
     char tmpl[] = "/tmp/os_cont_XXXXXX";
-    if (mkdtemp(tmpl)) {
+    if(mkdtemp(tmpl)) {
         strncpy(g_container_paths[g_container_count], tmpl, 255);
         g_container_count++;
         printf(CLR_CYAN "[+] Container created: %s (count=%d)\n" CLR_RESET,
                tmpl, g_container_count);
         stats_inc_containers_created();
+
         if(stats_get_speed_mode()==0) {
             usleep(250000);
         }
     }
 }
 
-/* Remove ephemeral container. */
+/* Container removal */
 void os_remove_ephemeral_container(void) {
-    if (g_container_count <= 0) return;
+    if(g_container_count <= 0) return;
     g_container_count--;
     const char* path = g_container_paths[g_container_count];
-    if (path[0]) {
+    if(path[0]) {
         rmdir(path);
         memset(g_container_paths[g_container_count], 0, sizeof(g_container_paths[g_container_count]));
         printf(CLR_CYAN "[-] Container removed: %s (remaining=%d)\n" CLR_RESET,
                path, g_container_count);
         stats_inc_containers_removed();
+
         if(stats_get_speed_mode()==0) {
             usleep(250000);
         }
     }
 }
 
-/* HPC overshadow thread function => CPU-bound to demonstrate concurrency. */
+/* HPC overshadow => spawn CPU-bound threads */
 static void* overshadow_thread(void* arg) {
     long *ret = (long*)arg;
     long sum = 0;
     for (long i=0; i<700000; i++) {
-        if (os_concurrency_stop_requested()) {
-            break;
-        }
+        if(os_concurrency_stop_requested()) break;
         sum += (i % 17) + (i % 11);
     }
     *ret = sum;
     return NULL;
 }
 
-/*
-  HPC overshadow => spawns multiple CPU-bound threads
-  If concurrency stop is requested, we skip or break early.
-*/
+/* HPC overshadow: run multiple CPU-bound threads to show concurrency. */
 void os_run_hpc_overshadow(void) {
-    printf(CLR_CYAN "╔══════════════════════════════════════════════╗\n");
-    printf("║      HPC-OVERSHADOW BLOCK START             ║\n");
-    printf("╚══════════════════════════════════════════════╝" CLR_RESET "\n");
-
     if(os_concurrency_stop_requested()) {
         printf(CLR_YELLOW "[OS] concurrency stop => skipping HPC overshadow.\n" CLR_RESET);
         return;
     }
 
-    int n=4; /* 4 threads */
+    int n=4; /* 4 CPU-bound threads */
     long* results = (long*)calloc(n, sizeof(long));
     pthread_t* th = (pthread_t*)malloc(n*sizeof(pthread_t));
 
@@ -166,7 +169,7 @@ void os_run_hpc_overshadow(void) {
         if(stats_get_speed_mode()==0){
             printf(CLR_GREEN "   HPC Overshadow Thread #%d => time=%llu ms => started.\n" CLR_RESET,
                    i+1, (unsigned long long)os_time());
-            usleep(300000);
+            usleep(200000);
         }
     }
     for (int i=0; i<n; i++) {
@@ -174,29 +177,26 @@ void os_run_hpc_overshadow(void) {
         if(stats_get_speed_mode()==0){
             printf(CLR_GREEN "   HPC Overshadow Thread #%d => time=%llu ms => finished.\n" CLR_RESET,
                    i+1, (unsigned long long)os_time());
-            usleep(300000);
+            usleep(200000);
         }
     }
 
     free(th);
     free(results);
 
-    printf(CLR_CYAN "╔══════════════════════════════════════════════╗\n");
-    printf("║       HPC-OVERSHADOW BLOCK END              ║\n");
+    printf(CLR_MAGENTA "╔══════════════════════════════════════════════╗\n");
+    printf("║       HPC-OVERSHADOW BLOCK END               ║\n");
     printf("╚══════════════════════════════════════════════╝" CLR_RESET "\n");
 
     if(stats_get_speed_mode()==0){
-        printf("HPC overshadow done\n");
         usleep(200000);
     }
 }
 
-/*
-  Pipeline example => fork a child, show start/end logs.
-*/
+/* Pipeline => single child fork + wait. */
 void os_pipeline_example(void) {
-    printf(CLR_CYAN "╔══════════════════════════════════════════════╗\n");
-    printf("║             PIPELINE BLOCK START            ║\n");
+    printf(CLR_MAGENTA "╔══════════════════════════════════════════════╗\n");
+    printf("║             PIPELINE BLOCK START             ║\n");
     printf("╚══════════════════════════════════════════════╝" CLR_RESET "\n");
 
     if(os_concurrency_stop_requested()) {
@@ -207,16 +207,16 @@ void os_pipeline_example(void) {
     pid_t c = fork();
     if (c == 0) {
         if(stats_get_speed_mode()==0){
-            printf(CLR_GREEN "   [Pipeline child => started => time=%llu ms]\n" CLR_RESET,
+            printf(CLR_GREEN "   [Pipeline child => start => time=%llu ms]\n" CLR_RESET,
                    (unsigned long long)os_time());
             usleep(50000);
-            printf(CLR_GREEN "   [Pipeline child => finishing => time=%llu ms]\n" CLR_RESET,
+            printf(CLR_GREEN "   [Pipeline child => end => time=%llu ms]\n" CLR_RESET,
                    (unsigned long long)os_time());
         }
         _exit(0);
     } else if (c > 0) {
         if(stats_get_speed_mode()==0){
-            printf(CLR_GREEN "   [Pipeline parent => waiting child => time=%llu ms]\n" CLR_RESET,
+            printf(CLR_GREEN "   [Pipeline parent => waiting => time=%llu ms]\n" CLR_RESET,
                    (unsigned long long)os_time());
             usleep(200000);
         }
@@ -224,21 +224,18 @@ void os_pipeline_example(void) {
     }
 
     printf(CLR_CYAN "╔══════════════════════════════════════════════╗\n");
-    printf("║             PIPELINE BLOCK END              ║\n");
+    printf("║             PIPELINE BLOCK END               ║\n");
     printf("╚══════════════════════════════════════════════╝" CLR_RESET "\n");
 
     if(stats_get_speed_mode()==0){
-        printf("Pipeline end\n");
         usleep(200000);
     }
 }
 
-/*
-  Distributed example => fork a child that itself runs HPC overshadow.
-*/
+/* Distributed => fork child that runs HPC overshadow. */
 void os_run_distributed_example(void) {
-    printf(CLR_CYAN "╔══════════════════════════════════════════════╗\n");
-    printf("║          DISTRIBUTED BLOCK START            ║\n");
+    printf(CLR_MAGENTA "╔══════════════════════════════════════════════╗\n");
+    printf("║          DISTRIBUTED BLOCK START             ║\n");
     printf("╚══════════════════════════════════════════════╝" CLR_RESET "\n");
 
     if(os_concurrency_stop_requested()) {
@@ -265,6 +262,6 @@ void os_run_distributed_example(void) {
     }
 
     printf(CLR_CYAN "╔══════════════════════════════════════════════╗\n");
-    printf("║           DISTRIBUTED BLOCK END             ║\n");
+    printf("║           DISTRIBUTED BLOCK END              ║\n");
     printf("╚══════════════════════════════════════════════╝" CLR_RESET "\n");
 }
