@@ -43,12 +43,7 @@ static void reset_schedule_stats(void) {
     g_sim_time = 0;
 }
 
-/* The user wants HPC overshadow to skip normal stats. We'll handle that. */
 static void finalize_stats(void) {
-    /* HPC overshadow => skip normal stats because it's not a typical scheduling run. */
-    if(g_stats.HPC_over_mode || g_list_count <= 0) {
-        return;
-    }
     for(int i=0; i<g_list_count; i++) {
         process_t* P = &g_process_list[i];
         uint64_t at  = P->arrival_time;
@@ -197,13 +192,6 @@ void scheduler_run(process_t* list, int count) {
         }
 
         os_run_hpc_overshadow();
-
-        if(stats_get_speed_mode()==0){
-            printf("\033[96m╔══════════════════════════════════════════════╗\n");
-            printf(       "║  SCHEDULE END => HPC-OVERSHADOW => no stats  ║\n");
-            printf(       "╚══════════════════════════════════════════════╝\033[0m\n");
-            usleep(300000);
-        }
         return;
     }
 

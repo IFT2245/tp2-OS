@@ -23,17 +23,12 @@ static void handle_signal(int signum) {
         stats_print_summary();
         exit(fs);
     }
-    else if(signum == SIGTERM) {
+    if(signum == SIGTERM) {
         /* SIGTERM => stop concurrency/tests => return to menu. */
         stats_inc_signal_sigterm();
-        printf("\nCaught SIGTERM => Stopping concurrency/tests => returning to menu.\n");
+        printf(CLR_RED "\nCaught SIGTERM => Trying to return to menu\n");
         set_os_concurrency_stop_flag(1);
-    }
-    else if(signum == SIGUSR1) {
-        /* SIGUSR1 => also stop concurrency, but remain in program. */
-        stats_inc_signal_other();
-        printf("\nCaught SIGUSR1 => stopping concurrency.\n");
-        set_os_concurrency_stop_flag(1);
+        menu_main_loop();
     }
 }
 
