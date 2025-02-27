@@ -1,3 +1,41 @@
+
+add_executable(main
+        os.c
+        os.h
+        ready_queue.c
+        ready_queue.h
+        worker.c
+        worker.h
+        process.c
+        process.h
+        scheduler.c
+        scheduler.h
+        runner.c
+        runner.h
+        safe_calls_library.c
+        safe_calls_library.h
+        ../test/basic-test.c
+        ../test/basic-test.h
+        ../test/normal-test.c
+        ../test/normal-test.h
+        ../test/modes-test.c
+        ../test/modes-test.h
+        ../test/edge-test.c
+        ../test/edge-test.h
+        ../test/hidden-test.c
+        ../test/hidden-test.h
+        ../test/external-test.c
+        ../test/external-test.h
+        stats.c
+        stats.h
+        main.c
+        scoreboard.c
+        scoreboard.h
+        menu.c
+        menu.h
+)
+
+target_link_libraries(main PRIVATE Threads::Threads m)#include <stdio.h>
 #include <stdlib.h>
 #include "safe_calls_library.h"
 
@@ -9,7 +47,6 @@ int main(const int argc, char** argv) {
     (void)argc;
     (void)argv;
 
-    scoreboard_init();
     scoreboard_load();
     os_init();
     stats_init();
@@ -43,10 +80,6 @@ void pause_enter(void) {
 }
 
 ssize_t read_line(char *buf, const size_t sz) {
-    if (os_concurrency_stop_requested()) {
-        return 0;
-    }
-
     if (buf == NULL || sz == 0 || sz > INT_MAX) {
         return 0;
     }
@@ -67,7 +100,7 @@ ssize_t read_line(char *buf, const size_t sz) {
 void menu_show_scoreboard(void) {
     scoreboard_t sb;
     get_scoreboard(&sb);
-
+    printf("%d", stats_get_test_fifo()); // TO IMPLEMENT WITH STYLE
     printf(CLR_BOLD CLR_MAGENTA "╔════════════════════════════════════════════╗\n" CLR_RESET);
     printf(CLR_BOLD CLR_MAGENTA "║           ★ SCOREBOARD OVERVIEW ★          ║\n" CLR_RESET);
     printf("║--------------------------------------------║\n");
@@ -303,18 +336,10 @@ void submenu_run_tests(void) {
             continue;
         }
 
-        if(os_concurrency_stop_requested()) {
-            printf(CLR_RED" caught SIGTERM => Leaving before next suite\n"CLR_RED);
-            break;
-        }
 
-        /* run the entire suite now */
         run_entire_suite(st);
 
         /* check if user wants to do next suite if it got unlocked => handle in attempt_run_next_suite */
-        /* But the instructions also say: "when basic mode is done or another level, user should be able to refuse next level."
-           That logic is in attempt_run_next_suite internally. We also do it after each run.
-        */
         scoreboard_load(); /* refresh scoreboard after the run */
         attempt_run_next_suite(st);
     }
@@ -430,8 +455,6 @@ void menu_submenu_external_concurrency(void) {
 
     char** lines = (char**)calloc(n, sizeof(char*));
     if(!lines) return;
-
-    set_os_concurrency_stop_flag(0);
 
     int base=2;
     switch(style) {
@@ -563,7 +586,6 @@ void menu_main_loop(void) {
             printf(CLR_GREEN"\nExiting with final score = %d.\n"CLR_RESET, fs);
             os_cleanup();
             scoreboard_save();
-            scoreboard_close();
             stats_print_summary();
             exit(fs);
             break;
@@ -669,14 +691,8 @@ void menu_submenu_external_concurrency(void);
 #include <time.h>
 #include <string.h>
 
-/*
-  Global concurrency stop flag. If set, any concurrency loop stops early.
-*/
-static volatile sig_atomic_t g_concurrency_stop_flag = 0;
-
 /* For measuring time since os_init() in real-time ms. */
 static uint64_t g_start_ms = 0;
-
 /* Up to 32 ephemeral containers. */
 static int       g_container_count = 0;
 static char      g_container_paths[32][256];
@@ -686,14 +702,6 @@ static uint64_t now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)(ts.tv_sec)*1000ULL + (ts.tv_nsec / 1000000ULL);
-}
-
-void set_os_concurrency_stop_flag(int val) {
-    g_concurrency_stop_flag = (sig_atomic_t)val;
-}
-
-int os_concurrency_stop_requested(void) {
-    return (int)g_concurrency_stop_flag;
 }
 
 /* ----------------------------------------------------------------
@@ -721,7 +729,6 @@ void os_cleanup(void) {
             rmdir(path);
             memset(g_container_paths[g_container_count], 0, sizeof(g_container_paths[g_container_count]));
             printf("\033[96m[-] Container removed (cleanup): %s\n\033[0m", path);
-            stats_inc_containers_removed();
         }
     }
 }
@@ -754,7 +761,6 @@ void os_create_ephemeral_container(void) {
         g_container_count++;
         printf("\033[96m[+] Container created: %s (count=%d)\n\033[0m",
                tmpl, g_container_count);
-        stats_inc_containers_created();
     }
 }
 
@@ -768,7 +774,6 @@ void os_remove_ephemeral_container(void) {
         memset(g_container_paths[g_container_count], 0, sizeof(g_container_paths[g_container_count]));
         printf("\033[96m[-] Container removed: %s (remaining=%d)\n\033[0m",
                path, g_container_count);
-        stats_inc_containers_removed();
     }
 }
 
@@ -780,7 +785,6 @@ static void* overshadow_thread(void* arg) {
     long *ret = (long*)arg;
     long sum = 0;
     for (long i=0; i<7000000; i++) {
-        if(os_concurrency_stop_requested()) break;
         sum += (i % 17) + (i % 11);
     }
     *ret = sum;
@@ -788,11 +792,6 @@ static void* overshadow_thread(void* arg) {
 }
 
 void os_run_hpc_overshadow(void) {
-    if(os_concurrency_stop_requested()) {
-        printf("\033[91m[OS] concurrency has to stop => HPC overshadow aborted\n\033[0m");
-        return;
-    }
-
     /* NEW/UPDATED: pick a random number of CPU-bound threads from 4..8. */
     srand((unsigned int)time(NULL));
     int n = 4 + (rand() % 5); /* range = [4..8]. */
@@ -837,7 +836,6 @@ static void* overlay_thread(void* arg) {
     long *ret = (long*)arg;
     long sum = 0;
     for (long i=0; i<4000000; i++) {
-        if(os_concurrency_stop_requested()) break;
         sum += (i % 19) + (i % 13);
     }
     *ret = sum;
@@ -845,11 +843,6 @@ static void* overlay_thread(void* arg) {
 }
 
 void os_run_hpc_overlay(void) {
-    if(os_concurrency_stop_requested()) {
-        printf("\033[91m[OS] concurrency stop => HPC overlay aborted\n\033[0m");
-        return;
-    }
-
     /* NEW/UPDATED: random number of threads in [2..4]. */
     srand((unsigned int)time(NULL));
     int n = 2 + (rand() % 3); /* range = [2..4]. */
@@ -887,25 +880,8 @@ void os_run_hpc_overlay(void) {
     }
 }
 
-/*
-   Pipeline example => now refined to create multiple child processes in series,
-   simulating a multi-stage pipeline.
-*/
+
 void os_pipeline_example(void) {
-    printf("\033[95m╔══════════════════════════════════════════════╗\n");
-    printf("║             PIPELINE BLOCK START             ║\n");
-    printf("╚══════════════════════════════════════════════╝\033[0m\n");
-
-    if(os_concurrency_stop_requested()) {
-        printf("\033[91m[OS] concurrency stop => skipping pipeline.\033[0m\n");
-        return;
-    }
-
-    /* We'll do a 2-stage pipeline:
-       stage1 child => does some "work"
-       then pipe into stage2 child => does next "work"
-       (in real shell code, you'd connect the outputs/inputs, but here we demonstrate the concept.)
-    */
     int pipefd[2];
     if(pipe(pipefd) == -1) {
         perror("pipe");
@@ -956,34 +932,15 @@ void os_pipeline_example(void) {
         }
     }
 
-    printf("\033[96m╔══════════════════════════════════════════════╗\n");
-    printf("║             PIPELINE BLOCK END               ║\n");
-    printf("╚══════════════════════════════════════════════╝\033[0m\n");
-
     if(stats_get_speed_mode()==0){
         usleep(200000);
     }
 }
 
-/*
-   Distributed example => we fork multiple HPC overshadow tasks in parallel
-   to simulate "remote nodes" doing CPU-bound HPC overshadow.
-*/
+
 void os_run_distributed_example(void) {
-    printf("\033[95m╔══════════════════════════════════════════════╗\n");
-    printf("║          DISTRIBUTED BLOCK START             ║\n");
-    printf("╚══════════════════════════════════════════════╝\033[0m\n");
-
-    if(os_concurrency_stop_requested()) {
-        printf("\033[93m[OS] concurrency stop => skipping distributed.\033[0m\n");
-        return;
-    }
-
     /* We'll spawn 2 HPC overshadow children, each doing overshadow. */
     for(int i=0; i<2; i++) {
-        if(os_concurrency_stop_requested()) {
-            break;
-        }
         pid_t c = fork();
         if (c == 0) {
             if(stats_get_speed_mode()==0){
@@ -1001,10 +958,6 @@ void os_run_distributed_example(void) {
     for(int i=0; i<2; i++) {
         wait(NULL);
     }
-
-    printf("\033[96m╔══════════════════════════════════════════════╗\n");
-    printf("║           DISTRIBUTED BLOCK END              ║\n");
-    printf("╚══════════════════════════════════════════════╝\033[0m\n");
 }
 #ifndef OS_H
 #define OS_H
@@ -1056,6 +1009,8 @@ void os_pipeline_example(void);
 /* Distributed example => fork a child that itself runs HPC overshadow. */
 void os_run_distributed_example(void);
 
+int os_concurrency_stop_requested(void);
+void set_os_concurrency_stop_flag(int val);
 #endif
 #include <stdlib.h>
 #include <string.h>
@@ -1136,20 +1091,9 @@ void init_process(process_t* p, uint64_t burst, int priority, uint64_t arrival);
 #include <stdio.h>
 #include <time.h>
 
-/* We'll keep up to 10 MLFQ levels. */
 #define MLFQ_MAX_QUEUES 10
-
-/*
-   We implement optional *aging* for MLFQ:
-   If a process remains in a lower queue for more than MLFQ_AGING_MS
-   (in simulated time), we promote it up one level.
-*/
 #define MLFQ_AGING_MS  10
 
-/*
-   A single node in our queue/linked-list.
-   If proc == NULL, it is a "sentinel" node that signals termination.
-*/
 typedef struct node_s {
     process_t*       proc;
     uint64_t         enqueued_sim_time;
@@ -1368,7 +1312,6 @@ static void mlfq_promote_aged_processes(void) {
 }
 
 /* ---------- Public interface ---------- */
-
 void ready_queue_init_policy(scheduler_alg_t alg) {
     memset(&gQ, 0, sizeof(gQ));
     pthread_mutex_init(pm(), NULL);
@@ -1377,7 +1320,6 @@ void ready_queue_init_policy(scheduler_alg_t alg) {
 }
 
 /* We leave the function pointers approach inlined to keep code simpler. */
-
 void ready_queue_destroy(void) {
     pthread_cond_destroy(pc());
     pthread_mutex_destroy(pm());
@@ -1779,11 +1721,12 @@ static const char* scheduler_alg_to_str2(int mode) {
         case 9:  return "PRIORITY";
         case 10: return "HPC-OVER";
         case 11: return "MLFQ";
+        // overlay
         default: return "UNKNOWN";
     }
 }
 
-static void concurrency_log(const char* fmt, ...) __attribute__((format(printf,1,2)));
+static void concurrency_log(const char* fmt, ...) __attribute__((format(printf,1,2))); // - The `__attribute__((format(printf,1,2)))` is a GCC attribute that tells the compiler to type-check the format string like printf. The numbers `1,2` indicate that the format string is parameter 1, and the variadic arguments start at parameter
 static void concurrency_log(const char* fmt, ...)
 {
     if(stats_get_speed_mode()==1) {
@@ -1819,14 +1762,6 @@ void run_shell_commands_concurrently(int count,
         return;
     }
 
-    stats_inc_concurrency_runs();
-
-    if(stats_get_speed_mode()==0) {
-        printf(CLR_MAGENTA "\n╔═══════════════════════════════════════════════════════════════╗\n");
-        printf(             "║        Shell Commands SCHEDULE BLOCK (EXTERNAL)               ║\n");
-        printf(             "╚═══════════════════════════════════════════════════════════════╝\n" CLR_RESET);
-    }
-
     int from=0, to=11;
     if(!allModes) {
         if(mode<0 || mode>11) {
@@ -1838,27 +1773,17 @@ void run_shell_commands_concurrently(int count,
     }
 
     for(int m=from; m<=to; m++){
-        if(os_concurrency_stop_requested()) {
-            concurrency_log("\n[Concurrency STOP => returning.]\n");
-            break;
-        }
         const char* alg_name = scheduler_alg_to_str2(m);
 
         if(stats_get_speed_mode()==0) {
             concurrency_log(CLR_MAGENTA "\n╔═════════════════════════════════════════════════════════════╗\n");
-            concurrency_log("║ SCHEDULE BLOCK START => %s\n", alg_name);
+            concurrency_log("║ EXTERNAL SCHEDULE BLOCK START => %s\n", alg_name);
             concurrency_log("╚═════════════════════════════════════════════════════════════╝\n" CLR_RESET);
         }
 
         pid_t* pids = (pid_t*)calloc(count, sizeof(pid_t));
         if(!pids) return;
-        stats_inc_concurrency_commands(count);
-
         for(int i=0; i<count; i++){
-            if(os_concurrency_stop_requested()){
-                concurrency_log("[STOP => skip spawn child#%d]\n", i+1);
-                break;
-            }
             concurrency_log(CLR_GREEN "[time=%llu ms] core=%d => Launch child#%d cmd=\"%s\"\n" CLR_RESET,
                             (unsigned long long)os_time(),
                             (i % coreCount), i+1,
@@ -1898,11 +1823,6 @@ void run_shell_commands_concurrently(int count,
         /* wait for them */
         for(int i=0; i<count; i++){
             if(!pids[i]) continue;
-            if(os_concurrency_stop_requested()){
-                concurrency_log("[STOP => kill child pid=%d]\n", pids[i]);
-                kill(pids[i], SIGKILL);
-                continue;
-            }
             waitpid(pids[i], NULL, 0);
             concurrency_log(CLR_YELLOW "[time=%llu ms] => Child#%d ended => cmd=\"%s\"\n" CLR_RESET,
                             (unsigned long long)os_time(),
@@ -1913,17 +1833,10 @@ void run_shell_commands_concurrently(int count,
 
         if(stats_get_speed_mode()==0){
             concurrency_log(CLR_MAGENTA "╔═════════════════════════════════════════════════════════════╗\n");
-            concurrency_log("║ SCHEDULE BLOCK END => %s\n", alg_name);
+            concurrency_log("║ EXTERNAL SCHEDULE BLOCK END => %s\n", alg_name);
             concurrency_log("╚═════════════════════════════════════════════════════════════╝\n" CLR_RESET);
         }
     }
-
-    if(stats_get_speed_mode()==0){
-        printf(CLR_MAGENTA "\n╔═══════════════════════════════════════════════════════════════╗\n");
-        printf(             "║      END CONCURRENCY SCHEDULE BLOCK (EXTERNAL)                ║\n");
-        printf(             "╚═══════════════════════════════════════════════════════════════╝\n" CLR_RESET);
-    }
-    set_os_concurrency_stop_flag(0);
 }
 #ifndef RUNNER_H
 #define RUNNER_H
@@ -1958,15 +1871,23 @@ void run_shell_commands_concurrently(int count,
                                      int mode,
                                      int allModes);
 
+void set_skip_remaining_tests(int val);
+int skip_remaining_tests_requested(void);
 #endif
 #include "safe_calls_library.h"
-
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <limits.h>
 #include <string.h>
+static volatile sig_atomic_t g_skip_remaining_tests = 0;
+int skip_remaining_tests_requested(void) {
+    return (g_skip_remaining_tests != 0);
+}
+void set_skip_remaining_tests(const int val) {
+    g_skip_remaining_tests = (val ? 1 : 0);
+}
 
 int parse_int_strtol(const char* in, int fb) {
     if(!in || !*in) return fb;
@@ -2011,22 +1932,13 @@ double parse_double_strtod(const char* in, double fb) {
 void handle_signal(int signum) {
     if(signum == SIGINT) {
         /* SIGINT => exit immediately, but save scoreboard + stats. */
-        stats_inc_signal_sigint();
         printf("\nCaught SIGINT => Exiting.\n");
         const int fs = scoreboard_get_final_score();
         cleanup_and_exit(fs);
     }
     else if(signum == SIGTERM) {
         /* SIGTERM => stop concurrency/tests => return to menu. */
-        stats_inc_signal_sigterm();
-        printf(CLR_RED "\nCaught SIGTERM => Trying to return to menu\n" CLR_RESET);
-        set_os_concurrency_stop_flag(1);
-        /* Return to menu (the user can then choose to Exit or continue). */
-        menu_main_loop();
-    }
-    else {
-        /* For completeness, track any other signals. */
-        stats_inc_signal_other();
+        set_skip_remaining_tests(1);
     }
 }
 
@@ -2038,7 +1950,6 @@ void handle_signal(int signum) {
 void cleanup_and_exit(int code) {
     os_cleanup();
     scoreboard_save();
-    scoreboard_close();
     stats_print_summary();
     exit(code);
 }#ifndef SAFE_CALLS_LIBRARY_H
@@ -2046,6 +1957,7 @@ void cleanup_and_exit(int code) {
 #include <stddef.h>
 #include <signal.h>
 #include "os.h"
+#include "runner.h"
 #include "scoreboard.h"
 #include "stats.h"
 #include "menu.h"
@@ -2090,42 +2002,53 @@ void handle_signal(int signum);
 #include <string.h>
 #include <unistd.h>
 
-/* We'll assume max of 4 cores for BFS/MLFQ demonstration. */
+/* We assume up to 4 cores max for BFS/MLFQ. */
 #ifndef MAX_CORES
 #define MAX_CORES 4
 #endif
 
 /* ---------- Global scheduling states ---------- */
-static scheduler_alg_t  g_current_alg = ALG_CFS;
-static int              g_num_cores   = 1;
-static int              g_running     = 0;
+static scheduler_alg_t  g_current_alg   = ALG_CFS;
+static int              g_num_cores     = 1;
+static int              g_running       = 0;
 
 /*
    The global simulated time in "ms" (not real ms, but a time-step
    that increments with each partial slice).
 */
-static uint64_t         g_sim_time    = 0;
+static uint64_t         g_sim_time      = 0;
 static pthread_mutex_t  g_sim_time_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* track final stats in a single structure. */
-static schedule_stats_t g_stats;
+/* BFS dynamic quantum (for reference in BFS tests). */
+static unsigned long    g_bfs_quantum   = 4;
 
-/* We keep a pointer to the list of processes used in the run. */
-static process_t* g_process_list = NULL;
-static int        g_list_count   = 0;
+/* Data about processes and arrivals. */
+static process_t*       g_process_list          = NULL;
+static int              g_list_count            = 0;
+
+/* We’ll keep a second array sorted by arrival_time. */
+static process_t*       g_process_list_sorted   = NULL;
+static int              g_next_arrival_index    = 0;
+
+/* Count how many are finished. Once finished == g_list_count => end scheduling. */
+static int              g_finished_count        = 0;
+
+/* Protect arrival feeding & finished_count updates with a small lock. */
+static pthread_mutex_t  g_arrivals_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t  g_finish_lock   = PTHREAD_MUTEX_INITIALIZER;
 
 /*
-   BFS quantum is stored so BFS tests can see what BFS used.
-   This is set in get_dynamic_quantum() if BFS is selected.
+   schedule_stats_t tracks final stats after normal scheduling runs.
+   HPC overshadow / HPC overlay skip normal stats.
 */
-static unsigned long g_bfs_quantum = 4; /* default fallback */
+static schedule_stats_t g_stats;
 
-/* Provide BFS quantum to BFS tests. */
+/* Provide BFS quantum to BFS tests, as originally done. */
 unsigned long scheduler_get_bfs_quantum(void) {
     return g_bfs_quantum;
 }
 
-/* Access global sim time (used by ready_queue for e.g. HRRN, MLFQ) */
+/* Access global sim time (used by ready_queue, e.g. HRRN, MLFQ). */
 uint64_t get_global_sim_time(void) {
     pthread_mutex_lock(&g_sim_time_lock);
     uint64_t t = g_sim_time;
@@ -2133,15 +2056,224 @@ uint64_t get_global_sim_time(void) {
     return t;
 }
 
-/* Resets scheduling stats & sim time at run start. */
+/* Reset scheduling stats & time at run start. */
 static void reset_schedule_stats(void) {
     memset(&g_stats, 0, sizeof(g_stats));
-    g_sim_time = 0;
+    g_sim_time       = 0;
+    g_finished_count = 0;
+    g_next_arrival_index = 0;
 }
 
-/* Compute final stats after all processes finish. */
+/* ---------- Utility: dynamic quantum for preemptive algs ---------- */
+static unsigned long get_dynamic_quantum(scheduler_alg_t alg) {
+    size_t rq_size = ready_queue_size();
+    switch(alg) {
+        case ALG_RR: {
+            /* Example: baseQuantum=2, plus a small adjustment if queue is large. */
+            const unsigned long baseQuantum = 2;
+            unsigned long dynamic_part = (unsigned long)(rq_size / 2);
+            return baseQuantum + dynamic_part;
+        }
+        case ALG_BFS:
+            /*
+               BFS => choose base slice=4 + maybe +1 if queue>5.
+               Store in g_bfs_quantum for BFS tests.
+            */
+            g_bfs_quantum = 4 + (rq_size > 5 ? 1 : 0);
+            return g_bfs_quantum;
+
+        case ALG_CFS_SRTF:
+        case ALG_STRF:
+        case ALG_HRRN_RT:
+        case ALG_MLFQ:
+            /* short fixed slice => 2 ms. */
+            return 2;
+
+        default:
+            /* Non-preemptive => run to completion => quantum=0 => no forced preemption. */
+            return 0;
+    }
+}
+
+/* ---------- Feed newly arrived processes up to current sim_time ---------- */
+static void feed_arrivals_up_to_time(uint64_t now_sim) {
+    pthread_mutex_lock(&g_arrivals_lock);
+    /*
+      If the next arrival in g_process_list_sorted has arrival_time <= now_sim,
+      push it into the ready_queue. We continue while more processes are also ready.
+    */
+    while (g_next_arrival_index < g_list_count) {
+        process_t* arrP = &g_process_list_sorted[g_next_arrival_index];
+        if (arrP->arrival_time <= now_sim) {
+            ready_queue_push(arrP);
+            g_next_arrival_index++;
+        } else {
+            /* The next process has not arrived yet, so break. */
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_arrivals_lock);
+}
+
+/* ---------- Mark a process as finished, check if we can end scheduling ---------- */
+static void mark_process_finished(void) {
+    pthread_mutex_lock(&g_finish_lock);
+    g_finished_count++;
+    /* If all processes are done => push sentinel for each core => threads will exit. */
+    if (g_finished_count >= g_list_count && g_running) {
+        g_running = 0;  /* stop any further loops */
+        /* cause each core to pop a sentinel => break out. */
+        int n = (g_num_cores > MAX_CORES) ? MAX_CORES : g_num_cores;
+        for (int i = 0; i < n; i++) {
+            ready_queue_push(NULL);
+        }
+    }
+    pthread_mutex_unlock(&g_finish_lock);
+}
+
+/*
+   HPC overshadow or HPC overlay => special one-shot mode.
+   We skip normal stats because no “processes” are run in the usual sense.
+*/
+static void run_hpc_mode(int overshadow) {
+    if (stats_get_speed_mode() == 0) {
+        if (overshadow) {
+            printf("\n\033[95m[HPC OVERSHADOW MODE - Start]\033[0m\n");
+            usleep(300000);
+        } else {
+            printf("\n\033[95m[HPC OVERLAY MODE - Start]\033[0m\n");
+            usleep(300000);
+        }
+    }
+    if (overshadow) {
+        g_stats.HPC_over_mode = 1;
+        os_run_hpc_overshadow();
+    } else {
+        g_stats.HPC_overlay_mode = 1;
+        os_run_hpc_overlay();
+    }
+}
+
+/* ---------- The actual scheduling loop for each core ---------- */
+static void* core_thread_func(void* arg) {
+    long core_id = (long)arg;
+
+    while (1) {
+        /* Pop next process from the ready_queue. If sentinel => exit. */
+        process_t* p = ready_queue_pop();
+        if (!p) {
+            /* This is either sentinel or empty queue. If g_running=1, we keep going.
+               But if we got a sentinel, that means we are done.
+            */
+            if (!g_running) {
+                /* actual sentinel => time to exit. */
+                break;
+            } else {
+                /* Could happen if queue is empty but not all processes arrived.
+                   Just loop again (or sleep briefly).
+                */
+                usleep(10000);
+                continue;
+            }
+        }
+
+        /* If first time responding => store response time. */
+        if (!p->responded) {
+            p->responded = 1;
+            p->first_response = get_global_sim_time();
+        }
+        p->times_owning_core++;
+
+        /* Decide time-slice (quantum) for preemptive scheduling. */
+        unsigned long q = get_dynamic_quantum(g_current_alg);
+        int preemptive   = (q > 0) ? 1 : 0;
+
+        /* slice = min(q, remaining_time) or entire remain if non-preemptive. */
+        uint64_t remain = p->remaining_time;
+        unsigned long slice = preemptive ?
+                              ( (remain > q) ? q : (unsigned long)remain ) :
+                              (unsigned long)remain;
+
+        /* "Run" that partial slice. */
+        uint64_t real_t_before = os_time();
+        if (stats_get_speed_mode() == 0) {
+            printf("\033[93m[time=%llu ms] => container=1 core=%ld => scheduling process=%p\n"
+                   "   => burst_time=%lu, prio=%d, vruntime=%llu, remain=%llu, timesScheduled=%d\n\033[0m",
+                   (unsigned long long)real_t_before,
+                   core_id, (void*)p,
+                   (unsigned long)p->burst_time,
+                   p->priority,
+                   (unsigned long long)p->vruntime,
+                   (unsigned long long)p->remaining_time,
+                   p->times_owning_core);
+            usleep(300000);
+        }
+
+        simulate_process_partial(p, slice, (int)core_id);
+
+        /* update remain, global sim_time, check new arrivals. */
+        pthread_mutex_lock(&g_sim_time_lock);
+        p->remaining_time -= slice;
+
+        g_sim_time += slice; /* advance simulated time by the slice. */
+        uint64_t now_sim = g_sim_time;
+        pthread_mutex_unlock(&g_sim_time_lock);
+
+        /* If using CFS or CFS-SRTF => add to vruntime. */
+        if (g_current_alg == ALG_CFS || g_current_alg == ALG_CFS_SRTF) {
+            p->vruntime += slice;
+        }
+
+        /* Feed newly arrived processes if any. */
+        feed_arrivals_up_to_time(now_sim);
+
+        /* If process is not finished => requeue if preemptive => preempt++ */
+        if (p->remaining_time > 0) {
+            if (preemptive) {
+                __sync_fetch_and_add(&g_stats.total_preempts, 1ULL);
+
+                if (stats_get_speed_mode() == 0) {
+                    printf("\033[94m   => PREEMPT => process=%p => new remain=%llu => preemptions=%llu\n\033[0m",
+                           (void*)p,
+                           (unsigned long long)p->remaining_time,
+                           (unsigned long long)g_stats.total_preempts);
+                    usleep(300000);
+                }
+                /* degrade to next queue if MLFQ, etc. */
+                if (g_current_alg == ALG_MLFQ) {
+                    p->mlfq_level++;
+                }
+                ready_queue_push(p);
+            } else {
+                /* non-preemptive => it should run to completion, so no requeue. */
+                /* But in practice, we've just used the entire remain. So it's done. */
+                p->end_time = now_sim;
+                mark_process_finished();
+
+                if (stats_get_speed_mode() == 0) {
+                    printf("\033[92m   => FINISH => process=%p => total CPU used=%lu => time=%llu ms\n\033[0m",
+                           (void*)p, slice, (unsigned long long)os_time());
+                    usleep(300000);
+                }
+            }
+        } else {
+            /* remain_time <= 0 => done. */
+            p->end_time = now_sim;
+            mark_process_finished();
+
+            if (stats_get_speed_mode() == 0) {
+                printf("\033[92m   => FINISH => process=%p => total CPU used=%lu => time=%llu ms\n\033[0m",
+                       (void*)p, slice, (unsigned long long)os_time());
+                usleep(300000);
+            }
+        }
+    }
+    return NULL;
+}
+
+/* ---------- Helpers to compute final stats ---------- */
 static void finalize_stats(void) {
-    for(int i=0; i<g_list_count; i++) {
+    for (int i = 0; i < g_list_count; i++) {
         process_t* P = &g_process_list[i];
         uint64_t at  = P->arrival_time;
         uint64_t st  = P->first_response;
@@ -2157,7 +2289,7 @@ static void finalize_stats(void) {
     }
     g_stats.total_count = g_list_count;
 
-    if(g_stats.total_count > 0) {
+    if (g_stats.total_count > 0) {
         g_stats.avg_wait       = (double)g_stats.total_wait / (double)g_stats.total_count;
         g_stats.avg_turnaround = (double)g_stats.total_tat  / (double)g_stats.total_count;
         g_stats.avg_response   = (double)g_stats.total_resp / (double)g_stats.total_count;
@@ -2166,139 +2298,7 @@ static void finalize_stats(void) {
     g_stats.total_procs   = g_stats.total_count;
 }
 
-/*
-   Returns a dynamic quantum for each preemptive scheduling mode.
-   BFS => store in g_bfs_quantum, so BFS test can see the actual timeslice.
-*/
-static unsigned long get_dynamic_quantum(scheduler_alg_t alg) {
-    size_t rq_size = ready_queue_size();
-    switch(alg) {
-        case ALG_RR: {
-            /* Example dynamic approach for RR. */
-            const unsigned long baseQuantum = 2;
-            unsigned long dynamic_part = (unsigned long)(rq_size / 2);
-            return baseQuantum + dynamic_part;
-        }
-        case ALG_BFS:
-            /*
-               BFS => choose base slice=4, maybe +1 if queue is big.
-               This is just an example. You can do what you want here.
-            */
-            g_bfs_quantum = 4 + (rq_size > 5 ? 1 : 0);
-            return g_bfs_quantum;
-
-        case ALG_CFS_SRTF:
-        case ALG_STRF:
-        case ALG_HRRN_RT:
-        case ALG_MLFQ:
-            /* short fixed slice => 2 ms. */
-            return 2;
-
-        default:
-            /* Non-preemptive => run to completion => quantum=0 => no preemption. */
-            return 0;
-    }
-}
-
-/*
-   The scheduling loop for each core:
-   - pop from ready_queue
-   - run partial timeslice
-   - if remain>0 => requeue => preempt
-*/
-static void* core_thread_func(void* arg) {
-    long core_id = (long)arg;
-
-    while(g_running) {
-        if(os_concurrency_stop_requested()) {
-            break;
-        }
-
-        process_t* p = ready_queue_pop();
-        if(!g_running || !p) {
-            /* if queue empty or sentinel => skip */
-            continue;
-        }
-
-        uint64_t real_t = os_time();
-        if(stats_get_speed_mode() == 0) {
-            printf("\033[93m[time=%llu ms] => container=1 core=%ld => scheduling process=%p\n"
-                   "   => burst_time=%lu, prio=%d, vruntime=%llu, remain=%llu, timesScheduled=%d\n\033[0m",
-                   (unsigned long long)real_t,
-                   core_id, (void*)p,
-                   (unsigned long)p->burst_time,
-                   p->priority,
-                   (unsigned long long)p->vruntime,
-                   (unsigned long long)p->remaining_time,
-                   p->times_owning_core);
-            usleep(300000);
-        }
-
-        if(!p->responded) {
-            p->responded       = 1;
-            p->first_response  = get_global_sim_time();
-        }
-        p->times_owning_core++;
-
-        /* Decide if preemptive => choose quantum. */
-        unsigned long q = get_dynamic_quantum(g_current_alg);
-        int preemptive = (q > 0) ? 1 : 0;
-
-        /* slice = min(q, remaining_time) if preemptive, else entire remain. */
-        unsigned long slice = preemptive
-                              ? ( (p->remaining_time > q) ? q : p->remaining_time )
-                              : p->remaining_time;
-
-        /* run partial. */
-        simulate_process_partial(p, slice, (int)core_id);
-
-        /* update global simulated time. */
-        pthread_mutex_lock(&g_sim_time_lock);
-        g_sim_time += slice;
-        uint64_t now_sim = g_sim_time;
-        pthread_mutex_unlock(&g_sim_time_lock);
-
-        p->remaining_time -= slice;
-
-        /* If using CFS or CFS-SRTF => update vruntime. */
-        if(g_current_alg == ALG_CFS || g_current_alg == ALG_CFS_SRTF) {
-            p->vruntime += slice;
-        }
-
-        /* still not finished => requeue => preempt++ */
-        if(preemptive && p->remaining_time > 0) {
-            __sync_fetch_and_add(&g_stats.total_preempts, 1ULL);
-
-            if(stats_get_speed_mode()==0) {
-                printf("\033[94m   => PREEMPT => process=%p => new remain=%llu => preemptions=%llu\n\033[0m",
-                       (void*)p,
-                       (unsigned long long)p->remaining_time,
-                       (unsigned long long)g_stats.total_preempts);
-                usleep(300000);
-            }
-
-            /* degrade to next queue if MLFQ */
-            if(g_current_alg == ALG_MLFQ) {
-                p->mlfq_level++;
-            }
-            ready_queue_push(p);
-        }
-        else {
-            /* The process is done. */
-            p->end_time = now_sim;
-            if(stats_get_speed_mode()==0) {
-                printf("\033[92m   => FINISH => process=%p => total CPU used=%lu ms => time=%llu ms\n\033[0m",
-                       (void*)p,
-                       (unsigned long)slice,
-                       (unsigned long long)os_time());
-                usleep(300000);
-            }
-        }
-    }
-    return NULL;
-}
-
-/* ---------- Public Functions ---------- */
+/* ---------- Public / Exposed Functions ---------- */
 
 void scheduler_select_algorithm(scheduler_alg_t a) {
     g_current_alg = a;
@@ -2306,87 +2306,94 @@ void scheduler_select_algorithm(scheduler_alg_t a) {
 
 void scheduler_run(process_t* list, int count) {
     reset_schedule_stats();
-    if(!list || count<=0) return;
+    if(!list || count <= 0) return;
 
-    /* HPC overshadow/overlay => special handling. */
-    if(g_current_alg == ALG_HPC_OVERSHADOW) {
-        g_stats.HPC_over_mode = 1;
-        if(stats_get_speed_mode()==0) {
-            printf("\n\033[95m╔══════════════════════════════════════════════╗\n");
-            printf(         "║   SCHEDULE => HPC-OVERSHADOW (special mode)   ║\n");
-            printf(         "╚══════════════════════════════════════════════╝\033[0m\n");
-            usleep(300000);
-        }
-        os_run_hpc_overshadow();
+    /* HPC overshadow/overlay => skip normal scheduling. */
+    if (g_current_alg == ALG_HPC_OVERSHADOW) {
+        run_hpc_mode(/*overshadow=*/1);
         return;
     }
-    else if(g_current_alg == ALG_HPC_OVERLAY) {
-        g_stats.HPC_overlay_mode = 1;
-        if(stats_get_speed_mode()==0) {
-            printf("\n\033[95m╔══════════════════════════════════════════════╗\n");
-            printf(         "║    SCHEDULE => HPC-OVERLAY (special mode)     ║\n");
-            printf(         "╚══════════════════════════════════════════════╝\033[0m\n");
-            usleep(300000);
-        }
-        os_run_hpc_overlay();
+    if (g_current_alg == ALG_HPC_OVERLAY) {
+        run_hpc_mode(/*overshadow=*/0);
         return;
     }
 
-    /* BFS or MLFQ => 2 cores, else 1. */
-    if(g_current_alg == ALG_BFS || g_current_alg == ALG_MLFQ) {
+    /* BFS or MLFQ => we use 2 cores, else 1. */
+    if (g_current_alg == ALG_BFS || g_current_alg == ALG_MLFQ) {
         g_num_cores = 2;
     } else {
         g_num_cores = 1;
     }
 
-    if(stats_get_speed_mode()==0) {
+    /* Keep a copy of the processes so we can do final stats. */
+    g_process_list = list;
+    g_list_count   = count;
+
+    /* Also build a second array sorted by arrival_time. */
+    g_process_list_sorted = (process_t*)calloc((size_t)count, sizeof(process_t));
+    memcpy(g_process_list_sorted, list, count * sizeof(process_t));
+    /* Simple ascending sort by arrival_time: */
+    for(int i=0; i<count-1; i++){
+        for(int j=i+1; j<count; j++){
+            if(g_process_list_sorted[j].arrival_time < g_process_list_sorted[i].arrival_time) {
+                process_t tmp = g_process_list_sorted[i];
+                g_process_list_sorted[i] = g_process_list_sorted[j];
+                g_process_list_sorted[j] = tmp;
+            }
+        }
+    }
+
+    if (stats_get_speed_mode() == 0) {
         printf("\n\033[95m╔══════════════════════════════════════════════╗\n");
-        printf(       "║   SCHEDULE => alg=%d => #processes=%d          \n", g_current_alg, count);
-        printf(       "║   RealTime start => %llu ms                   \n", (unsigned long long)os_time());
+        printf(       "║ SCHEDULE => alg=%d => #processes=%d            \n", g_current_alg, count);
+        printf(       "║ RealTime start => %llu ms                     \n", (unsigned long long)os_time());
         printf(       "╚══════════════════════════════════════════════╝\033[0m\n");
         usleep(300000);
     }
 
+    /* Initialize the ready_queue with the chosen alg. */
     ready_queue_init_policy(g_current_alg);
 
-    g_process_list = list;
-    g_list_count   = count;
-    g_running      = 1;
+    /* Initially, no processes are in the queue. We feed any that have arrival_time=0. */
+    g_running = 1;
+    feed_arrivals_up_to_time(0);
 
-    /* push all processes into the queue. */
-    for(int i=0; i<count; i++) {
-        ready_queue_push(&list[i]);
-    }
-
+    /* Spawn core threads. */
     pthread_t tid[MAX_CORES];
     int n = (g_num_cores > MAX_CORES) ? MAX_CORES : g_num_cores;
-
-    /* spawn each core thread. */
-    for(int i=0; i<n; i++) {
+    for (int i=0; i<n; i++) {
         pthread_create(&tid[i], NULL, core_thread_func, (void*)(long)i);
     }
 
-    /* wait while queue is not empty */
-    while(ready_queue_size() > 0) {
-        usleep(200000);
-        if(os_concurrency_stop_requested()) {
+    /*
+       Wait until all processes finish.
+       We do that by sleeping periodically until g_finished_count == g_list_count.
+       Another approach is a condition variable. We'll keep it simple.
+    */
+    while (1) {
+        pthread_mutex_lock(&g_finish_lock);
+        if (g_finished_count >= g_list_count) {
+            pthread_mutex_unlock(&g_finish_lock);
             break;
         }
+        pthread_mutex_unlock(&g_finish_lock);
+        usleep(50000); /* poll period */
     }
 
-    /* end scheduling => push sentinel => join threads */
+    /* Now push sentinel to ensure threads exit if not already done. */
     g_running = 0;
-    for(int i=0; i<n; i++) {
+    for(int i=0; i<n; i++){
         ready_queue_push(NULL);
     }
-    for(int i=0; i<n; i++) {
+    for(int i=0; i<n; i++){
         pthread_join(tid[i], NULL);
     }
 
+    /* done => destroy the queue, finalize stats. */
     ready_queue_destroy();
     finalize_stats();
 
-    if(stats_get_speed_mode()==0) {
+    if (stats_get_speed_mode()==0) {
         uint64_t total_time = get_global_sim_time();
         printf("\033[96m╔══════════════════════════════════════════════╗\n");
         printf(       "║ SCHEDULE END => alg=%d => totalTime=%llums    \n",
@@ -2399,12 +2406,15 @@ void scheduler_run(process_t* list, int count) {
         usleep(300000);
     }
 
-    g_process_list = NULL;
-    g_list_count   = 0;
+    free(g_process_list_sorted);
+    g_process_list_sorted = NULL;
+    g_process_list        = NULL;
+    g_list_count          = 0;
 }
 
 void scheduler_fetch_report(sched_report_t* out) {
     if(!out) return;
+
     /* HPC overshadow/overlay => zero normal stats. */
     if(g_stats.HPC_over_mode || g_stats.HPC_overlay_mode) {
         out->avg_wait       = 0.0;
@@ -2521,7 +2531,7 @@ unsigned long scheduler_get_bfs_quantum(void);
  */
 
 /* Global scoreboard structure */
-static scoreboard_t gSB = {
+extern scoreboard_t gSB = {
     /* test totals and passes: */
     0,0, 0,0, 0,0, 0,0, 0,0, 0,0,
     /* scheduling mastery flags: */
@@ -2639,10 +2649,6 @@ static void write_scoreboard_json(const scoreboard_t* sb) {
 
     fclose(f);
 }
-
-/* scoreboard_init() / scoreboard_close() => no-op */
-void scoreboard_init(void) {}
-void scoreboard_close(void) {}
 
 /* Load from scoreboard.json */
 void scoreboard_load(void) {
@@ -2964,79 +2970,89 @@ int scoreboard_is_unlocked(scoreboard_suite_t suite);
 #include <string.h>
 #include "safe_calls_library.h"
 
-/* Global stats object. */
+/* Global stats object
+ * Support for speed mode
+ */
 static stats_t g_stats;
-
 void stats_init(void) {
     memset(&g_stats, 0, sizeof(g_stats));
     g_stats.speed_mode = 0; /* default => normal speed */
 }
-
 void stats_get(stats_t* out) {
     if(out) {
         *out = g_stats;
     }
 }
-
 void stats_set_speed_mode(int mode) {
     g_stats.speed_mode = (mode != 0) ? 1 : 0;
 }
-
 int stats_get_speed_mode(void) {
     return g_stats.speed_mode;
 }
 
-void stats_inc_signal_sigint(void) {
-    g_stats.signals_received_sigint++;
+
+static char g_fail_reason[256] = {0};
+void test_set_fail_reason(const char* msg) {
+    if(!msg) {
+        g_fail_reason[0] = '\0';
+        return;
+    }
+    strncpy(g_fail_reason, msg, sizeof(g_fail_reason)-1);
+    g_fail_reason[sizeof(g_fail_reason)-1] = '\0';
 }
-void stats_inc_signal_sigterm(void) {
-    g_stats.signals_received_sigterm++;
-}
-void stats_inc_signal_other(void) {
-    g_stats.signals_received_others++;
-}
-void stats_inc_concurrency_runs(void) {
-    g_stats.concurrency_runs++;
-}
-void stats_inc_processes_spawned(void) {
-    g_stats.processes_spawned++;
-}
-void stats_inc_containers_created(void) {
-    g_stats.containers_created++;
-}
-void stats_inc_containers_removed(void) {
-    g_stats.containers_removed++;
+const char* test_get_fail_reason(void) {
+    if(g_fail_reason[0] == '\0') {
+        return "???";
+    }
+    return g_fail_reason;
 }
 void stats_inc_tests_passed(int count) {
-    g_stats.tests_passed += count;
+    g_stats.tests_passed = count;
 }
 void stats_inc_tests_failed(int count) {
-    g_stats.tests_failed += count;
-}
-void stats_inc_concurrency_commands(int n) {
-    g_stats.concurrency_commands_run += n;
+    g_stats.tests_failed = count;
 }
 
-/*
-  Print final stats with nice ASCII box.
-*/
+
+
+
+/*  EACH TEST SHOULD USE A FUNCTION LIKE THIS */
+void stats_set_test_fifo(int state) {
+    g_stats.test_fifo = state;
+}
+int stats_get_test_fifo(void) {
+    return g_stats.test_fifo;
+}
+
+
+
+
 void stats_print_summary(void) {
     printf(CLR_BOLD CLR_CYAN "\n╔═══════════════════ FINAL STATS ═════════════════╗\n");
     printf("║ Speed Mode            : %s\n", g_stats.speed_mode ? "FAST" : "NORMAL");
-    printf("║ Signals (SIGINT)      : %d\n", g_stats.signals_received_sigint);
-    printf("║ Signals (SIGTERM)     : %d\n", g_stats.signals_received_sigterm);
-    printf("║ Signals (Others)      : %d\n", g_stats.signals_received_others);
-    printf("║ Concurrency Runs      : %d\n", g_stats.concurrency_runs);
-    printf("║ Processes Spawned     : %d\n", g_stats.processes_spawned);
-    printf("║ Containers Created    : %d\n", g_stats.containers_created);
-    printf("║ Containers Removed    : %d\n", g_stats.containers_removed);
     printf("║ Tests Passed          : %d\n", g_stats.tests_passed);
     printf("║ Tests Failed          : %d\n", g_stats.tests_failed);
-    printf("║ Concurrency Cmds Run  : %d\n", g_stats.concurrency_commands_run);
     printf("╚═════════════════════════════════════════════════╝\n" CLR_RESET);
 }
 #ifndef STATS_H
 #define STATS_H
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+
+/* Colors for ASCII art convenience. */
+#define CLR_RESET   "\033[0m"
+#define CLR_BOLD    "\033[1m"
+#define CLR_MAGENTA "\033[95m"
+#define CLR_RED     "\033[91m"
+#define CLR_GREEN   "\033[92m"
+#define CLR_GRAY    "\033[90m"
+#define CLR_YELLOW  "\033[93m"
+#define CLR_CYAN    "\033[96m"
+
+void test_set_fail_reason(const char* msg);
+const char* test_get_fail_reason(void);
+
 
 /*
    stats.h => a global struct tracking concurrency usage, signals, tests, etc.
@@ -3044,50 +3060,57 @@ void stats_print_summary(void) {
 */
 
 typedef struct {
-    int signals_received_sigint;
-    int signals_received_sigterm;
-    int signals_received_others;
-
-    int concurrency_runs;
-    int processes_spawned;
-    int containers_created;
-    int containers_removed;
-
     int tests_passed;
     int tests_failed;
-
     /* speed_mode: 0 => normal, 1 => fast */
     int speed_mode;
+    int test_fifo;
+    int test_rr;
+    int test_cfs;
+    int test_bfs;
+    int test_pipeline;
+    int test_distributed;
+    int test_fifo_strict;
 
-    /* track total concurrency commands issued in runner. */
-    int concurrency_commands_run;
+    int sjf;
+    int strf;
+    int hrrn;
+    int hrrn_rt;
+    int priority;
+    int cfs_srtf;
+    int sjf_strict;
 
+    int hpc_over;
+    int multi_containers;
+    int multi_distrib;
+    int pipeline_modes;
+    int mix_algos;
+    int double_hpc;
+    int mlfq_check;
+
+
+    char ** test_fifo_reason;
+    char ** test_rr_reason;
+    char ** test_cfs_reason;
+    char ** test_bfs_reason;
 } stats_t;
+
+void stats_set_test_fifo(int mode);
+int stats_get_test_fifo(void);
+void stats_set_fifo_reason(const char* msg);
+const char* stats_get_fifo_reason(void);
+
 
 /* Initialize global stats. */
 void stats_init(void);
-
 /* Get the global stats. */
 void stats_get(stats_t* out);
-
 /* set speed_mode (0 or 1). */
 void stats_set_speed_mode(int mode);
-
 /* get speed_mode. */
 int stats_get_speed_mode(void);
-
-/* increments for various tracked fields. */
-void stats_inc_signal_sigint(void);
-void stats_inc_signal_sigterm(void);
-void stats_inc_signal_other(void);
-void stats_inc_concurrency_runs(void);
-void stats_inc_processes_spawned(void);
-void stats_inc_containers_created(void);
-void stats_inc_containers_removed(void);
 void stats_inc_tests_passed(int count);
 void stats_inc_tests_failed(int count);
-void stats_inc_concurrency_commands(int n);
-
 /* Print them in a block at program end. */
 void stats_print_summary(void);
 
@@ -3134,11 +3157,9 @@ void simulate_process_partial(process_t* p, unsigned long slice_ms, int core_id)
 
 #endif
 #include "basic-test.h"
-#include "test_common.h"
 
 #include "../src/scheduler.h"
 #include "../src/process.h"
-#include "../src/os.h"
 #include "../src/scoreboard.h"
 #include "../src/worker.h"
 
@@ -3156,6 +3177,7 @@ static int almost_equal(double a, double b, double eps) {
 
 /* ---------- Actual test functions ---------- */
 static bool test_fifo(void) {
+    // if (stats_get_test_fifo()==1) return true;
     g_tests_run++;
     os_init();
     process_t p[2];
@@ -3183,6 +3205,7 @@ static bool test_fifo(void) {
         return false;
     }
     scoreboard_set_sc_mastered(ALG_FIFO);
+    // stats_set_test_fifo(1);
     return true;
 }
 
@@ -3213,6 +3236,7 @@ static bool test_rr(void) {
         g_tests_failed++;
         return false;
     }
+    // stats_set_test_rr(1);
     scoreboard_set_sc_mastered(ALG_RR);
     return true;
 }
@@ -3375,7 +3399,15 @@ void basic_test_run_single(int i, int* pass_out) {
     bool ok = basic_tests[i].func();
     if(!ok) {
         *pass_out=0;
+        printf(CLR_RED CLR_BOLD"  PASS: %s\n"CLR_RESET, basic_tests[i].name);
         return;
+    } else
+    {
+        *pass_out=1;
+        printf(CLR_RED CLR_BOLD"  FAIL: %s => %s\n"CLR_RESET,
+               basic_tests[i].name,
+               test_get_fail_reason());
+        // stats_set_specific_test_reason(test_get_fail_reason(), i); // TO DO TO EVERY TESTS FOR STATS
     }
     /* if not failed => pass */
     *pass_out = (g_tests_failed==0) ? 1 : 0;
@@ -3388,14 +3420,27 @@ void run_basic_tests(int* total, int* passed){
     memset(g_fail_reason,0,sizeof(g_fail_reason));
 
     printf("\n" CLR_BOLD CLR_YELLOW "╔════════════ BASIC TESTS START ═════════════╗" CLR_RESET "\n");
+
+
     for(int i=0; i<BASIC_COUNT; i++){
         bool ok = basic_tests[i].func();
         if(ok) {
-            printf("  PASS: %s\n", basic_tests[i].name);
+            printf(CLR_RED CLR_BOLD"  PASS: %s\n"CLR_RESET, basic_tests[i].name);
         } else {
-            printf("  FAIL: %s => %s\n",
+            printf(CLR_RED CLR_BOLD"  FAIL: %s => %s\n"CLR_RESET,
                    basic_tests[i].name,
                    test_get_fail_reason());
+            // stats_set_current_test_state(basic_tests[i].name, ok);  // TO DO TO EVERY TESTS FOR STATS with dynamic
+            // stats_set_fifo_reason(test_get_fail_reason()); // TO DO TO EVERY TESTS FOR STATS with dynamic
+        }
+
+        if (skip_remaining_tests_requested()) { // to do for every levels
+            *total  = g_tests_run;
+            *passed = g_tests_run - g_tests_failed;
+            stats_inc_tests_passed(*passed);
+            stats_inc_tests_failed((*total) - (*passed));
+            printf(CLR_RED "[SIGTERM] => skipping remaining tests in this suite.\n" CLR_RESET);
+            break;
         }
     }
 
@@ -3411,7 +3456,7 @@ void run_basic_tests(int* total, int* passed){
 }
 #ifndef BASIC_TEST_H
 #define BASIC_TEST_H
-
+#include "../src/safe_calls_library.h"
 /*
   Basic tests: FIFO, RR, CFS, BFS, pipeline, distributed, etc.
   We also provide single-test picking if needed.
@@ -3423,8 +3468,7 @@ void basic_test_run_single(int i, int* pass_out);
 
 #endif
 #include "edge-test.h"
-#include "test_common.h"
-
+#include "../src/stats.h"
 #include "../src/process.h"
 #include "../src/scheduler.h"
 #include "../src/os.h"
@@ -3676,26 +3720,14 @@ static int check_shell_binary(void) {
 
 /* A small helper that actually does the concurrency run for schedule mode `m`. */
 static int do_external_test_for_mode(int m) {
-    // We'll do a short concurrency scenario: 2 shell commands, 1 core.
-    // The "sleep" commands must be typed into the shell.
-    // run_shell_commands_concurrently(count=2, lines=..., coreCount=1, mode=m, allModes=0)
-    // If it runs without error or SIGTERM, we consider it "pass".
-    // We'll also do HPC-OVER (mode=10), which just spawns HPC overshadow.
-    // The underlying runner checks if the shell is missing or not.
-    // We'll interpret "pass" if we do not forcibly SIGKILL or error out.
+
 
     // We'll create 2 lines:
     char* lines[2];
     lines[0] = strdup("sleep 1");
     lines[1] = strdup("sleep 2");
 
-    // Clear concurrency stop flag first
-    set_os_concurrency_stop_flag(0);
-
-    // We'll run it. If the shell is missing, the code prints an error,
-    // but we won't directly have a runtime "error" code. We'll assume we can detect that in check_shell_binary() above.
-    run_shell_commands_concurrently(2, lines, /*coreCount=*/1, m, /*allModes=*/0);
-
+    NULL;
     free(lines[0]);
     free(lines[1]);
 
@@ -3851,8 +3883,7 @@ void external_test_run_single(int i, int* pass_out);
 
 #endif
 #include "hidden-test.h"
-#include "test_common.h"
-
+#include "../src/stats.h"
 #include "../src/os.h"
 #include "../src/scheduler.h"
 #include "../src/process.h"
@@ -4074,13 +4105,11 @@ int hidden_test_count(void);
 void hidden_test_run_single(int i, int* pass_out);
 #endif
 #include "modes-test.h"
-#include "test_common.h"
-
 #include "../src/scheduler.h"
 #include "../src/os.h"
 #include "../src/process.h"
 #include "../src/scoreboard.h"
-
+#include "../src/stats.h"
 #include <stdio.h>
 #include <math.h>
 
@@ -4302,8 +4331,7 @@ void modes_test_run_single(int i, int* pass_out);
 
 #endif
 #include "normal-test.h"
-#include "test_common.h"
-
+#include "../src/stats.h"
 #include "../src/scheduler.h"
 #include "../src/process.h"
 #include "../src/os.h"
@@ -4584,115 +4612,4 @@ void run_normal_tests(int* total,int* passed) {
 void run_normal_tests(int* total,int* passed);
 int normal_test_count(void);
 void normal_test_run_single(int i, int* pass_out);
-#endif
-#include "test_common.h"
-#include <string.h>
-#include <stdio.h>
-#include <unistd.h>
-#include <sys/wait.h>
-#include <fcntl.h>
-#include <errno.h>
-#include <stdarg.h>
-
-static char g_fail_reason[256] = {0};
-
-void test_set_fail_reason(const char* msg) {
-    if(!msg) {
-        g_fail_reason[0] = '\0';
-        return;
-    }
-    strncpy(g_fail_reason, msg, sizeof(g_fail_reason)-1);
-    g_fail_reason[sizeof(g_fail_reason)-1] = '\0';
-}
-
-const char* test_get_fail_reason(void) {
-    if(g_fail_reason[0] == '\0') {
-        return "???";
-    }
-    return g_fail_reason;
-}
-
-static ssize_t read_all_fd(int fd, char* buf, size_t cap) {
-    size_t used = 0;
-    while(used + 1 < cap) {
-        ssize_t r = read(fd, buf + used, cap - 1 - used);
-        if(r < 0 && errno == EINTR) continue;
-        if(r <= 0) break;
-        used += (size_t)r;
-    }
-    buf[used] = '\0';
-    return (ssize_t)used;
-}
-
-int run_function_capture_output(void(*fn)(void), struct captured_output* out) {
-    if(!fn || !out) return -1;
-    int p_out[2], p_err[2];
-    if(pipe(p_out)==-1 || pipe(p_err)==-1) return -1;
-    int save_out = dup(STDOUT_FILENO);
-    int save_err = dup(STDERR_FILENO);
-    if(save_out<0 || save_err<0) return -1;
-
-    pid_t c = fork();
-    if(c<0) {
-        return -1;
-    }
-    if(c==0) {
-        close(p_out[0]);
-        close(p_err[0]);
-        dup2(p_out[1], STDOUT_FILENO);
-        dup2(p_err[1], STDERR_FILENO);
-        close(p_out[1]);
-        close(p_err[1]);
-
-        fn();
-        _exit(0);
-    } else {
-        close(p_out[1]);
-        close(p_err[1]);
-        read_all_fd(p_out[0], out->stdout_buf, sizeof(out->stdout_buf));
-        read_all_fd(p_err[0], out->stderr_buf, sizeof(out->stderr_buf));
-        close(p_out[0]);
-        close(p_err[0]);
-
-        dup2(save_out, STDOUT_FILENO);
-        dup2(save_err, STDERR_FILENO);
-        close(save_out);
-        close(save_err);
-
-        int st=0;
-        waitpid(c,&st,0);
-        return st;
-    }
-    return 0;
-}
-#ifndef TEST_COMMON_H
-#define TEST_COMMON_H
-
-#include <stdbool.h>
-#include <stdio.h>
-#include <string.h>
-
-/* Colors for ASCII art convenience. */
-#define CLR_RESET   "\033[0m"
-#define CLR_BOLD    "\033[1m"
-#define CLR_MAGENTA "\033[95m"
-#define CLR_RED     "\033[91m"
-#define CLR_GREEN   "\033[92m"
-#define CLR_GRAY    "\033[90m"
-#define CLR_YELLOW  "\033[93m"
-#define CLR_CYAN    "\033[96m"
-
-void test_set_fail_reason(const char* msg);
-const char* test_get_fail_reason(void);
-
-struct captured_output {
-  char stdout_buf[8192];
-  char stderr_buf[8192];
-};
-
-/*
-  run_function_capture_output():
-    Creates pipes, forks, runs fn() in child, captures output in out.
-*/
-int run_function_capture_output(void(*fn)(void), struct captured_output* out);
 #endif

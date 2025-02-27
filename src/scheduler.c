@@ -167,9 +167,6 @@ static void* core_thread_func(void* arg) {
     long core_id = (long)arg;
 
     while (1) {
-        if (os_concurrency_stop_requested()) {
-            break;
-        }
         /* Pop next process from the ready_queue. If sentinel => exit. */
         process_t* p = ready_queue_pop();
         if (!p) {
@@ -388,13 +385,6 @@ void scheduler_run(process_t* list, int count) {
             break;
         }
         pthread_mutex_unlock(&g_finish_lock);
-
-        if (os_concurrency_stop_requested()) {
-            /* If user sends SIGTERM => set concurrency stop => break out.
-               We'll rely on the user returning to menu.
-            */
-            break;
-        }
         usleep(50000); /* poll period */
     }
 

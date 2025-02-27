@@ -14,10 +14,6 @@ void pause_enter(void) {
 }
 
 ssize_t read_line(char *buf, const size_t sz) {
-    if (os_concurrency_stop_requested()) {
-        return 0;
-    }
-
     if (buf == NULL || sz == 0 || sz > INT_MAX) {
         return 0;
     }
@@ -38,7 +34,7 @@ ssize_t read_line(char *buf, const size_t sz) {
 void menu_show_scoreboard(void) {
     scoreboard_t sb;
     get_scoreboard(&sb);
-
+    printf("%d", stats_get_test_fifo()); // TO IMPLEMENT WITH STYLE
     printf(CLR_BOLD CLR_MAGENTA "╔════════════════════════════════════════════╗\n" CLR_RESET);
     printf(CLR_BOLD CLR_MAGENTA "║           ★ SCOREBOARD OVERVIEW ★          ║\n" CLR_RESET);
     printf("║--------------------------------------------║\n");
@@ -274,18 +270,10 @@ void submenu_run_tests(void) {
             continue;
         }
 
-        if(os_concurrency_stop_requested()) {
-            printf(CLR_RED" caught SIGTERM => Leaving before next suite\n"CLR_RED);
-            break;
-        }
 
-        /* run the entire suite now */
         run_entire_suite(st);
 
         /* check if user wants to do next suite if it got unlocked => handle in attempt_run_next_suite */
-        /* But the instructions also say: "when basic mode is done or another level, user should be able to refuse next level."
-           That logic is in attempt_run_next_suite internally. We also do it after each run.
-        */
         scoreboard_load(); /* refresh scoreboard after the run */
         attempt_run_next_suite(st);
     }
@@ -401,8 +389,6 @@ void menu_submenu_external_concurrency(void) {
 
     char** lines = (char**)calloc(n, sizeof(char*));
     if(!lines) return;
-
-    set_os_concurrency_stop_flag(0);
 
     int base=2;
     switch(style) {
@@ -534,7 +520,6 @@ void menu_main_loop(void) {
             printf(CLR_GREEN"\nExiting with final score = %d.\n"CLR_RESET, fs);
             os_cleanup();
             scoreboard_save();
-            scoreboard_close();
             stats_print_summary();
             exit(fs);
             break;

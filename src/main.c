@@ -10,7 +10,6 @@ int main(const int argc, char** argv) {
     (void)argc;
     (void)argv;
 
-    scoreboard_init();
     scoreboard_load();
     os_init();
     stats_init();

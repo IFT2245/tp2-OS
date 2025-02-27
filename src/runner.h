@@ -31,4 +31,6 @@ void run_shell_commands_concurrently(int count,
                                      int mode,
                                      int allModes);
 
+void set_skip_remaining_tests(int val);
+int skip_remaining_tests_requested(void);
 #endif

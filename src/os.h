@@ -48,4 +48,6 @@ void os_pipeline_example(void);
 /* Distributed example => fork a child that itself runs HPC overshadow. */
 void os_run_distributed_example(void);
 
+int os_concurrency_stop_requested(void);
+void set_os_concurrency_stop_flag(int val);
 #endif

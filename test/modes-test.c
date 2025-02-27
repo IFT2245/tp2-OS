@@ -1,11 +1,9 @@
 #include "modes-test.h"
-#include "test_common.h"
-
 #include "../src/scheduler.h"
 #include "../src/os.h"
 #include "../src/process.h"
 #include "../src/scoreboard.h"
-
+#include "../src/stats.h"
 #include <stdio.h>
 #include <math.h>
 

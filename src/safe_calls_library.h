@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <signal.h>
 #include "os.h"
+#include "runner.h"
 #include "scoreboard.h"
 #include "stats.h"
 #include "menu.h"

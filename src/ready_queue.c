@@ -8,20 +8,9 @@
 #include <stdio.h>
 #include <time.h>
 
-/* We'll keep up to 10 MLFQ levels. */
 #define MLFQ_MAX_QUEUES 10
-
-/*
-   We implement optional *aging* for MLFQ:
-   If a process remains in a lower queue for more than MLFQ_AGING_MS
-   (in simulated time), we promote it up one level.
-*/
 #define MLFQ_AGING_MS  10
 
-/*
-   A single node in our queue/linked-list.
-   If proc == NULL, it is a "sentinel" node that signals termination.
-*/
 typedef struct node_s {
     process_t*       proc;
     uint64_t         enqueued_sim_time;
@@ -240,7 +229,6 @@ static void mlfq_promote_aged_processes(void) {
 }
 
 /* ---------- Public interface ---------- */
-
 void ready_queue_init_policy(scheduler_alg_t alg) {
     memset(&gQ, 0, sizeof(gQ));
     pthread_mutex_init(pm(), NULL);
@@ -249,7 +237,6 @@ void ready_queue_init_policy(scheduler_alg_t alg) {
 }
 
 /* We leave the function pointers approach inlined to keep code simpler. */
-
 void ready_queue_destroy(void) {
     pthread_cond_destroy(pc());
     pthread_mutex_destroy(pm());

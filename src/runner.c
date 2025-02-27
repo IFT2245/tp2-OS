@@ -223,11 +223,12 @@ static const char* scheduler_alg_to_str2(int mode) {
         case 9:  return "PRIORITY";
         case 10: return "HPC-OVER";
         case 11: return "MLFQ";
+        // overlay
         default: return "UNKNOWN";
     }
 }
 
-static void concurrency_log(const char* fmt, ...) __attribute__((format(printf,1,2)));
+static void concurrency_log(const char* fmt, ...) __attribute__((format(printf,1,2))); // - The `__attribute__((format(printf,1,2)))` is a GCC attribute that tells the compiler to type-check the format string like printf. The numbers `1,2` indicate that the format string is parameter 1, and the variadic arguments start at parameter
 static void concurrency_log(const char* fmt, ...)
 {
     if(stats_get_speed_mode()==1) {
@@ -263,14 +264,6 @@ void run_shell_commands_concurrently(int count,
         return;
     }
 
-    stats_inc_concurrency_runs();
-
-    if(stats_get_speed_mode()==0) {
-        printf(CLR_MAGENTA "\n╔═══════════════════════════════════════════════════════════════╗\n");
-        printf(             "║        Shell Commands SCHEDULE BLOCK (EXTERNAL)               ║\n");
-        printf(             "╚═══════════════════════════════════════════════════════════════╝\n" CLR_RESET);
-    }
-
     int from=0, to=11;
     if(!allModes) {
         if(mode<0 || mode>11) {
@@ -282,27 +275,17 @@ void run_shell_commands_concurrently(int count,
     }
 
     for(int m=from; m<=to; m++){
-        if(os_concurrency_stop_requested()) {
-            concurrency_log("\n[Concurrency STOP => returning.]\n");
-            break;
-        }
         const char* alg_name = scheduler_alg_to_str2(m);
 
         if(stats_get_speed_mode()==0) {
             concurrency_log(CLR_MAGENTA "\n╔═════════════════════════════════════════════════════════════╗\n");
-            concurrency_log("║ SCHEDULE BLOCK START => %s\n", alg_name);
+            concurrency_log("║ EXTERNAL SCHEDULE BLOCK START => %s\n", alg_name);
             concurrency_log("╚═════════════════════════════════════════════════════════════╝\n" CLR_RESET);
         }
 
         pid_t* pids = (pid_t*)calloc(count, sizeof(pid_t));
         if(!pids) return;
-        stats_inc_concurrency_commands(count);
-
         for(int i=0; i<count; i++){
-            if(os_concurrency_stop_requested()){
-                concurrency_log("[STOP => skip spawn child#%d]\n", i+1);
-                break;
-            }
             concurrency_log(CLR_GREEN "[time=%llu ms] core=%d => Launch child#%d cmd=\"%s\"\n" CLR_RESET,
                             (unsigned long long)os_time(),
                             (i % coreCount), i+1,
@@ -342,11 +325,6 @@ void run_shell_commands_concurrently(int count,
         /* wait for them */
         for(int i=0; i<count; i++){
             if(!pids[i]) continue;
-            if(os_concurrency_stop_requested()){
-                concurrency_log("[STOP => kill child pid=%d]\n", pids[i]);
-                kill(pids[i], SIGKILL);
-                continue;
-            }
             waitpid(pids[i], NULL, 0);
             concurrency_log(CLR_YELLOW "[time=%llu ms] => Child#%d ended => cmd=\"%s\"\n" CLR_RESET,
                             (unsigned long long)os_time(),
@@ -357,15 +335,8 @@ void run_shell_commands_concurrently(int count,
 
         if(stats_get_speed_mode()==0){
             concurrency_log(CLR_MAGENTA "╔═════════════════════════════════════════════════════════════╗\n");
-            concurrency_log("║ SCHEDULE BLOCK END => %s\n", alg_name);
+            concurrency_log("║ EXTERNAL SCHEDULE BLOCK END => %s\n", alg_name);
             concurrency_log("╚═════════════════════════════════════════════════════════════╝\n" CLR_RESET);
         }
     }
-
-    if(stats_get_speed_mode()==0){
-        printf(CLR_MAGENTA "\n╔═══════════════════════════════════════════════════════════════╗\n");
-        printf(             "║      END CONCURRENCY SCHEDULE BLOCK (EXTERNAL)                ║\n");
-        printf(             "╚═══════════════════════════════════════════════════════════════╝\n" CLR_RESET);
-    }
-    set_os_concurrency_stop_flag(0);
 }

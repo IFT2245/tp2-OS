@@ -1,6 +1,5 @@
 #include "normal-test.h"
-#include "test_common.h"
-
+#include "../src/stats.h"
 #include "../src/scheduler.h"
 #include "../src/process.h"
 #include "../src/os.h"

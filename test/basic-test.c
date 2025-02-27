@@ -1,9 +1,7 @@
 #include "basic-test.h"
-#include "test_common.h"
 
 #include "../src/scheduler.h"
 #include "../src/process.h"
-#include "../src/os.h"
 #include "../src/scoreboard.h"
 #include "../src/worker.h"
 
@@ -21,6 +19,7 @@ static int almost_equal(double a, double b, double eps) {
 
 /* ---------- Actual test functions ---------- */
 static bool test_fifo(void) {
+    // if (stats_get_test_fifo()==1) return true;
     g_tests_run++;
     os_init();
     process_t p[2];
@@ -48,6 +47,7 @@ static bool test_fifo(void) {
         return false;
     }
     scoreboard_set_sc_mastered(ALG_FIFO);
+    // stats_set_test_fifo(1);
     return true;
 }
 
@@ -78,6 +78,7 @@ static bool test_rr(void) {
         g_tests_failed++;
         return false;
     }
+    // stats_set_test_rr(1);
     scoreboard_set_sc_mastered(ALG_RR);
     return true;
 }
@@ -240,7 +241,15 @@ void basic_test_run_single(int i, int* pass_out) {
     bool ok = basic_tests[i].func();
     if(!ok) {
         *pass_out=0;
+        printf(CLR_RED CLR_BOLD"  PASS: %s\n"CLR_RESET, basic_tests[i].name);
         return;
+    } else
+    {
+        *pass_out=1;
+        printf(CLR_RED CLR_BOLD"  FAIL: %s => %s\n"CLR_RESET,
+               basic_tests[i].name,
+               test_get_fail_reason());
+        // stats_set_specific_test_reason(test_get_fail_reason(), i); // TO DO TO EVERY TESTS FOR STATS
     }
     /* if not failed => pass */
     *pass_out = (g_tests_failed==0) ? 1 : 0;
@@ -253,14 +262,27 @@ void run_basic_tests(int* total, int* passed){
     memset(g_fail_reason,0,sizeof(g_fail_reason));
 
     printf("\n" CLR_BOLD CLR_YELLOW "╔════════════ BASIC TESTS START ═════════════╗" CLR_RESET "\n");
+
+
     for(int i=0; i<BASIC_COUNT; i++){
         bool ok = basic_tests[i].func();
         if(ok) {
-            printf("  PASS: %s\n", basic_tests[i].name);
+            printf(CLR_RED CLR_BOLD"  PASS: %s\n"CLR_RESET, basic_tests[i].name);
         } else {
-            printf("  FAIL: %s => %s\n",
+            printf(CLR_RED CLR_BOLD"  FAIL: %s => %s\n"CLR_RESET,
                    basic_tests[i].name,
                    test_get_fail_reason());
+            // stats_set_current_test_state(basic_tests[i].name, ok);  // TO DO TO EVERY TESTS FOR STATS with dynamic
+            // stats_set_fifo_reason(test_get_fail_reason()); // TO DO TO EVERY TESTS FOR STATS with dynamic
+        }
+
+        if (skip_remaining_tests_requested()) { // to do for every levels
+            *total  = g_tests_run;
+            *passed = g_tests_run - g_tests_failed;
+            stats_inc_tests_passed(*passed);
+            stats_inc_tests_failed((*total) - (*passed));
+            printf(CLR_RED "[SIGTERM] => skipping remaining tests in this suite.\n" CLR_RESET);
+            break;
         }
     }
 

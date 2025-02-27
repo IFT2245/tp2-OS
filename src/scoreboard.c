@@ -20,7 +20,7 @@
  */
 
 /* Global scoreboard structure */
-static scoreboard_t gSB = {
+extern scoreboard_t gSB = {
     /* test totals and passes: */
     0,0, 0,0, 0,0, 0,0, 0,0, 0,0,
     /* scheduling mastery flags: */
@@ -138,10 +138,6 @@ static void write_scoreboard_json(const scoreboard_t* sb) {
 
     fclose(f);
 }
-
-/* scoreboard_init() / scoreboard_close() => no-op */
-void scoreboard_init(void) {}
-void scoreboard_close(void) {}
 
 /* Load from scoreboard.json */
 void scoreboard_load(void) {

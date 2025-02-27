@@ -1,11 +1,17 @@
 #include "safe_calls_library.h"
-
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <limits.h>
 #include <string.h>
+static volatile sig_atomic_t g_skip_remaining_tests = 0;
+int skip_remaining_tests_requested(void) {
+    return (g_skip_remaining_tests != 0);
+}
+void set_skip_remaining_tests(const int val) {
+    g_skip_remaining_tests = (val ? 1 : 0);
+}
 
 int parse_int_strtol(const char* in, int fb) {
     if(!in || !*in) return fb;
@@ -50,22 +56,13 @@ double parse_double_strtod(const char* in, double fb) {
 void handle_signal(int signum) {
     if(signum == SIGINT) {
         /* SIGINT => exit immediately, but save scoreboard + stats. */
-        stats_inc_signal_sigint();
         printf("\nCaught SIGINT => Exiting.\n");
         const int fs = scoreboard_get_final_score();
         cleanup_and_exit(fs);
     }
     else if(signum == SIGTERM) {
         /* SIGTERM => stop concurrency/tests => return to menu. */
-        stats_inc_signal_sigterm();
-        printf(CLR_RED "\nCaught SIGTERM => Trying to return to menu\n" CLR_RESET);
-        set_os_concurrency_stop_flag(1);
-        /* Return to menu (the user can then choose to Exit or continue). */
-        menu_main_loop();
-    }
-    else {
-        /* For completeness, track any other signals. */
-        stats_inc_signal_other();
+        set_skip_remaining_tests(1);
     }
 }
 
@@ -77,7 +74,6 @@ void handle_signal(int signum) {
 void cleanup_and_exit(int code) {
     os_cleanup();
     scoreboard_save();
-    scoreboard_close();
     stats_print_summary();
     exit(code);
 }

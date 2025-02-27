@@ -10,14 +10,8 @@
 #include <time.h>
 #include <string.h>
 
-/*
-  Global concurrency stop flag. If set, any concurrency loop stops early.
-*/
-static volatile sig_atomic_t g_concurrency_stop_flag = 0;
-
 /* For measuring time since os_init() in real-time ms. */
 static uint64_t g_start_ms = 0;
-
 /* Up to 32 ephemeral containers. */
 static int       g_container_count = 0;
 static char      g_container_paths[32][256];
@@ -27,14 +21,6 @@ static uint64_t now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)(ts.tv_sec)*1000ULL + (ts.tv_nsec / 1000000ULL);
-}
-
-void set_os_concurrency_stop_flag(int val) {
-    g_concurrency_stop_flag = (sig_atomic_t)val;
-}
-
-int os_concurrency_stop_requested(void) {
-    return (int)g_concurrency_stop_flag;
 }
 
 /* ----------------------------------------------------------------
@@ -62,7 +48,6 @@ void os_cleanup(void) {
             rmdir(path);
             memset(g_container_paths[g_container_count], 0, sizeof(g_container_paths[g_container_count]));
             printf("\033[96m[-] Container removed (cleanup): %s\n\033[0m", path);
-            stats_inc_containers_removed();
         }
     }
 }
@@ -95,7 +80,6 @@ void os_create_ephemeral_container(void) {
         g_container_count++;
         printf("\033[96m[+] Container created: %s (count=%d)\n\033[0m",
                tmpl, g_container_count);
-        stats_inc_containers_created();
     }
 }
 
@@ -109,7 +93,6 @@ void os_remove_ephemeral_container(void) {
         memset(g_container_paths[g_container_count], 0, sizeof(g_container_paths[g_container_count]));
         printf("\033[96m[-] Container removed: %s (remaining=%d)\n\033[0m",
                path, g_container_count);
-        stats_inc_containers_removed();
     }
 }
 
@@ -121,7 +104,6 @@ static void* overshadow_thread(void* arg) {
     long *ret = (long*)arg;
     long sum = 0;
     for (long i=0; i<7000000; i++) {
-        if(os_concurrency_stop_requested()) break;
         sum += (i % 17) + (i % 11);
     }
     *ret = sum;
@@ -129,11 +111,6 @@ static void* overshadow_thread(void* arg) {
 }
 
 void os_run_hpc_overshadow(void) {
-    if(os_concurrency_stop_requested()) {
-        printf("\033[91m[OS] concurrency has to stop => HPC overshadow aborted\n\033[0m");
-        return;
-    }
-
     /* NEW/UPDATED: pick a random number of CPU-bound threads from 4..8. */
     srand((unsigned int)time(NULL));
     int n = 4 + (rand() % 5); /* range = [4..8]. */
@@ -178,7 +155,6 @@ static void* overlay_thread(void* arg) {
     long *ret = (long*)arg;
     long sum = 0;
     for (long i=0; i<4000000; i++) {
-        if(os_concurrency_stop_requested()) break;
         sum += (i % 19) + (i % 13);
     }
     *ret = sum;
@@ -186,11 +162,6 @@ static void* overlay_thread(void* arg) {
 }
 
 void os_run_hpc_overlay(void) {
-    if(os_concurrency_stop_requested()) {
-        printf("\033[91m[OS] concurrency stop => HPC overlay aborted\n\033[0m");
-        return;
-    }
-
     /* NEW/UPDATED: random number of threads in [2..4]. */
     srand((unsigned int)time(NULL));
     int n = 2 + (rand() % 3); /* range = [2..4]. */
@@ -228,25 +199,8 @@ void os_run_hpc_overlay(void) {
     }
 }
 
-/*
-   Pipeline example => now refined to create multiple child processes in series,
-   simulating a multi-stage pipeline.
-*/
+
 void os_pipeline_example(void) {
-    printf("\033[95m╔══════════════════════════════════════════════╗\n");
-    printf("║             PIPELINE BLOCK START             ║\n");
-    printf("╚══════════════════════════════════════════════╝\033[0m\n");
-
-    if(os_concurrency_stop_requested()) {
-        printf("\033[91m[OS] concurrency stop => skipping pipeline.\033[0m\n");
-        return;
-    }
-
-    /* We'll do a 2-stage pipeline:
-       stage1 child => does some "work"
-       then pipe into stage2 child => does next "work"
-       (in real shell code, you'd connect the outputs/inputs, but here we demonstrate the concept.)
-    */
     int pipefd[2];
     if(pipe(pipefd) == -1) {
         perror("pipe");
@@ -297,34 +251,15 @@ void os_pipeline_example(void) {
         }
     }
 
-    printf("\033[96m╔══════════════════════════════════════════════╗\n");
-    printf("║             PIPELINE BLOCK END               ║\n");
-    printf("╚══════════════════════════════════════════════╝\033[0m\n");
-
     if(stats_get_speed_mode()==0){
         usleep(200000);
     }
 }
 
-/*
-   Distributed example => we fork multiple HPC overshadow tasks in parallel
-   to simulate "remote nodes" doing CPU-bound HPC overshadow.
-*/
+
 void os_run_distributed_example(void) {
-    printf("\033[95m╔══════════════════════════════════════════════╗\n");
-    printf("║          DISTRIBUTED BLOCK START             ║\n");
-    printf("╚══════════════════════════════════════════════╝\033[0m\n");
-
-    if(os_concurrency_stop_requested()) {
-        printf("\033[93m[OS] concurrency stop => skipping distributed.\033[0m\n");
-        return;
-    }
-
     /* We'll spawn 2 HPC overshadow children, each doing overshadow. */
     for(int i=0; i<2; i++) {
-        if(os_concurrency_stop_requested()) {
-            break;
-        }
         pid_t c = fork();
         if (c == 0) {
             if(stats_get_speed_mode()==0){
@@ -342,8 +277,4 @@ void os_run_distributed_example(void) {
     for(int i=0; i<2; i++) {
         wait(NULL);
     }
-
-    printf("\033[96m╔══════════════════════════════════════════════╗\n");
-    printf("║           DISTRIBUTED BLOCK END              ║\n");
-    printf("╚══════════════════════════════════════════════╝\033[0m\n");
 }

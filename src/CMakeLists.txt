@@ -26,10 +26,8 @@ add_executable(main
         ../test/hidden-test.h
         ../test/external-test.c
         ../test/external-test.h
-        ../test/test_common.h
-        ../test/test_common.c
-        stats.h
         stats.c
+        stats.h
         main.c
         scoreboard.c
         scoreboard.h

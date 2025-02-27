@@ -1,6 +1,6 @@
 #ifndef BASIC_TEST_H
 #define BASIC_TEST_H
-
+#include "../src/safe_calls_library.h"
 /*
   Basic tests: FIFO, RR, CFS, BFS, pipeline, distributed, etc.
   We also provide single-test picking if needed.
