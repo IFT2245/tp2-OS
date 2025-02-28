@@ -158,6 +158,7 @@ void scoreboard_save(void){
     fwrite(out,1,strlen(out),f);
     fclose(f);
     free(out);
+    printf("\n");
     log_info("Scoreboard saved");
 }
 

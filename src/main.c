@@ -75,6 +75,7 @@ int main(void){
 
     while(1){
         if (fflush(stdout) == 0 && fflush(stderr) == 0) {
+            usleep(10000);
             show_main_menu();
         }
         char choice[64];
