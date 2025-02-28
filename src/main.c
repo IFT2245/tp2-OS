@@ -4,11 +4,11 @@
 #include "../lib/log.h"
 #include "../lib/scoreboard.h"
 #include "../lib/library.h"
-#include "../test/basic-tests.h"
+#include "../test/basic-tests.h"  // Adjust or rename your test header as needed
 
 static void do_run_tests(void){
     set_log_level(LOG_LEVEL_INFO);
-    run_all_tests();
+    run_all_tests();       // <-- Here you call your test suites with refined naming
     show_scoreboard();
     scoreboard_save();
     fflush(stdout);

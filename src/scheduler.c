@@ -46,12 +46,9 @@ void record_timeline(container_t* c, int core_id, int proc_id,
 
 /**
  * @brief CPU work with “maximum immediacy” preemption. We
- *        - unblock SIGALRM so we can be interrupted at any time,
+ *        - unblock SIGALRM so we can be interrupted,
  *        - do the requested ms of CPU time,
  *        - block SIGALRM again before returning.
- *
- *        If the timer fires mid-sleep, the handler calls siglongjmp,
- *        so we never return here. That means “immediate” preemption.
  */
 void do_cpu_work(unsigned long ms, int core_id, int proc_id)
 {
@@ -64,7 +61,6 @@ void do_cpu_work(unsigned long ms, int core_id, int proc_id)
         usleep(1000);
     }
 
-    /* If we made it here, we were never preempted.
-       Re-block SIGALRM before returning to the scheduler. */
+    // If we made it here, we were never preempted. Re-block:
     block_preempt_signal();
 }

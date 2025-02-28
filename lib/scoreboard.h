@@ -14,6 +14,9 @@ typedef enum {
     SUITE_HPC_BFS
 } scoreboard_suite_t;
 
+/**
+ * @brief The scoreboard structure. Now the simpler tests weigh more.
+ */
 typedef struct {
     int basic_total,      basic_pass;
     int normal_total,     normal_pass;
@@ -37,11 +40,11 @@ typedef struct {
            prio_preempt_percent,
            hpc_bfs_percent;
 
-    double pass_threshold;
-    int    sc_hpc;
+    double pass_threshold; /* e.g. 60% */
+    int    sc_hpc;         /* HPC bonus toggle => +5% if set */
 } scoreboard_t;
 
-/* Load/save scoreboard from JSON. */
+/* Load/save scoreboard from scoreboard.json */
 void scoreboard_load(void);
 void scoreboard_save(void);
 void scoreboard_clear(void);
@@ -58,17 +61,17 @@ void scoreboard_update_mlfq(int t,int p);
 void scoreboard_update_prio_preempt(int t,int p);
 void scoreboard_update_hpc_bfs(int t,int p);
 
-/* HPC bonus on/off. */
+/* HPC bonus on/off => +5% if sc_hpc=1. */
 void scoreboard_set_sc_hpc(int v);
 
-/* Gate-unlocking logic. */
+/* Gate logic: is suite unlocked after some threshold? */
 int  scoreboard_is_unlocked(scoreboard_suite_t s);
 
-/* Retrieval + final scoring. */
+/* Retrieve + compute final */
 void get_scoreboard(scoreboard_t* out);
 int  scoreboard_get_final_score(void);
 
-/* Display. */
+/* Display */
 void show_scoreboard(void);
 void show_legend(void);
 

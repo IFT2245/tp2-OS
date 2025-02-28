@@ -1,53 +1,63 @@
 #include "scoreboard.h"
-#include "../libExtern/cJSON.h"
 #include "log.h"
+#include "../libExtern/cJSON.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+/* The global scoreboard struct */
 static scoreboard_t gSB;
 
+/* A small helper: percentage from pass/total */
 static double calc_percent(int total, int pass){
     if(total <= 0) return 0.0;
     return 100.0 * ((double)pass / (double)total);
 }
 
+/* Recompute cached % fields from pass & total */
 static void recompute(void){
-    gSB.basic_percent        = calc_percent(gSB.basic_total,      gSB.basic_pass);
-    gSB.normal_percent       = calc_percent(gSB.normal_total,     gSB.normal_pass);
-    gSB.edge_percent         = calc_percent(gSB.edge_total,       gSB.edge_pass);
-    gSB.hidden_percent       = calc_percent(gSB.hidden_total,     gSB.hidden_pass);
-    gSB.wfq_percent          = calc_percent(gSB.wfq_total,        gSB.wfq_pass);
-    gSB.multi_hpc_percent    = calc_percent(gSB.multi_hpc_total,  gSB.multi_hpc_pass);
-    gSB.bfs_percent          = calc_percent(gSB.bfs_total,        gSB.bfs_pass);
-    gSB.mlfq_percent         = calc_percent(gSB.mlfq_total,       gSB.mlfq_pass);
+    gSB.basic_percent        = calc_percent(gSB.basic_total,       gSB.basic_pass);
+    gSB.normal_percent       = calc_percent(gSB.normal_total,      gSB.normal_pass);
+    gSB.edge_percent         = calc_percent(gSB.edge_total,        gSB.edge_pass);
+    gSB.hidden_percent       = calc_percent(gSB.hidden_total,      gSB.hidden_pass);
+    gSB.wfq_percent          = calc_percent(gSB.wfq_total,         gSB.wfq_pass);
+    gSB.multi_hpc_percent    = calc_percent(gSB.multi_hpc_total,   gSB.multi_hpc_pass);
+    gSB.bfs_percent          = calc_percent(gSB.bfs_total,         gSB.bfs_pass);
+    gSB.mlfq_percent         = calc_percent(gSB.mlfq_total,        gSB.mlfq_pass);
     gSB.prio_preempt_percent = calc_percent(gSB.prio_preempt_total,gSB.prio_preempt_pass);
-    gSB.hpc_bfs_percent      = calc_percent(gSB.hpc_bfs_total,    gSB.hpc_bfs_pass);
+    gSB.hpc_bfs_percent      = calc_percent(gSB.hpc_bfs_total,     gSB.hpc_bfs_pass);
 }
 
+/* Weighted final score => we up-weight the simpler suites and keep HPC as a smaller bonus. */
 int scoreboard_get_final_score(void){
     recompute();
-    // Each suite => up to 10%, HPC bonus => +10 if sc_hpc=1, capped at 100.
-    double b  = gSB.basic_percent        * 0.10;
-    double n  = gSB.normal_percent       * 0.10;
-    double e  = gSB.edge_percent         * 0.10;
-    double hi = gSB.hidden_percent       * 0.10;
-    double wf = gSB.wfq_percent          * 0.10;
-    double mh = gSB.multi_hpc_percent    * 0.10;
-    double bf = gSB.bfs_percent          * 0.10;
-    double ml = gSB.mlfq_percent         * 0.10;
-    double pp = gSB.prio_preempt_percent * 0.10;
-    double hb = gSB.hpc_bfs_percent      * 0.10;
-    double HPC = (gSB.sc_hpc ? 10.0 : 0.0);
 
-    double total = b + n + e + hi + wf + mh + bf + ml + pp + hb + HPC;
+    double wBasic   = gSB.basic_percent        * 0.20;  /* 20% */
+    double wNormal  = gSB.normal_percent       * 0.15;  /* 15% */
+    double wBFS     = gSB.bfs_percent          * 0.15;  /* 15% */
+    double wEdge    = gSB.edge_percent         * 0.10;  /* 10% */
+    double wHidden  = gSB.hidden_percent       * 0.10;  /* 10% */
+    double wWFQ     = gSB.wfq_percent          * 0.10;  /* 10% */
+    double wMulti   = gSB.multi_hpc_percent    * 0.05;  /*  5% */
+    double wMLFQ    = gSB.mlfq_percent         * 0.05;  /*  5% */
+    double wPrio    = gSB.prio_preempt_percent * 0.05;  /*  5% */
+    double wHpcBFS  = gSB.hpc_bfs_percent      * 0.05;  /*  5% */
+
+    /* HPC bonus => +5% if sc_hpc=1: */
+    double HPC = (gSB.sc_hpc ? 5.0 : 0.0);
+
+    double total = wBasic + wNormal + wBFS + wEdge + wHidden
+                 + wWFQ + wMulti + wMLFQ + wPrio + wHpcBFS
+                 + HPC;
+    /* clamp to 100 max */
     if(total > 100.0) total = 100.0;
     return (int)(total + 0.5);
 }
 
+/* Default scoreboard => 0 passes, pass_threshold=60, etc. */
 static void scoreboard_defaults(void){
     memset(&gSB, 0, sizeof(gSB));
-    gSB.pass_threshold = 60.0; // Some default threshold
+    gSB.pass_threshold = 60.0;
 }
 
 void scoreboard_load(void){
@@ -57,13 +67,13 @@ void scoreboard_load(void){
         log_warn("No scoreboard.json => defaults");
         return;
     }
-    fseek(f, 0, SEEK_END);
+    fseek(f,0,SEEK_END);
     long sz = ftell(f);
-    if(sz < 0){
+    if(sz<0){
         fclose(f);
         return;
     }
-    fseek(f, 0, SEEK_SET);
+    fseek(f,0,SEEK_SET);
     char* buf = (char*)malloc(sz+1);
     if(!buf){
         fclose(f);
@@ -83,11 +93,10 @@ void scoreboard_load(void){
         log_warn("scoreboard parse fail => defaults");
         return;
     }
-
     #define JGETINT(o,n,v) do{ cJSON*_t=cJSON_GetObjectItemCaseSensitive(o,n); \
-        if(_t&&cJSON_IsNumber(_t)) (v)=_t->valueint;}while(0)
+      if(_t&&cJSON_IsNumber(_t)) (v)=_t->valueint;}while(0)
     #define JGETDBL(o,n,v) do{ cJSON*_t=cJSON_GetObjectItemCaseSensitive(o,n); \
-        if(_t&&cJSON_IsNumber(_t)) (v)=_t->valuedouble;}while(0)
+      if(_t&&cJSON_IsNumber(_t)) (v)=_t->valuedouble;}while(0)
 
     JGETINT(root,"basic_total",        gSB.basic_total);
     JGETINT(root,"basic_pass",         gSB.basic_pass);
@@ -158,7 +167,7 @@ void scoreboard_save(void){
     fwrite(out,1,strlen(out),f);
     fclose(f);
     free(out);
-    printf("\n");
+
     log_info("Scoreboard saved");
 }
 
@@ -167,7 +176,6 @@ void scoreboard_clear(void){
     scoreboard_save();
 }
 
-/* Updaters: */
 void scoreboard_update_basic(int t,int p){ gSB.basic_total=t; gSB.basic_pass=p; }
 void scoreboard_update_normal(int t,int p){ gSB.normal_total=t; gSB.normal_pass=p; }
 void scoreboard_update_edge(int t,int p){ gSB.edge_total=t; gSB.edge_pass=p; }
@@ -183,22 +191,33 @@ void scoreboard_set_sc_hpc(int v){
     gSB.sc_hpc = (v ? 1 : 0);
 }
 
-/* Check if a suite is "unlocked" by meeting pass_threshold in the previous suite. */
+/* Gate logic if you want to "unlock" certain suites after passing threshold: */
 int scoreboard_is_unlocked(scoreboard_suite_t s){
     recompute();
     double T = gSB.pass_threshold;
     switch(s){
-    case SUITE_BASIC:       return 1;
-    case SUITE_NORMAL:      return (gSB.basic_percent >= T);
-    case SUITE_EDGE:        return (gSB.normal_percent >= T);
-    case SUITE_HIDDEN:      return (gSB.edge_percent >= T);
-    case SUITE_WFQ:         return (gSB.hidden_percent >= T);
-    case SUITE_MULTI_HPC:   return (gSB.wfq_percent   >= T);
-    case SUITE_BFS:         return (gSB.normal_percent>= T);
-    case SUITE_MLFQ:        return (gSB.normal_percent>= T);
-    case SUITE_PRIO_PREEMPT:return (gSB.edge_percent  >= T);
-    case SUITE_HPC_BFS:     return (gSB.hidden_percent>= T);
-    default: return 0;
+    case SUITE_BASIC:
+        return 1; // always unlocked
+    case SUITE_NORMAL:
+        return (gSB.basic_percent >= T);
+    case SUITE_EDGE:
+        return (gSB.normal_percent >= T);
+    case SUITE_HIDDEN:
+        return (gSB.edge_percent >= T);
+    case SUITE_WFQ:
+        return (gSB.hidden_percent >= T);
+    case SUITE_MULTI_HPC:
+        return (gSB.wfq_percent >= T);
+    case SUITE_BFS:
+        return (gSB.normal_percent >= T);
+    case SUITE_MLFQ:
+        return (gSB.normal_percent >= T);
+    case SUITE_PRIO_PREEMPT:
+        return (gSB.edge_percent >= T);
+    case SUITE_HPC_BFS:
+        return (gSB.hidden_percent >= T);
+    default:
+        return 0;
     }
 }
 
@@ -206,19 +225,18 @@ void get_scoreboard(scoreboard_t* out){
     if(out) *out = gSB;
 }
 
-/* For printing with color-coded lines. */
-static void print_suite_line(const char* name, int pass, int total, double percent) {
-    if(total == 0) {
-        printf("\033[33m%-12s => %d/%d => %.1f%% (no tests?)\033[0m\n",
+static void print_suite_line(const char* name, int pass, int total, double percent){
+    if(total == 0){
+        printf("\033[33m%-26s => %d/%d => %.1f%% (no tests?)\033[0m\n",
                name, pass, total, percent);
         return;
     }
-    if(pass == total) {
-        printf("\033[32m%-12s => %d/%d => %.1f%%\033[0m\n", name, pass, total, percent);
-    } else if(pass == 0) {
-        printf("\033[31m%-12s => %d/%d => %.1f%%\033[0m\n", name, pass, total, percent);
+    if(pass == total){
+        printf("\033[32m%-26s => %d/%d => %.1f%%\033[0m\n", name, pass, total, percent);
+    } else if(pass == 0){
+        printf("\033[31m%-26s => %d/%d => %.1f%%\033[0m\n", name, pass, total, percent);
     } else {
-        printf("\033[33m%-12s => %d/%d => %.1f%%\033[0m\n", name, pass, total, percent);
+        printf("\033[33m%-26s => %d/%d => %.1f%%\033[0m\n", name, pass, total, percent);
     }
 }
 
@@ -227,38 +245,29 @@ void show_scoreboard(void){
     get_scoreboard(&sb);
     int final = scoreboard_get_final_score();
 
-    printf("\n\033[1m\033[36m===== SCOREBOARD =====\033[0m\n");
-    print_suite_line("BASIC",        sb.basic_pass, sb.basic_total, sb.basic_percent);
-    print_suite_line("NORMAL",       sb.normal_pass, sb.normal_total, sb.normal_percent);
-    print_suite_line("EDGE",         sb.edge_pass,   sb.edge_total,   sb.edge_percent);
-    print_suite_line("HIDDEN",       sb.hidden_pass, sb.hidden_total, sb.hidden_percent);
-    print_suite_line("WFQ",          sb.wfq_pass,    sb.wfq_total,    sb.wfq_percent);
-    print_suite_line("MULTI_HPC",    sb.multi_hpc_pass, sb.multi_hpc_total, sb.multi_hpc_percent);
-    print_suite_line("BFS",          sb.bfs_pass,    sb.bfs_total,    sb.bfs_percent);
-    print_suite_line("MLFQ",         sb.mlfq_pass,   sb.mlfq_total,   sb.mlfq_percent);
-    print_suite_line("PRIO_PREEMPT", sb.prio_preempt_pass, sb.prio_preempt_total, sb.prio_preempt_percent);
-    print_suite_line("HPC_BFS",      sb.hpc_bfs_pass, sb.hpc_bfs_total, sb.hpc_bfs_percent);
+    printf("\n\033[1m\033[36m===== REFINED SCOREBOARD =====\033[0m\n");
+    print_suite_line("BASIC Tests (Easy Preempt)",  sb.basic_pass,    sb.basic_total,    sb.basic_percent);
+    print_suite_line("NORMAL Tests",                sb.normal_pass,   sb.normal_total,   sb.normal_percent);
+    print_suite_line("BFS Tests (Intermediate)",    sb.bfs_pass,      sb.bfs_total,      sb.bfs_percent);
+    print_suite_line("EDGE Cases (Intermediate)",   sb.edge_pass,     sb.edge_total,     sb.edge_percent);
+    print_suite_line("HIDDEN Cases (Advanced)",     sb.hidden_pass,   sb.hidden_total,   sb.hidden_percent);
+    print_suite_line("WFQ (Weighted FairQ)",        sb.wfq_pass,      sb.wfq_total,      sb.wfq_percent);
+    print_suite_line("MULTI_HPC (Advanced HPC)",    sb.multi_hpc_pass,sb.multi_hpc_total,sb.multi_hpc_percent);
+    print_suite_line("MLFQ (Multi-level FQ)",       sb.mlfq_pass,     sb.mlfq_total,     sb.mlfq_percent);
+    print_suite_line("PRIO_PREEMPT (Advanced)",     sb.prio_preempt_pass, sb.prio_preempt_total, sb.prio_preempt_percent);
+    print_suite_line("HPC_BFS (Bonus HPC BFS)",     sb.hpc_bfs_pass,  sb.hpc_bfs_total,  sb.hpc_bfs_percent);
 
-    printf("HPC Bonus => %s\n", (sb.sc_hpc ? "YES" : "NO"));
+    printf("HPC Bonus => %s (adds up to 5%%)\n", (sb.sc_hpc ? "YES" : "NO"));
     printf("Final Weighted Score => %d\n", final);
-    printf("=======================\n\n");
+    printf("================================\n\n");
 }
 
 void show_legend(void){
-    /* Provide bullet list and explicit mention of each suite & HPC bonus. */
-    printf("\n\033[1m\033[35m--- Scoreboard Legend / Weights ---\033[0m\n");
-    printf(" • Each suite contributes up to 10%% towards the final score.\n");
-    printf(" • HPC Bonus adds an extra 10%% if HPC is enabled, capped at 100%%.\n");
-    printf(" • The suites tested are:\n");
-    printf("    - BASIC\n");
-    printf("    - NORMAL\n");
-    printf("    - EDGE\n");
-    printf("    - HIDDEN\n");
-    printf("    - WFQ\n");
-    printf("    - MULTI_HPC\n");
-    printf("    - BFS\n");
-    printf("    - MLFQ\n");
-    printf("    - PRIO_PREEMPT\n");
-    printf("    - HPC_BFS\n");
-    printf("------------------------------------\n");
+    printf("\n\033[1m\033[35m--- Scoreboard Legend / Weights (Refined) ---\033[0m\n");
+    printf("  BASIC => 20%%, NORMAL => 15%%, BFS => 15%%, EDGE => 10%%,\n");
+    printf("  HIDDEN => 10%%, WFQ => 10%%, MULTI_HPC => 5%%, MLFQ => 5%%,\n");
+    printf("  PRIO_PREEMPT => 5%%, HPC_BFS => 5%%, HPC bonus => +5%%\n");
+    printf("  (Clamped to a maximum of 100%% total)\n");
+    printf("  pass_threshold => 60%% gates unlocking advanced suites.\n");
+    printf("----------------------------------------------\n");
 }

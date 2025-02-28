@@ -3,7 +3,6 @@
 
 /*
    Standalone definition of the scheduling algorithm enum
-   to avoid circular includes between container.h and scheduler.h
 */
 typedef enum {
     ALG_NONE=-1,

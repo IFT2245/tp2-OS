@@ -26,7 +26,7 @@ typedef struct {
 } process_t;
 
 /**
- * @brief Initialize a single process struct.
+ * @brief Initialize a single process struct
  */
 void init_process(process_t* p, unsigned long burst, int prio, unsigned long arrival, double weight);
 
