@@ -296,6 +296,7 @@ static bool execute_single_test(const TestCase* test, int timeout_sec) {
 }
 
 void run_all_tests(void) {
+    set_look_remaining_tests(1);
     // Store initial bonus test state
     bool was_bonus_enabled = (is_bonus_test() == 1);
     set_bonus_test(0);
