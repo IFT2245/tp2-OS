@@ -82,13 +82,9 @@ static void run_slice(container_t* c, ready_queue_t* main_rq, ready_queue_t* hpc
         unsigned long step = (p->remaining_time < slice_remaining)
                            ? p->remaining_time
                            : slice_remaining;
-        /*
-         * This call will *unblock* SIGALRM, so if the timer fires mid-burst,
-         * we do siglongjmp => skip the rest of run_slice.
-         */
+
         do_cpu_work(step, core_id, p->id);
 
-        /* If we got here, that means no preemption occurred. We can safely update. */
         pthread_mutex_lock(&c->finish_lock);
         p->remaining_time -= step;
         c->accumulated_cpu += step;
@@ -133,9 +129,6 @@ static void run_slice(container_t* c, ready_queue_t* main_rq, ready_queue_t* hpc
 
 /*
  * The main core thread.
- * We do a sigsetjmp at each iteration, register the buffer,
- * then do the scheduling. If preempted mid do_cpu_work(),
- * siglongjmp is invoked, returning here with ret!=0.
  */
 void* main_core_thread(void* arg){
     core_thread_pack_t* pack = (core_thread_pack_t*)arg;
@@ -148,7 +141,6 @@ void* main_core_thread(void* arg){
     set_core_id_for_this_thread(core_id);
 
     while(!is_time_exhausted(c)){
-        /* 1) Block SIGALRM while we manipulate the scheduling queue. */
         block_preempt_signal();
 
         sigjmp_buf env;
@@ -158,11 +150,6 @@ void* main_core_thread(void* arg){
         if(ret != 0){
             fprintf(stderr, "\033[31m[CORE %d] *** IMMEDIATE PREEMPTION => jumped back ***\033[0m\n",
                     core_id);
-            /* We skip the remainder of run_slice, so the partial usage is
-               not yet accounted for in c->accumulated_cpu.
-               If you want to track partial usage, you'd do smaller loops in run_slice,
-               or do a second clock read after siglongjmp.
-               This can get advanced, so let's keep it simpler here. */
         }
 
         bool term_marker = false;
@@ -195,7 +182,7 @@ void* hpc_thread(void* arg){
     container_t* c         = pack->container;
     ready_queue_t* main_rq = pack->qs.main_rq;
     ready_queue_t* hpc_rq  = pack->qs.hpc_rq;
-    int hpc_idx            = pack->core_id;  // or some HPC ID offset
+    int hpc_idx            = pack->core_id;  // HPC ID
     int timeline_id        = -1 - hpc_idx;
     free(pack);
 
@@ -232,4 +219,13 @@ void* hpc_thread(void* arg){
         }
     }
     return NULL;
+}
+
+static int g_bonus_test_flag = 0;
+
+void set_bonus_test(int onOff){
+    g_bonus_test_flag = (onOff != 0);
+}
+int is_bonus_test(void){
+    return g_bonus_test_flag;
 }

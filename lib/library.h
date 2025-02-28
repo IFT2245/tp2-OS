@@ -21,9 +21,10 @@ void set_skip_remaining_tests(const int val);
 int look_remaining_tests_requested(void);
 void set_look_remaining_tests(const int val);
 
-int is_bonus_test(void);
+/**
+ * Return 1 if we want slow-mode concurrency.
+ */
 int is_slow_mode(void);
-void set_bonus_test(const int onOff);
 void set_slow_mode(const int onOff);
 
 /* Preemption with setitimer + altstack + siglongjmp */

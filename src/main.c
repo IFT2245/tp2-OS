@@ -1,14 +1,18 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <signal.h>
+#include "worker.h"
 #include "../lib/log.h"
 #include "../lib/scoreboard.h"
 #include "../lib/library.h"
-#include "../test/basic-tests.h"  // Adjust or rename your test header as needed
+#include "../test/basic-tests.h"  // Now includes our expanded tests
 
+#include <stdlib.h>
+#include <signal.h>
+
+/**
+ * We run all refined tests, show the scoreboard, and exit with final score.
+ */
 static void do_run_tests(void){
     set_log_level(LOG_LEVEL_INFO);
-    run_all_tests();       // <-- Here you call your test suites with refined naming
+    run_all_tests();       // The refined test suite (includes multi-tests)
     show_scoreboard();
     scoreboard_save();
     fflush(stdout);

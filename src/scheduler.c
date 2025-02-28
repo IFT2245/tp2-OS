@@ -16,7 +16,7 @@ unsigned long get_quantum(scheduler_alg_t alg, const process_t* p){
     case ALG_MLFQ:         return (2 + p->mlfq_level * 2);
     case ALG_PRIO_PREEMPT: return 2;
     default:
-        return 2;
+        return 2;  // fallback
     }
 }
 
@@ -56,7 +56,7 @@ void do_cpu_work(unsigned long ms, int core_id, int proc_id)
 
     unblock_preempt_signal();  // allow preemption now
 
-    // A simple approach: loop ms times, each iteration => 1ms real-time sleep
+    // A simple approach: loop ms times, each iteration => ~1ms real-time
     for (unsigned long i=0; i<ms; i++){
         usleep(1000);
     }

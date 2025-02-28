@@ -15,7 +15,20 @@ typedef enum {
 } scoreboard_suite_t;
 
 /**
- * @brief The scoreboard structure. Now the simpler tests weigh more.
+ * @brief The scoreboard structure with refined weighting.
+ * We rely on a 60% threshold to unlock advanced suites.
+ * Weighted breakdown (up to 100%):
+ *   BASIC => 20%
+ *   NORMAL => 15%
+ *   BFS => 15%
+ *   EDGE => 10%
+ *   HIDDEN => 10%
+ *   WFQ => 10%
+ *   MULTI_HPC => 5%
+ *   MLFQ => 5%
+ *   PRIO_PREEMPT => 5%
+ *   HPC_BFS => 5%
+ * + HPC bonus => +5% if sc_hpc=1
  */
 typedef struct {
     int basic_total,      basic_pass;
@@ -40,8 +53,8 @@ typedef struct {
            prio_preempt_percent,
            hpc_bfs_percent;
 
-    double pass_threshold; /* e.g. 60% */
-    int    sc_hpc;         /* HPC bonus toggle => +5% if set */
+    double pass_threshold;  // 60.0
+    int    sc_hpc;          // HPC bonus toggle => +5% if set
 } scoreboard_t;
 
 /* Load/save scoreboard from scoreboard.json */
@@ -49,7 +62,7 @@ void scoreboard_load(void);
 void scoreboard_save(void);
 void scoreboard_clear(void);
 
-/* Update suite test counts. */
+/* Update suite test counts. (We accumulate pass/fail in each call) */
 void scoreboard_update_basic(int t,int p);
 void scoreboard_update_normal(int t,int p);
 void scoreboard_update_edge(int t,int p);
@@ -64,14 +77,14 @@ void scoreboard_update_hpc_bfs(int t,int p);
 /* HPC bonus on/off => +5% if sc_hpc=1. */
 void scoreboard_set_sc_hpc(int v);
 
-/* Gate logic: is suite unlocked after some threshold? */
+/* Gate logic: is suite unlocked after threshold? */
 int  scoreboard_is_unlocked(scoreboard_suite_t s);
 
 /* Retrieve + compute final */
 void get_scoreboard(scoreboard_t* out);
 int  scoreboard_get_final_score(void);
 
-/* Display */
+/* Display scoreboard in console */
 void show_scoreboard(void);
 void show_legend(void);
 

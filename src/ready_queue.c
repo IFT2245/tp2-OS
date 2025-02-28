@@ -215,7 +215,6 @@ bool try_preempt_if_needed(ready_queue_t* rq, process_t* p){
     if(front->priority < p->priority){
         /* Preempt => put p back, pop the new highest prio. */
         p->was_preempted = true;
-        /* Insert p into the queue sorted by priority. */
         rq_insert_sorted(rq, p, prio_asc_cmp);
         rq->size++;
         pthread_mutex_unlock(&rq->lock);

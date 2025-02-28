@@ -32,6 +32,11 @@ void* main_core_thread(void* arg);
  * @brief The function each "HPC" thread runs.
  */
 void* hpc_thread(void* arg);
+
+/**
+ * @brief Bonus HPC BFS test toggle
+ */
 int is_bonus_test(void);
 void set_bonus_test(int onOff);
+
 #endif // WORKER_H

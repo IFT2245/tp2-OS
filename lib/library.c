@@ -1,6 +1,6 @@
 #include "library.h"
-#include "../lib/log.h"
-#include "../lib/scoreboard.h"  // for scoreboard_get_final_score, scoreboard_save, etc.
+#include "log.h"
+#include "scoreboard.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -34,20 +34,12 @@ void set_look_remaining_tests(const int val) {
 
 /* Tracks slow-mode on/off globally: */
 static int g_slowMode = 0;
-static int g_bonusTest = 0;
 
 void set_slow_mode(const int onOff) {
     g_slowMode = (onOff != 0);
 }
 int is_slow_mode(void) {
     return g_slowMode;
-}
-
-void set_bonus_test(const int onOff) {
-    g_bonusTest = (onOff != 0);
-}
-int is_bonus_test(void) {
-    return g_bonusTest;
 }
 
 /**

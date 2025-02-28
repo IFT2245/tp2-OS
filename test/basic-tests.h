@@ -1,15 +1,14 @@
 #ifndef TESTS_H
 #define TESTS_H
+
 #include "../lib/scoreboard.h"
 #include "../lib/log.h"
-#include <sys/wait.h>
-#include <unistd.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include "../src/container.h"
+#include <stdbool.h>
+
 /**
- * @brief Run all test cases.
+ * @brief Runs all tests (BASIC, NORMAL, EDGE, HIDDEN, WFQ, etc.)
+ *        and optionally the BONUS HPC BFS test if set.
  */
 void run_all_tests(void);
 

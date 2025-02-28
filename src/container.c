@@ -1,4 +1,3 @@
-#include "scheduler.h"
 #include "ready_queue.h"
 #include "worker.h"
 #include "../lib/log.h"
