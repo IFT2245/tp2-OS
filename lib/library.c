@@ -1,5 +1,5 @@
 #include "library.h"
-#include "scoreboard.h"
+#include "../src/scoreboard.h"
 #include "log.h"
 #include <stdlib.h>
 #include <signal.h>

@@ -1,5 +1,5 @@
 #include "process.h"
-#include "log.h"
+#include "../lib/log.h"
 
 void init_process(process_t* p, unsigned long burst, int prio, unsigned long arrival, double weight){
     if(!p){

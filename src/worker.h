@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include "scheduler.h"
 #include "ready_queue.h"
-#include "log.h"
+#include "../lib/log.h"
 #include <stdio.h>
 #include <unistd.h>
 #include <stdbool.h>

@@ -1,9 +1,9 @@
 #include "scoreboard.h"
-#include "log.h"
+#include "../lib/log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../lib/cJSON.h"
+#include "../libJSON/cJSON.h"
 
 /* Our single scoreboard instance. */
 static scoreboard_t gSB;
@@ -246,7 +246,7 @@ void get_scoreboard(scoreboard_t* out){
 }
 
 #include "scoreboard.h"
-#include "log.h"
+#include "../lib/log.h"
 #include <stdio.h>
 
 // Helper for coloring

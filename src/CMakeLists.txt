@@ -1,15 +1,15 @@
 
 add_executable(main
-        ../lib/cJSON.c
-        ../lib/cJSON.h
-        library.c
-        library.h
-        log.c
-        log.h
+        ../libJSON/cJSON.c
+        ../libJSON/cJSON.h
+        ../lib/library.c
+        ../lib/library.h
+        ../lib/log.c
+        ../lib/log.h
         scoreboard.c
         scoreboard.h
-        tests.c
-        tests.h
+        ../test/basic-tests.c
+        ../test/basic-tests.h
         container.c
         container.h
         process.c

@@ -1,8 +1,8 @@
 #include <signal.h>
-#include "log.h"
+#include "../lib/log.h"
 #include "scoreboard.h"
-#include "tests.h"
-#include "library.h"
+#include "../test/basic-tests.h"
+#include "../lib/library.h"
 
 /**
  * @brief Entry point:

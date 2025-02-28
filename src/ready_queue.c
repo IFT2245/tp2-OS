@@ -1,5 +1,5 @@
 #include "ready_queue.h"
-#include "log.h"
+#include "../lib/log.h"
 #include <stdlib.h>
 #include <string.h>
 
