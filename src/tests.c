@@ -1,12 +1,5 @@
-#include "concurrency.h"
 #include "tests.h"
-#include "scoreboard.h"
-#include "log.h"
-#include <sys/wait.h>
-#include <unistd.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
+
 
 /*
   Each test is run in a child process with a TIMEOUT

@@ -6,14 +6,20 @@ add_executable(main
         library.h
         log.c
         log.h
-        ephemeral.c
-        ephemeral.h
         scoreboard.c
         scoreboard.h
-        concurrency.c
-        concurrency.h
         tests.c
         tests.h
+        container.c
+        container.h
+        process.c
+        process.h
+        ready_queue.c
+        ready_queue.h
+        scheduler.c
+        scheduler.h
+        worker.c
+        worker.h
         main.c
 )
 

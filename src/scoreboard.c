@@ -245,33 +245,52 @@ void get_scoreboard(scoreboard_t* out){
     if(out) *out = gSB;
 }
 
+#include "scoreboard.h"
+#include "log.h"
+#include <stdio.h>
+
+// Helper for coloring
+static void print_suite_line(const char* name, int pass, int total, double percent){
+    if(total == 0){
+        printf(CLR_YELLOW "%s => %d/%d => %.1f%% (no tests?)" CLR_RESET "\n",
+               name, pass, total, percent);
+        return;
+    }
+
+    if(pass == total){
+        // All passed => green
+        printf(CLR_GREEN "%-12s => %d/%d => %.1f%%" CLR_RESET "\n",
+               name, pass, total, percent);
+    } else if(pass == 0) {
+        // All failed => red
+        printf(CLR_RED "%-12s => %d/%d => %.1f%%" CLR_RESET "\n",
+               name, pass, total, percent);
+    } else {
+        // Partial => yellow
+        printf(CLR_YELLOW "%-12s => %d/%d => %.1f%%" CLR_RESET "\n",
+               name, pass, total, percent);
+    }
+}
+
 void show_scoreboard(void){
     scoreboard_t sb;
     get_scoreboard(&sb);
     int final = scoreboard_get_final_score();
 
     printf("\n===== SCOREBOARD =====\n");
-    printf(" BASIC     => %d/%d => %.1f%%\n",
-         sb.basic_pass, sb.basic_total, sb.basic_percent);
-    printf(" NORMAL    => %d/%d => %.1f%%\n",
-         sb.normal_pass, sb.normal_total, sb.normal_percent);
-    printf(" EDGE      => %d/%d => %.1f%%\n",
-         sb.edge_pass, sb.edge_total, sb.edge_percent);
-    printf(" HIDDEN    => %d/%d => %.1f%%\n",
-         sb.hidden_pass, sb.hidden_total, sb.hidden_percent);
-    printf(" WFQ       => %d/%d => %.1f%%\n",
-         sb.wfq_pass, sb.wfq_total, sb.wfq_percent);
-    printf(" MULTI_HPC => %d/%d => %.1f%%\n",
-         sb.multi_hpc_pass, sb.multi_hpc_total, sb.multi_hpc_percent);
-    printf(" BFS       => %d/%d => %.1f%%\n",
-         sb.bfs_pass, sb.bfs_total, sb.bfs_percent);
-    printf(" MLFQ      => %d/%d => %.1f%%\n",
-         sb.mlfq_pass, sb.mlfq_total, sb.mlfq_percent);
-    printf(" PRIO_PREEMPT => %d/%d => %.1f%%\n",
-         sb.prio_preempt_pass, sb.prio_preempt_total, sb.prio_preempt_percent);
-    printf(" HPC_BFS   => %d/%d => %.1f%%\n",
-         sb.hpc_bfs_pass, sb.hpc_bfs_total, sb.hpc_bfs_percent);
-    printf(" HPC Bonus => %s\n", (sb.sc_hpc ? "YES" : "NO"));
-    printf(" Final Weighted Score => %d\n", final);
+    print_suite_line("BASIC",         sb.basic_pass, sb.basic_total, sb.basic_percent);
+    print_suite_line("NORMAL",        sb.normal_pass, sb.normal_total, sb.normal_percent);
+    print_suite_line("EDGE",          sb.edge_pass, sb.edge_total, sb.edge_percent);
+    print_suite_line("HIDDEN",        sb.hidden_pass, sb.hidden_total, sb.hidden_percent);
+    print_suite_line("WFQ",           sb.wfq_pass, sb.wfq_total, sb.wfq_percent);
+    print_suite_line("MULTI_HPC",     sb.multi_hpc_pass, sb.multi_hpc_total, sb.multi_hpc_percent);
+    print_suite_line("BFS",           sb.bfs_pass, sb.bfs_total, sb.bfs_percent);
+    print_suite_line("MLFQ",          sb.mlfq_pass, sb.mlfq_total, sb.mlfq_percent);
+    print_suite_line("PRIO_PREEMPT",  sb.prio_preempt_pass, sb.prio_preempt_total, sb.prio_preempt_percent);
+    print_suite_line("HPC_BFS",       sb.hpc_bfs_pass, sb.hpc_bfs_total, sb.hpc_bfs_percent);
+
+    printf("HPC Bonus => %s\n", (sb.sc_hpc ? "YES" : "NO"));
+    printf("Final Weighted Score => %d\n", final);
     printf("=======================\n");
 }
+
