@@ -1,5 +1,5 @@
 #include "library.h"
-#include "../src/scoreboard.h"
+#include "scoreboard.h"
 #include "log.h"
 #include <stdlib.h>
 #include <signal.h>
@@ -16,16 +16,19 @@ void set_skip_remaining_tests(const int val) {
 
 void handle_signal(const int signum){
     scoreboard_save();
+    fflush(stdout);
+    fflush(stderr);
     if(signum == SIGINT) {
         /* SIGINT => exit immediately, but save scoreboard + stats. */
         log_warn("Caught Signal to exit => exiting");
-        exit(1);
+        exit(scoreboard_get_final_score());
     }
 
     if(signum == SIGTERM) {
         set_skip_remaining_tests(1); // volatile value make an action possible
     }
-    log_warn("Caught signal to return to main menu => navigation activated");
+    log_warn("Caught signal to stop next concurrency");
+    set_skip_remaining_tests(1);
 }
 
-// Usage : if (skip_remaining_tests_requested)
+// Usage : if (skip_remaining_tests_requested) do

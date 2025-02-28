@@ -45,7 +45,7 @@ process_t* rq_pop(ready_queue_t* rq, bool* got_term);
 
 /**
  * @brief Try to see if we need to preempt the current running process
- *        if a higher priority one arrives in the queue (for ALG_PRIO_PREEMPT).
+ *        if a higher-priority one arrives in the queue (for ALG_PRIO_PREEMPT).
  *
  * @return true if a preemption occurred and we reinserted the old process.
  */

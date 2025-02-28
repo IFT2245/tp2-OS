@@ -3,7 +3,7 @@
 
 #include <pthread.h>
 #include <stdbool.h>
-#include "../lib/scheduler_alg.h" // for scheduler_alg_t
+#include "../lib/scheduler_alg.h"
 #include "process.h"
 
 /**
@@ -17,7 +17,9 @@ typedef struct timeline_item_s {
     bool          preempted_slice;
 } timeline_item_t;
 
-/* Forward declare if needed, but let's define container_s fully. */
+/**
+ * @brief The container struct for processes + HPC threads + scheduling info.
+ */
 typedef struct container_s {
     int              nb_cores;
     int              nb_hpc_threads;
@@ -50,20 +52,29 @@ typedef struct container_s {
 extern "C" {
 #endif
 
-    void container_init(container_t* c,
-                        int nb_cores,
-                        int nb_hpc_threads,
-                        scheduler_alg_t main_alg,
-                        scheduler_alg_t hpc_alg,
-                        process_t* main_list,
-                        int main_count,
-                        process_t* hpc_list,
-                        int hpc_count,
-                        unsigned long max_cpu_ms);
+/**
+ * @brief Initialize a container. HPC steal is automatically enabled if nb_cores=0 but main_count>0.
+ */
+void container_init(container_t* c,
+                    int nb_cores,
+                    int nb_hpc_threads,
+                    scheduler_alg_t main_alg,
+                    scheduler_alg_t hpc_alg,
+                    process_t* main_list,
+                    int main_count,
+                    process_t* hpc_list,
+                    int hpc_count,
+                    unsigned long max_cpu_ms);
 
-    void container_run(container_t* c);
+/**
+ * @brief Run this container in the current thread. (Blocks until completion.)
+ */
+void container_run(container_t* c);
 
-    void orchestrator_run(container_t* arr, int count);
+/**
+ * @brief Orchestrator that runs multiple containers in parallel.
+ */
+void orchestrator_run(container_t* arr, int count);
 
 #ifdef __cplusplus
 }

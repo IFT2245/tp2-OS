@@ -1,6 +1,6 @@
 #ifndef TESTS_H
 #define TESTS_H
-#include "../src/scoreboard.h"
+#include "../lib/scoreboard.h"
 #include "../lib/log.h"
 #include <sys/wait.h>
 #include <unistd.h>

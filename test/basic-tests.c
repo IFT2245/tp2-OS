@@ -1,6 +1,6 @@
 #include "basic-tests.h"
-
-
+#include "../src/worker.h"
+#include "../lib/library.h"
 /*
   Each test is run in a child process with a TIMEOUT
   to avoid indefinite blocking. If the child times out,
@@ -279,17 +279,56 @@ static bool test_hpc_bfs_impl(void){
    run_all_tests()
    Launch each test in a subproc with 5s timeout.
 ------------------------------------------------------------------------ */
-void run_all_tests(void){
-    run_test_in_subproc("test_basic_fifo",          test_basic_fifo_impl,         SUITE_BASIC,       5);
-    run_test_in_subproc("test_normal_rr",           test_normal_rr_impl,          SUITE_NORMAL,      5);
-    run_test_in_subproc("test_edge_priority",       test_edge_priority_impl,      SUITE_EDGE,        5);
-    run_test_in_subproc("test_hidden_hpc",          test_hidden_hpc_impl,         SUITE_HIDDEN,      5);
-    run_test_in_subproc("test_wfq",                 test_wfq_impl,                SUITE_WFQ,         5);
-    run_test_in_subproc("test_multi_hpc",           test_multi_hpc_impl,          SUITE_MULTI_HPC,   5);
-    run_test_in_subproc("test_bfs_scheduling",      test_bfs_scheduling_impl,     SUITE_BFS,         5);
-    run_test_in_subproc("test_mlfq_scheduling",     test_mlfq_scheduling_impl,    SUITE_MLFQ,        5);
-    run_test_in_subproc("test_preemptive_priority", test_preemptive_priority_impl,SUITE_PRIO_PREEMPT,5);
-    run_test_in_subproc("test_hpc_bfs",             test_hpc_bfs_impl,            SUITE_HPC_BFS,     5);
+#define DEFAULT_TEST_TIMEOUT_SEC 5
 
-    /* Each test logs pass/fail individually. The scoreboard is updated. */
+// Test case structure to hold test information
+typedef struct {
+    const char* name;
+    bool (*implementation)(void);
+    scoreboard_suite_t suite;
+} TestCase;
+
+static bool execute_single_test(const TestCase* test, int timeout_sec) {
+    if (skip_remaining_tests_requested()) {
+        return false;
+    }
+    return run_test_in_subproc(test->name, test->implementation, test->suite, timeout_sec);
+}
+
+void run_all_tests(void) {
+    // Store initial bonus test state
+    bool was_bonus_enabled = (is_bonus_test() == 1);
+    set_bonus_test(0);
+
+    // Define all test cases
+    const TestCase test_cases[] = {
+        {"test_basic_fifo",          test_basic_fifo_impl,          SUITE_BASIC},
+        {"test_normal_rr",           test_normal_rr_impl,           SUITE_NORMAL},
+        {"test_edge_priority",       test_edge_priority_impl,       SUITE_EDGE},
+        {"test_hidden_hpc",          test_hidden_hpc_impl,          SUITE_HIDDEN},
+        {"test_wfq",                 test_wfq_impl,                 SUITE_WFQ},
+        {"test_multi_hpc",           test_multi_hpc_impl,           SUITE_MULTI_HPC},
+        {"test_bfs_scheduling",      test_bfs_scheduling_impl,      SUITE_BFS},
+        {"test_mlfq_scheduling",     test_mlfq_scheduling_impl,     SUITE_MLFQ},
+        {"test_preemptive_priority", test_preemptive_priority_impl, SUITE_PRIO_PREEMPT}
+    };
+
+    // Execute regular tests
+    for (size_t i = 0; i < sizeof(test_cases) / sizeof(test_cases[0]); i++) {
+        if (!execute_single_test(&test_cases[i], DEFAULT_TEST_TIMEOUT_SEC)) {
+            return;
+        }
+    }
+
+    // Restore bonus test state and run bonus test if needed
+    if (was_bonus_enabled) {
+        set_bonus_test(1);
+        const TestCase bonus_test = {
+            "test_hpc_bfs",
+            test_hpc_bfs_impl,
+            SUITE_HPC_BFS
+        };
+
+        execute_single_test(&bonus_test, DEFAULT_TEST_TIMEOUT_SEC);
+    }
 }

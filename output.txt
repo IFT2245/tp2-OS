@@ -1,49 +1,40 @@
 #include "scheduler.h"
 #include "ready_queue.h"
-#include "worker.h"      // For main_core_thread() and hpc_thread() functions
-#include "log.h"
+#include "worker.h"
+#include "../lib/log.h"
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
-#include <pthread.h>
 #include <sys/stat.h>
 #include <dirent.h>
 
-/* ------------------------------------------------------------------
-   (A) ephemeral code inlined into container
-   ------------------------------------------------------------------ */
-
+/* =========== (A) ephemeral remove code =========== */
 #ifdef EPHEMERAL_RM_RECURSIVE
 static int remove_directory_recursive(const char* path){
     DIR* dir = opendir(path);
-    if(!dir){
-        return rmdir(path);
-    }
+    if(!dir) return rmdir(path);
     struct dirent* entry;
     int ret=0;
     while((entry = readdir(dir))){
-        if(strcmp(entry->d_name, ".")==0 || strcmp(entry->d_name, "..")==0){
+        if(strcmp(entry->d_name,".")==0 || strcmp(entry->d_name,"..")==0){
             continue;
         }
         char buf[512];
-        snprintf(buf, sizeof(buf), "%s/%s", path, entry->d_name);
-
+        snprintf(buf,sizeof(buf),"%s/%s", path, entry->d_name);
         struct stat st;
-        if(stat(buf, &st)==0){
+        if(stat(buf,&st)==0){
             if(S_ISDIR(st.st_mode)){
-                ret = remove_directory_recursive(buf);
+                ret=remove_directory_recursive(buf);
                 if(ret!=0) break;
             } else {
-                ret = unlink(buf);
+                ret=unlink(buf);
                 if(ret!=0) break;
             }
         }
     }
     closedir(dir);
-    if(ret==0){
-        ret = rmdir(path);
-    }
+    if(ret==0) ret=rmdir(path);
     return ret;
 }
 #endif
@@ -61,7 +52,8 @@ static char* ephemeral_create_container(void){
         free(p);
         return NULL;
     }
-    log_info("ephemeral created => %s", p);
+    /* Make ephemeral container logs purple: */
+    log_info("\033[35mephemeral created => %s\033[0m", p);
     return p;
 }
 
@@ -72,22 +64,15 @@ static void ephemeral_remove_container(const char* path){
 #else
     int r = rmdir(path);
 #endif
-    if(r == 0){
-        log_info("ephemeral removed => %s", path);
+    if(r==0){
+        log_info("\033[35mephemeral removed => %s\033[0m", path);
     } else {
         log_warn("ephemeral remove fail => %s : %s", path, strerror(errno));
     }
 }
 
-/* ------------------------------------------------------------------
-   (B) container_run support
-   ------------------------------------------------------------------ */
-
-/**
- * @brief Print the timeline after the container finishes.
- */
+/* =========== (B) timeline printing =========== */
 static int compare_timeline(const void* a, const void* b){
-    /* Sort by core_id ascending, then start_ms ascending */
     const timeline_item_t* A = (const timeline_item_t*)a;
     const timeline_item_t* B = (const timeline_item_t*)b;
     if(A->core_id < B->core_id) return -1;
@@ -97,29 +82,29 @@ static int compare_timeline(const void* a, const void* b){
     return 0;
 }
 
-static void print_container_timeline(container_t* c){
+static void print_container_timeline(const container_t* c){
     if(c->timeline_count == 0){
-        printf("\n\033[1m\033[33mNo timeline for container.\n\033[0m");
+        printf("\n\033[1m\033[33mNo timeline for container.\033[0m\n");
         return;
     }
     qsort(c->timeline, c->timeline_count, sizeof(c->timeline[0]), compare_timeline);
 
     printf("\033[1m\033[36m\n--- Container Timeline ---\n\033[0m");
-    int current_core = 999999;
-    for(int i=0; i < c->timeline_count; i++){
-        int core_id = c->timeline[i].core_id;
-        if(core_id != current_core){
-            if(core_id >= 0){
-                printf("\033[1m\033[32m\nMain Core %d:\n\033[0m", core_id);
+    int current_core=9999999;
+    for(int i=0; i<c->timeline_count; i++){
+        int cid = c->timeline[i].core_id;
+        if(cid != current_core){
+            if(cid >= 0){
+                printf("\033[1m\033[32m\nMain Core %d:\n\033[0m", cid);
             } else {
-                int hpc_idx = (-1 - core_id);
+                int hpc_idx = (-1 - cid);
                 printf("\033[1m\033[35m\nHPC Thread %d:\n\033[0m", hpc_idx);
             }
-            current_core = core_id;
+            current_core=cid;
         }
-        unsigned long st = c->timeline[i].start_ms;
-        unsigned long ln = c->timeline[i].length_ms;
-        bool pre = c->timeline[i].preempted_slice;
+        unsigned long st=c->timeline[i].start_ms;
+        unsigned long ln=c->timeline[i].length_ms;
+        bool pre=c->timeline[i].preempted_slice;
         if(pre){
             printf("  T[%lu..%lu] => P%d \033[1m\033[33m[PREEMPT]\033[0m\n",
                    st, st+ln, c->timeline[i].proc_id);
@@ -129,94 +114,93 @@ static void print_container_timeline(container_t* c){
     }
 }
 
+/* =========== (C) container_run =========== */
 static void* container_thread_runner(void* arg){
-    container_t* c = (container_t*)arg;
+    container_t* c=(container_t*)arg;
     if(!c){
         log_error("container_run => null container pointer?");
         return NULL;
     }
 
-    /* ephemeral creation */
     c->ephemeral_path = ephemeral_create_container();
     if(!c->ephemeral_path){
-        log_error("container_run => ephemeral creation failed. Will run anyway.");
+        log_error("container_run => ephemeral creation failed => ignoring");
     }
 
-    /* Give IDs. HPC offset by 1000. */
-    for(int i=0;i<c->main_count;i++){
+    /* HPC procs offset 1000. */
+    for(int i=0; i<c->main_count; i++){
         c->main_procs[i].id = i;
     }
-    for(int i=0;i<c->hpc_count;i++){
+    for(int i=0; i<c->hpc_count; i++){
         c->hpc_procs[i].id = 1000 + i;
     }
 
-    /* Create local queues */
+    /* Build local RQs. */
     ready_queue_t main_q, hpc_q;
     rq_init(&main_q, c->main_alg);
-    rq_init(&hpc_q,  c->hpc_alg);
+    rq_init(&hpc_q, c->hpc_alg);
 
-    /* Push immediate arrivals (arrival_time=0). */
-    for(int i=0; i < c->main_count; i++){
-        process_t* p = &c->main_procs[i];
+    /* Push immediate arrivals. */
+    for(int i=0; i<c->main_count; i++){
+        process_t* p=&c->main_procs[i];
         if(p->remaining_time>0 && p->arrival_time==0){
             rq_push(&main_q, p);
         }
     }
-    for(int i=0; i < c->hpc_count; i++){
-        process_t* p = &c->hpc_procs[i];
+    for(int i=0; i<c->hpc_count; i++){
+        process_t* p=&c->hpc_procs[i];
         if(p->remaining_time>0 && p->arrival_time==0){
             rq_push(&hpc_q, p);
         }
     }
 
-    /* Start main core threads. */
-    pthread_t* main_threads = (pthread_t*)calloc(c->nb_cores, sizeof(pthread_t));
+    /* Create main threads. */
+    pthread_t* main_threads = calloc(c->nb_cores, sizeof(pthread_t));
     if(!main_threads){
-        log_error("container_run => cannot allocate main_threads");
+        log_error("container_run => no memory for main_threads");
         return NULL;
     }
-    for(int i=0; i < c->nb_cores; i++){
-        core_thread_pack_t* pack = (core_thread_pack_t*)malloc(sizeof(core_thread_pack_t));
+    for(int i=0; i<c->nb_cores; i++){
+        core_thread_pack_t* pack = malloc(sizeof(core_thread_pack_t));
         pack->container = c;
         pack->qs.main_rq = &main_q;
         pack->qs.hpc_rq  = &hpc_q;
-        pack->core_id    = i;
+        pack->core_id = i;
         pthread_create(&main_threads[i], NULL, main_core_thread, pack);
     }
 
-    /* Start HPC threads. */
+    /* HPC threads. */
     pthread_t* hpc_threads = NULL;
     if(c->nb_hpc_threads > 0){
-        hpc_threads = (pthread_t*)calloc(c->nb_hpc_threads, sizeof(pthread_t));
+        hpc_threads = calloc(c->nb_hpc_threads, sizeof(pthread_t));
         if(!hpc_threads){
-            log_error("container_run => cannot allocate hpc_threads");
+            log_error("container_run => no memory for hpc_threads");
         } else {
-            for(int i=0; i < c->nb_hpc_threads; i++){
-                core_thread_pack_t* pack = (core_thread_pack_t*)malloc(sizeof(core_thread_pack_t));
+            for(int i=0; i<c->nb_hpc_threads; i++){
+                core_thread_pack_t* pack = malloc(sizeof(core_thread_pack_t));
                 pack->container = c;
                 pack->qs.main_rq = &main_q;
                 pack->qs.hpc_rq  = &hpc_q;
-                pack->core_id    = i; /* HPC index, not negative here */
+                pack->core_id = i;
                 pthread_create(&hpc_threads[i], NULL, hpc_thread, pack);
             }
         }
     }
 
-    /* Join main threads. */
-    for(int i=0; i < c->nb_cores; i++){
+    /* Join main cores. */
+    for(int i=0; i<c->nb_cores; i++){
         pthread_join(main_threads[i], NULL);
     }
     free(main_threads);
 
     /* Join HPC threads. */
-    if(c->nb_hpc_threads > 0 && hpc_threads){
-        for(int i=0; i < c->nb_hpc_threads; i++){
+    if(c->nb_hpc_threads>0 && hpc_threads){
+        for(int i=0; i<c->nb_hpc_threads; i++){
             pthread_join(hpc_threads[i], NULL);
         }
         free(hpc_threads);
     }
 
-    /* Destroy queues */
     rq_destroy(&main_q);
     rq_destroy(&hpc_q);
 
@@ -224,13 +208,11 @@ static void* container_thread_runner(void* arg){
     if(c->ephemeral_path){
         ephemeral_remove_container(c->ephemeral_path);
         free(c->ephemeral_path);
-        c->ephemeral_path = NULL;
+        c->ephemeral_path=NULL;
     }
 
-    /* Print timeline */
     print_container_timeline(c);
 
-    /* Clean up timeline array. */
     if(c->timeline){
         free(c->timeline);
         c->timeline = NULL;
@@ -240,10 +222,6 @@ static void* container_thread_runner(void* arg){
 
     return NULL;
 }
-
-/* ------------------------------------------------------------------
-   (C) container_init and container_run
-   ------------------------------------------------------------------ */
 
 void container_init(container_t* c,
                     int nb_cores,
@@ -257,34 +235,31 @@ void container_init(container_t* c,
                     unsigned long max_cpu_ms)
 {
     if(!c){
-        log_error("container_init => container pointer is NULL");
+        log_error("container_init => null container pointer");
         return;
     }
-    memset(c, 0, sizeof(*c));
+    memset(c,0,sizeof(*c));
 
-    if(nb_cores < 0 || nb_hpc_threads < 0){
-        log_warn("container_init with negative core/hpc => forcing 0");
-        if(nb_cores < 0)        nb_cores = 0;
-        if(nb_hpc_threads < 0)  nb_hpc_threads = 0;
-    }
-    if(max_cpu_ms == 0){
-        log_warn("container_init => max_cpu_ms=0 => forcing 100");
-        max_cpu_ms = 100;
+    if(nb_cores<0) nb_cores=0;
+    if(nb_hpc_threads<0) nb_hpc_threads=0;
+    if(max_cpu_ms==0){
+        log_warn("container_init => forcing max_cpu_ms=100");
+        max_cpu_ms=100;
     }
 
-    c->nb_cores        = nb_cores;
-    c->nb_hpc_threads  = nb_hpc_threads;
-    c->main_alg        = main_alg;
-    c->hpc_alg         = hpc_alg;
-    c->main_procs      = main_list;
-    c->main_count      = main_count;
-    c->hpc_procs       = hpc_list;
-    c->hpc_count       = hpc_count;
-    c->max_cpu_time_ms = max_cpu_ms;
-    c->remaining_count = main_count + hpc_count;
+    c->nb_cores       = nb_cores;
+    c->nb_hpc_threads = nb_hpc_threads;
+    c->main_alg       = main_alg;
+    c->hpc_alg        = hpc_alg;
+    c->main_procs     = main_list;
+    c->main_count     = main_count;
+    c->hpc_procs      = hpc_list;
+    c->hpc_count      = hpc_count;
+    c->max_cpu_time_ms= max_cpu_ms;
+    c->remaining_count= main_count + hpc_count;
 
-    pthread_mutex_init(&c->finish_lock, NULL);
-    pthread_mutex_init(&c->timeline_lock, NULL);
+    pthread_mutex_init(&c->finish_lock,NULL);
+    pthread_mutex_init(&c->timeline_lock,NULL);
 
     c->timeline       = NULL;
     c->timeline_count = 0;
@@ -293,28 +268,21 @@ void container_init(container_t* c,
     c->accumulated_cpu= 0;
     c->sim_time       = 0;
 
-    /* If we have 0 main cores but still have main processes,
-       let HPC threads steal from main automatically to avoid deadlock. */
-    if(nb_cores == 0 && main_count > 0){
+    /* HPC steal if 0 main cores but have main processes. */
+    if(nb_cores == 0 && main_count>0){
         log_info("container_init => no main cores but main processes => enabling HPC steal");
         c->allow_hpc_steal = true;
-    } else {
-        c->allow_hpc_steal = false;
     }
 }
 
 void container_run(container_t* c){
-    /* Single-thread approach: we can just call container_thread_runner. */
     container_thread_runner((void*)c);
 }
 
 void orchestrator_run(container_t* arr, int count){
-    /* If you want each container to run in its own thread, do it here.
-       Or run them sequentially.
-       We'll do them in parallel below for demonstration. */
-    pthread_t* tids = (pthread_t*)calloc(count, sizeof(pthread_t));
+    pthread_t* tids = calloc(count, sizeof(pthread_t));
     if(!tids){
-        log_error("orchestrator_run => cannot allocate thread array");
+        log_error("orchestrator_run => cannot allocate");
         return;
     }
     for(int i=0; i<count; i++){
@@ -330,21 +298,23 @@ void orchestrator_run(container_t* arr, int count){
 
 #include <pthread.h>
 #include <stdbool.h>
+#include "../lib/scheduler_alg.h"
 #include "process.h"
-#include "scheduler.h"
 
+/**
+ * Timeline event struct
+ */
 typedef struct timeline_item_s {
-    int           core_id;
+    int           core_id;    /* HPC ID if negative */
     int           proc_id;
     unsigned long start_ms;
     unsigned long length_ms;
     bool          preempted_slice;
 } timeline_item_t;
 
-/*
-   5) Define the actual container_s struct with references to
-      scheduler_alg_t and the timeline array, etc.
-*/
+/**
+ * @brief The container struct for processes + HPC threads + scheduling info.
+ */
 typedef struct container_s {
     int              nb_cores;
     int              nb_hpc_threads;
@@ -373,7 +343,13 @@ typedef struct container_s {
     bool  allow_hpc_steal;
 } container_t;
 
-/* container API: */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * @brief Initialize a container. HPC steal is automatically enabled if nb_cores=0 but main_count>0.
+ */
 void container_init(container_t* c,
                     int nb_cores,
                     int nb_hpc_threads,
@@ -385,160 +361,147 @@ void container_init(container_t* c,
                     int hpc_count,
                     unsigned long max_cpu_ms);
 
+/**
+ * @brief Run this container in the current thread. (Blocks until completion.)
+ */
 void container_run(container_t* c);
-void orchestrator_run(container_t* arr, int count);
-
-#endif // CONTAINER_H
-#include "library.h"
-#include "scoreboard.h"
-#include "log.h"
-#include <stdlib.h>
-#include <signal.h>
-
-static volatile sig_atomic_t g_skip_remaining_tests = 0;
-
-int skip_remaining_tests_requested(void) {
-    return (g_skip_remaining_tests != 0);
-}
-
-void set_skip_remaining_tests(const int val) {
-    g_skip_remaining_tests = (val ? 1 : 0);
-}
-
-void handle_signal(const int signum){
-    scoreboard_save();
-    if(signum == SIGINT) {
-        /* SIGINT => exit immediately, but save scoreboard + stats. */
-        log_warn("Caught Signal to exit => exiting");
-        exit(1);
-    }
-
-    if(signum == SIGTERM) {
-        set_skip_remaining_tests(1); // volatile value make an action possible
-    }
-    log_warn("Caught signal to return to main menu => navigation activated");
-}
-
-// Usage : if (skip_remaining_tests_requested)#ifndef LIBRARY_H
-#define LIBRARY_H
-int skip_remaining_tests_requested(void);
-void set_skip_remaining_tests(const int val);
-void handle_signal(int signum);
-#endif //LIBRARY_H
-#include "log.h"
-#include <stdarg.h>
-
-static log_level_t g_log_level = LOG_LEVEL_INFO;
-
-static void vlogf(log_level_t lvl, const char* prefix, const char* fmt, va_list ap){
-    if(lvl < g_log_level) return;
-    fprintf(stderr, "%s", prefix);
-    vfprintf(stderr, fmt, ap);
-    fprintf(stderr, CLR_RESET "\n");
-}
-
-void set_log_level(log_level_t lvl){
-    g_log_level = lvl;
-}
-
-void log_debug(const char* fmt, ...){
-    va_list ap;
-    va_start(ap, fmt);
-    vlogf(LOG_LEVEL_DEBUG, CLR_BLUE"[DEBUG] "CLR_RESET, fmt, ap);
-    va_end(ap);
-}
-
-void log_info(const char* fmt, ...){
-    va_list ap;
-    va_start(ap, fmt);
-    vlogf(LOG_LEVEL_INFO, CLR_GREEN"[INFO]  "CLR_RESET, fmt, ap);
-    va_end(ap);
-}
-
-void log_warn(const char* fmt, ...){
-    va_list ap;
-    va_start(ap, fmt);
-    vlogf(LOG_LEVEL_WARN, CLR_YELLOW"[WARN]  "CLR_RESET, fmt, ap);
-    va_end(ap);
-}
-
-void log_error(const char* fmt, ...){
-    va_list ap;
-    va_start(ap, fmt);
-    vlogf(LOG_LEVEL_ERROR, CLR_RED"[ERROR] "CLR_RESET, fmt, ap);
-    va_end(ap);
-}
-#ifndef LOG_H
-#define LOG_H
-
-#include <stdio.h>
-#include <stdarg.h>
-
-/* ======== ANSI COLORS ======== */
-#define CLR_RESET   "\033[0m"
-#define CLR_BOLD    "\033[1m"
-#define CLR_RED     "\033[31m"
-#define CLR_GREEN   "\033[32m"
-#define CLR_YELLOW  "\033[33m"
-#define CLR_BLUE    "\033[34m"
-#define CLR_MAGENTA "\033[35m"
-#define CLR_CYAN    "\033[36m"
-
-typedef enum {
-    LOG_LEVEL_DEBUG=0,
-    LOG_LEVEL_INFO,
-    LOG_LEVEL_WARN,
-    LOG_LEVEL_ERROR
-} log_level_t;
-
-void set_log_level(log_level_t lvl);
-
-void log_debug(const char* fmt, ...);
-void log_info(const char* fmt, ...);
-void log_warn(const char* fmt, ...);
-void log_error(const char* fmt, ...);
-
-#endif
-#include <signal.h>
-#include "log.h"
-#include "scoreboard.h"
-#include "tests.h"
-#include "library.h"
 
 /**
- * @brief Entry point:
- *  - Loads scoreboard
- *  - Runs all tests (with sub-process + timeout logic)
- *  - Shows final scoreboard
- *  - Returns final numeric score
+ * @brief Orchestrator that runs multiple containers in parallel.
  */
+void orchestrator_run(container_t* arr, int count);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // CONTAINER_H
+#include <stdio.h>
+#include <stdlib.h>
+#include <signal.h>
+#include "../lib/scoreboard.h"
+#include "../test/basic-tests.h"
+#include "../lib/library.h"
+#include "../lib/log.h"
+
+extern void set_slow_mode(int onOff);
+extern int  is_slow_mode(void);
+extern void set_bonus_test(int onOff);
+extern int  is_bonus_test(void);
+
+static void do_run_tests(void){
+    set_log_level(LOG_LEVEL_INFO);
+    run_all_tests();    /* This calls your test your work */
+    show_scoreboard();  /* Display after running. */
+    scoreboard_save();
+    fflush(stdout);
+    fflush(stderr);
+}
+
+static void show_scoreboard_submenu(void) {
+    while(1) {
+        printf("\n\033[1m\033[36m=== SCOREBOARD MENU ===\033[0m\n");
+        printf("1) Show scoreboard legend\n");
+        printf("2) Return to main menu\n");
+        printf("Choice? ");
+        fflush(stdout);
+        char choice[64];
+        if(!fgets(choice, sizeof(choice), stdin)) break;
+        switch(choice[0]) {
+        case '1':
+            show_legend();
+            break;
+        case '2':
+            return;
+        default:
+            printf("\033[33mUnknown option.\033[0m\n");
+            break;
+        }
+    }
+}
+
+static void show_main_menu(void){
+    fflush(stdout);
+    fflush(stderr);
+    if(is_slow_mode())
+    {
+        printf("\033[36mSlow motion activated\033[0m");
+    } else
+    {
+        printf("\033[36mFast motion activated\033[0m");
+    }
+    printf("\n\033[1m\033[35m=== MAIN MENU ===\033[0m\n");
+    printf("1) Run all tests\n");
+    printf("2) Scoreboard\n");
+    printf("3) Clear scoreboard\n");
+    printf("4) Enable slow concurrency\n");
+    printf("5) Disable slow concurrency\n");
+    printf("6) Enable/Disable bonus test\n");
+    printf("7) Exit\n");
+    printf("Choice? ");
+}
+
 int main(void){
-     /* Set desired log level. */
-     set_log_level(LOG_LEVEL_INFO);
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+    // HPC Bonus is initially ON for demonstration
+    set_log_level(LOG_LEVEL_INFO);
+    scoreboard_load();
+    scoreboard_set_sc_hpc(1);
+    set_slow_mode(0);    // default concurrency mode: fast
+    set_bonus_test(0);   // default: bonus test OFF
 
-     /* Install signal handlers to save scoreboard on INT/TERM. */
-     signal(SIGINT, handle_signal);
-     signal(SIGTERM, handle_signal);
-
-     /* Load scoreboard (if scoreboard.json exists). */
-     scoreboard_load();
-     /* Example: we set HPC bonus on by default. */
-     scoreboard_set_sc_hpc(1);
-
-     /* Run all tests. Each test logs PASS/FAIL and updates scoreboard. */
-     run_all_tests();
-
-     /* Show scoreboard + save it. */
-     show_scoreboard();
-     scoreboard_save();
-
-     /* Return final integer score as the program exit code. */
-     int final_score = scoreboard_get_final_score();
-     log_info("Final Score = %d", final_score);
-     return final_score;
+    while(1){
+        if (fflush(stdout) == 0 && fflush(stderr) == 0) {
+            show_main_menu();
+        }
+        char choice[64];
+        if(!fgets(choice, sizeof(choice), stdin)){
+            break;
+        }
+        switch(choice[0]){
+        case '1':
+            do_run_tests();
+            break;
+        case '2':
+            show_scoreboard();
+            show_scoreboard_submenu();
+            break;
+        case '3':
+            scoreboard_clear();
+            printf("\033[31mScoreboard cleared.\033[00m\n");
+            break;
+        case '4':
+            set_slow_mode(1);
+            printf("\033[36mSlow concurrency enabled.\033[0m\n");
+            break;
+        case '5':
+            set_slow_mode(0);
+            printf("\033[36mSlow concurrency disabled.\033[00m\n");
+            break;
+        case '6':
+            if (is_bonus_test()) {
+                set_bonus_test(0);
+                printf("\033[35mBonus test disabled.\033[0m\n");
+            } else {
+                set_bonus_test(1);
+                printf("\033[35mBonus test enabled.\033[0m\n");
+            }
+            break;
+        case '7':
+        case 'q':
+        case 'Q':
+            printf("Exiting...\n");
+            return scoreboard_get_final_score();
+        default:
+            printf("\033[33mUnknown option.\033[0m\n");
+            break;
+        }
+    }
+    return -1;
 }
 #include "process.h"
-#include "log.h"
+#include "../lib/log.h"
 
 void init_process(process_t* p, unsigned long burst, int prio, unsigned long arrival, double weight){
     if(!p){
@@ -603,7 +566,7 @@ void init_process(process_t* p, unsigned long burst, int prio, unsigned long arr
 
 #endif
 #include "ready_queue.h"
-#include "log.h"
+#include "../lib/log.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -621,9 +584,8 @@ static int burst_asc_cmp(const process_t* A, const process_t* B){
     return 0;
 }
 
-/* Simple ascending sort insertion if cmp is not NULL.
-   If cmp is NULL => we do tail insertion (FIFO).
- */
+/* Simple ascending sort insertion if cmp != NULL,
+   or tail insertion (FIFO) if cmp == NULL. */
 static void rq_insert_sorted(ready_queue_t* rq, process_t* p, proc_cmp_fn cmp){
     rq_node_t* n = (rq_node_t*)malloc(sizeof(rq_node_t));
     n->proc = p;
@@ -659,9 +621,6 @@ static void rq_insert_sorted(ready_queue_t* rq, process_t* p, proc_cmp_fn cmp){
     px->next = n;
 }
 
-/* ------------------------------------------------------
-   Implementation
-   ------------------------------------------------------ */
 void rq_init(ready_queue_t* rq, scheduler_alg_t alg){
     memset(rq, 0, sizeof(*rq));
     pthread_mutex_init(&rq->lock, NULL);
@@ -686,11 +645,9 @@ void rq_destroy(ready_queue_t* rq){
 void rq_push(ready_queue_t* rq, process_t* p){
     pthread_mutex_lock(&rq->lock);
 
-    rq_node_t* n = NULL;
-
     if(!p){
         /* termination marker => push front always. */
-        n = (rq_node_t*)malloc(sizeof(rq_node_t));
+        rq_node_t* n = (rq_node_t*)malloc(sizeof(rq_node_t));
         n->proc = NULL;
         n->next = rq->head;
         rq->head = n;
@@ -715,11 +672,13 @@ void rq_push(ready_queue_t* rq, process_t* p){
         break;
     case ALG_HPC:
         /* HPC example => push front. */
-        n = (rq_node_t*)malloc(sizeof(rq_node_t));
+    {
+        rq_node_t* n = (rq_node_t*)malloc(sizeof(rq_node_t));
         n->proc = p;
         n->next = rq->head;
         rq->head = n;
         break;
+    }
     default:
         /* default => FIFO for RR, BFS, MLFQ, WFQ, etc. */
         rq_insert_sorted(rq, p, NULL);
@@ -823,10 +782,9 @@ bool try_preempt_if_needed(ready_queue_t* rq, process_t* p){
     if(front->priority < p->priority){
         /* Preempt => put p back, pop the new highest prio. */
         p->was_preempted = true;
+        /* Insert p into the queue sorted by priority. */
         rq_insert_sorted(rq, p, prio_asc_cmp);
-        rq->size++; /* We re-insert => effectively increment size.
-                       But note that the node creation in rq_insert_sorted
-                       does not do that for us. */
+        rq->size++;
         pthread_mutex_unlock(&rq->lock);
         return true;
     }
@@ -880,7 +838,7 @@ process_t* rq_pop(ready_queue_t* rq, bool* got_term);
 
 /**
  * @brief Try to see if we need to preempt the current running process
- *        if a higher priority one arrives in the queue (for ALG_PRIO_PREEMPT).
+ *        if a higher-priority one arrives in the queue (for ALG_PRIO_PREEMPT).
  *
  * @return true if a preemption occurred and we reinserted the old process.
  */
@@ -888,63 +846,580 @@ bool try_preempt_if_needed(ready_queue_t* rq, process_t* p);
 
 #endif // READY_QUEUE_H
 #include "scheduler.h"
-#include "container.h"
-#include "log.h"
-#include <stdio.h>
-#include <unistd.h>
-#include <pthread.h>
+#include "../lib/log.h"
 #include <stdlib.h>
-
-/**
- * @brief If compiled with SHELL_TP1_IMPLEMENTATION,
- *        we will do a slow 'sleep(ms)' instead of 'usleep(ms*3000)'.
- *
- *        Adjust as you want for "SLOW CONCURRENCY MOTION".
- */
-void do_cpu_work(unsigned long ms, int core_id, int proc_id){
-    /* Show concurrency log with color. */
-    fprintf(stderr, "\033[36m[CORE %d] Running proc P%d for %lu ms...\033[0m\n",
-            core_id, proc_id, ms);
-
-#ifdef SHELL_TP1_IMPLEMENTATION
-    /* 1-second granularity: if ms=4 => sleep(4).
-       That is a bigger slowdown. Possibly use 'usleep(ms * 1000)' if you prefer. */
-    sleep(ms);
-#else
-    /* Default: multiply by e.g. 1000 or 3000 for a "slow" user experience. */
-    usleep((useconds_t)(ms * 3000U));
-#endif
-}
+#include <unistd.h>
+#include <stdbool.h>
 
 unsigned long get_quantum(scheduler_alg_t alg, const process_t* p){
     if(!p) return 0;
-
-    switch(alg) {
-    case ALG_RR:
-        return 2;
-    case ALG_BFS:
-        return 4;  /* BFS => bigger chunk */
-    case ALG_WFQ:
-        return 3;
-    case ALG_MLFQ:
-        /* Example MLFQ: base 2 + 2 per level. */
-        return (2 + p->mlfq_level*2);
-    case ALG_PRIO_PREEMPT:
-        return 2;
-    case ALG_FIFO:    /* fallthrough */
-    case ALG_SJF:     /* fallthrough */
-    case ALG_PRIORITY:/* fallthrough */
-    case ALG_HPC:     /* HPC default demonstration */
-    case ALG_NONE:    /* fallthrough */
+    switch(alg){
+    case ALG_RR:           return 2;
+    case ALG_BFS:          return 4;
+    case ALG_WFQ:          return 3;
+    case ALG_MLFQ:         return (2 + p->mlfq_level * 2);
+    case ALG_PRIO_PREEMPT: return 2;
+    case ALG_FIFO:
+    case ALG_SJF:
+    case ALG_PRIORITY:
+    case ALG_HPC:
+    case ALG_NONE:
     default:
-        /* Fallback => 2. */
         return 2;
     }
-}#ifndef SCHEDULER_H
+}
+
+void record_timeline(container_t* c, int core_id, int proc_id,
+                     unsigned long start_ms, unsigned long slice, bool preempted_flag)
+{
+    pthread_mutex_lock(&c->timeline_lock);
+    if(c->timeline_count + 1 >= c->timeline_cap){
+        int new_cap = c->timeline_cap + 64;
+        void* tmp = realloc(c->timeline, new_cap * sizeof(*c->timeline));
+        if(!tmp){
+            log_error("record_timeline => out of memory!");
+            pthread_mutex_unlock(&c->timeline_lock);
+            return;
+        }
+        c->timeline = tmp;
+        c->timeline_cap = new_cap;
+    }
+    c->timeline[c->timeline_count].core_id         = core_id;
+    c->timeline[c->timeline_count].proc_id         = proc_id;
+    c->timeline[c->timeline_count].start_ms        = start_ms;
+    c->timeline[c->timeline_count].length_ms       = slice;
+    c->timeline[c->timeline_count].preempted_slice = preempted_flag;
+    c->timeline_count++;
+    pthread_mutex_unlock(&c->timeline_lock);
+}
+#ifndef SCHEDULER_H
 #define SCHEDULER_H
 #include <stdbool.h>
+#include "../lib/scheduler_alg.h"
 #include "process.h"
+#include "container.h"
 
+/* Forward-declare container_t for function prototypes: */
+struct container_s;
+typedef struct container_s container_t;
+
+/**
+ * @brief Return the timeslice “quantum” for a given algorithm + process.
+ */
+unsigned long get_quantum(scheduler_alg_t alg, const process_t* p);
+
+/**
+ * @brief Perform actual CPU-bound "work" for `ms` milliseconds,
+ *        with optional slow-mode vs. fast-mode behavior.
+ */
+void do_cpu_work(unsigned long ms, int core_id, int proc_id);
+
+/**
+ * @brief Record a timeline event into the container's timeline array.
+ */
+void record_timeline(container_t* c,
+                     int core_id,
+                     int proc_id,
+                     unsigned long start_ms,
+                     unsigned long slice,
+                     bool preempted_flag);
+
+/**
+ * @brief Enable or disable slow mode concurrency.
+ *        HPC shell is only used if found in ../../libExtern/ ;
+ *        otherwise HPC-based tests that rely on it will fail gracefully.
+ */
+void set_slow_mode(int onOff);
+
+#endif // SCHEDULER_H
+#include "worker.h"
+
+/* Forward helpers */
+static bool is_time_exhausted(container_t* c){
+    pthread_mutex_lock(&c->finish_lock);
+    bool r = c->time_exhausted || (c->accumulated_cpu >= c->max_cpu_time_ms);
+    pthread_mutex_unlock(&c->finish_lock);
+    return r;
+}
+
+/**
+ * @brief Stop everything by pushing termination markers.
+ */
+static void force_stop(container_t* c, ready_queue_t* rq_main, ready_queue_t* rq_hpc){
+    for(int i=0; i<c->nb_cores; i++){
+        rq_push(rq_main, NULL);
+    }
+    for(int i=0; i<c->nb_hpc_threads; i++){
+        rq_push(rq_hpc, NULL);
+    }
+}
+
+static void check_main_arrivals(container_t* c, ready_queue_t* rq){
+    pthread_mutex_lock(&c->finish_lock);
+    unsigned long now = c->sim_time;
+    pthread_mutex_unlock(&c->finish_lock);
+
+    for(int i=0; i<c->main_count; i++){
+        process_t* p = &c->main_procs[i];
+        if(p->remaining_time>0 && p->arrival_time>0 && p->arrival_time <= now){
+            fprintf(stderr, "\033[94m[MAIN ARRIVE] P%d arrives at t=%lu => push mainRQ\033[0m\n",
+                    p->id, now);
+            rq_push(rq, p);
+            p->arrival_time = 0;
+        }
+    }
+}
+
+static void check_hpc_arrivals(container_t* c, ready_queue_t* rq){
+    pthread_mutex_lock(&c->finish_lock);
+    unsigned long now = c->sim_time;
+    pthread_mutex_unlock(&c->finish_lock);
+
+    for(int i=0; i<c->hpc_count; i++){
+        process_t* p = &c->hpc_procs[i];
+        if(p->remaining_time>0 && p->arrival_time>0 && p->arrival_time <= now){
+            fprintf(stderr, "\033[95m[HPC ARRIVE]  P%d arrives at t=%lu => push hpcRQ\033[0m\n",
+                    p->id, now);
+            rq_push(rq, p);
+            p->arrival_time = 0;
+        }
+    }
+}
+
+/**
+ * @brief Perform one CPU slice for a given process `p` on core `core_id`.
+ */
+static void run_slice(container_t* c, ready_queue_t* main_rq, ready_queue_t* hpc_rq,
+                      process_t* p, scheduler_alg_t alg,
+                      int core_id, unsigned long* used_ms)
+{
+    *used_ms = 0;
+    if(!p || p->remaining_time == 0) return;
+
+    unsigned long quantum = get_quantum(alg, p);
+
+    pthread_mutex_lock(&c->finish_lock);
+    unsigned long start_ms = c->sim_time;
+    if(!p->responded){
+        p->responded = true;
+        p->first_response = start_ms;
+    }
+    pthread_mutex_unlock(&c->finish_lock);
+
+    bool preempted_flag = false;
+    unsigned long slice_used = 0;
+    unsigned long slice_remaining = quantum;
+
+    while(slice_remaining > 0 && !c->time_exhausted && p->remaining_time > 0){
+        unsigned long step = (slice_remaining < p->remaining_time)
+                           ? slice_remaining
+                           : p->remaining_time;
+
+        /* Actual CPU simulation step: */
+        do_cpu_work(step, core_id, p->id);
+
+        pthread_mutex_lock(&c->finish_lock);
+
+        p->remaining_time -= step;
+        c->accumulated_cpu += step;
+        c->sim_time        += step;
+
+        slice_used       += step;
+        slice_remaining  -= step;
+
+        if(p->remaining_time == 0){
+            p->end_time = p->first_response + p->burst_time;
+            c->remaining_count--;
+            if(c->remaining_count <= 0){
+                c->time_exhausted = true;
+            }
+        }
+        if(c->accumulated_cpu >= c->max_cpu_time_ms){
+            c->time_exhausted = true;
+        }
+        pthread_mutex_unlock(&c->finish_lock);
+
+        /* Preemptive check for PRIO_PREEMPT: */
+        if(alg == ALG_PRIO_PREEMPT){
+            bool got_preempted = try_preempt_if_needed(main_rq, p);
+            if(got_preempted){
+                preempted_flag = true;
+                break;
+            }
+        }
+
+        if(c->time_exhausted){
+            break;
+        }
+    }
+
+    /* MLFQ => demote if used the entire quantum but not finished. */
+    if(alg == ALG_MLFQ && p->remaining_time > 0 && slice_used == quantum){
+        p->mlfq_level++;
+    }
+
+    *used_ms = slice_used;
+    record_timeline(c, core_id, p->id, start_ms, slice_used, preempted_flag);
+
+    if(preempted_flag){
+        fprintf(stderr, "\033[33m[CORE %d] PREEMPTED process P%d after %lu ms!\033[0m\n",
+                core_id, p->id, slice_used);
+    }
+}
+
+void* main_core_thread(void* arg){
+    core_thread_pack_t* pack = (core_thread_pack_t*)arg;
+    container_t* c         = pack->container;
+    ready_queue_t* main_rq = pack->qs.main_rq;
+    ready_queue_t* hpc_rq  = pack->qs.hpc_rq;
+    int core_id            = pack->core_id;
+    free(pack);
+
+    while(!is_time_exhausted(c)){
+        bool term_marker = false;
+        process_t* p = rq_pop(main_rq, &term_marker);
+        if(term_marker || !p){
+            fprintf(stderr, "\033[32m[CORE %d] Termination marker => exiting.\033[0m\n", core_id);
+            break;
+        }
+        fprintf(stderr, "\033[32m[CORE %d] Popped P%d (remaining=%lu)\033[0m\n",
+                core_id, p->id, p->remaining_time);
+
+        unsigned long used=0;
+        run_slice(c, main_rq, hpc_rq, p, c->main_alg, core_id, &used);
+
+        if(!is_time_exhausted(c) && p->remaining_time>0){
+            fprintf(stderr, "\033[32m[CORE %d] Re-queue P%d (remaining=%lu)\033[0m\n",
+                    core_id, p->id, p->remaining_time);
+            rq_push(main_rq, p);
+        }
+
+        /* Check arrivals after the slice: */
+        check_main_arrivals(c, main_rq);
+        check_hpc_arrivals(c, hpc_rq);
+
+        if(is_time_exhausted(c)){
+            force_stop(c, main_rq, hpc_rq);
+            break;
+        }
+    }
+    return NULL;
+}
+
+void* hpc_thread(void* arg){
+    core_thread_pack_t* pack = (core_thread_pack_t*)arg;
+    container_t* c         = pack->container;
+    ready_queue_t* main_rq = pack->qs.main_rq;
+    ready_queue_t* hpc_rq  = pack->qs.hpc_rq;
+    int hpc_idx            = pack->core_id;
+    int timeline_id        = -1 - hpc_idx;
+    free(pack);
+
+    while(!is_time_exhausted(c)){
+        /* 1) Check arrivals: */
+        check_hpc_arrivals(c, hpc_rq);
+        check_main_arrivals(c, main_rq);
+
+        /* 2) HPC steal if HPC queue empty and allow_hpc_steal. */
+        pthread_mutex_lock(&hpc_rq->lock);
+        int hpc_size = hpc_rq->size;
+        pthread_mutex_unlock(&hpc_rq->lock);
+
+        if(hpc_size == 0 && c->allow_hpc_steal){
+            bool dummy = false;
+            process_t* stolen = rq_pop(main_rq, &dummy);
+            if(stolen && !dummy){
+                fprintf(stderr, "\033[35m[HPC %d] Steal from main => P%d\033[0m\n",
+                        hpc_idx, stolen->id);
+
+                unsigned long used=0;
+                /* HPC BFS uses HPC scheduling, not main's. */
+                run_slice(c, main_rq, hpc_rq, stolen, c->hpc_alg, timeline_id, &used);
+
+                if(!is_time_exhausted(c) && stolen->remaining_time>0){
+                    fprintf(stderr, "\033[35m[HPC %d] Done slice => re-push P%d to MAIN\033[0m\n",
+                            hpc_idx, stolen->id);
+                    rq_push(main_rq, stolen);
+                }
+            }
+        }
+
+        /* Re-check HPC queue: */
+        pthread_mutex_lock(&hpc_rq->lock);
+        hpc_size = hpc_rq->size;
+        pthread_mutex_unlock(&hpc_rq->lock);
+
+        /* 3) If HPC queue still empty => idle 1ms (faster idle to avoid timeouts). */
+        if(hpc_size == 0){
+            if(is_time_exhausted(c)) break;
+            pthread_mutex_lock(&c->finish_lock);
+            c->sim_time += 1;
+            c->accumulated_cpu += 1;
+            if(c->accumulated_cpu >= c->max_cpu_time_ms){
+                c->time_exhausted = true;
+            }
+            pthread_mutex_unlock(&c->finish_lock);
+
+            /* Sleep a small amount of real time to keep HPC BFS from timing out. */
+            usleep(1000);  // 1ms real-time idle
+            continue;
+        }
+
+        /* 4) Pop HPC queue: */
+        bool term_marker=false;
+        process_t* p = rq_pop(hpc_rq, &term_marker);
+        if(term_marker || !p){
+            fprintf(stderr, "\033[35m[HPC %d] Termination marker => exiting.\033[0m\n", hpc_idx);
+            break;
+        }
+        fprintf(stderr, "\033[35m[HPC %d] HPC pop => P%d (remaining=%lu)\033[0m\n",
+                hpc_idx, p->id, p->remaining_time);
+
+        unsigned long used=0;
+        run_slice(c, main_rq, hpc_rq, p, c->hpc_alg, timeline_id, &used);
+
+        if(!is_time_exhausted(c) && p->remaining_time>0){
+            fprintf(stderr, "\033[35m[HPC %d] Re-queue HPC P%d (remaining=%lu)\033[0m\n",
+                    hpc_idx, p->id, p->remaining_time);
+            rq_push(hpc_rq, p);
+        }
+
+        if(is_time_exhausted(c)){
+            force_stop(c, main_rq, hpc_rq);
+            break;
+        }
+    }
+    return NULL;
+}
+
+
+/* Tracks slow-mode on/off globally. */
+// This variable controls slow vs. fast sleep logic:
+static int g_slowMode = 0;
+static int g_bonusTest = 0;
+void set_slow_mode(const int onOff) {
+    // Just record the local preference, no shell calls:
+    g_slowMode = (onOff != 0);
+}
+void set_bonus_test(const int onOff) {
+    // *** ADDED FOR BONUS TEST ***
+    g_bonusTest = (onOff != 0);
+}
+int is_slow_mode(void) {
+    return g_slowMode;
+}
+int is_bonus_test(void) {
+    // *** ADDED FOR BONUS TEST ***
+    return g_bonusTest;
+}
+
+/**
+ * @brief Simulates CPU work by sleeping. In fast mode, small microsecond sleeps.
+ *        In slow mode, large sleeps. In bonus-test mode, we demonstrate concurrency
+ *        via an external shell call or a longer time-based approach.
+ */
+void do_cpu_work(unsigned long ms, int core_id, int proc_id)
+{
+    if (!is_slow_mode() && !is_bonus_test()) {
+        // FAST mode => microsecond-level sleeps
+        log_info("do_cpu_work(FAST): %lu ms => usleep(%lu * 1000)", ms, ms);
+        usleep((useconds_t)(ms * 1000U));
+        return;
+    }
+
+    if (is_slow_mode() && !is_bonus_test()) {
+        // SLOW mode => 2 seconds per simulated ms (increase from 1 to 2 to avoid timeouts)
+        for (unsigned long i = 0; i < ms; i++) {
+            log_info("do_cpu_work(SLOW): sleeping 2s for ms=%lu (core=%d, proc=%d)",
+                     i, core_id, proc_id);
+            sleep(2);
+        }
+        return;
+    }
+
+    if (is_bonus_test()) {
+        /*
+         * BONUS TEST mode:
+         * Example approach: call an external shell that runs “timeout 10 sleep <ms>”
+         * or run repeated “sleep 1” calls to mimic concurrency checks in
+         * shell-tp1-implementation. The snippet below does a single big sleep with
+         * an overall timeout. Adjust as desired to match your concurrency tests.
+         */
+        char cmd[256];
+        // Example: for a 10-second limit, request “sleep <ms>”.
+        // If ms is large, it will be cut short by ‘timeout 10’.
+        snprintf(cmd, sizeof(cmd),
+                 "echo \"timeout 10 sleep %lu\" | ../../libExtern/shell-tp1-implementation",
+                 ms);
+
+        log_info("[BONUS] do_cpu_work => %s", cmd);
+        int ret = system(cmd);
+        if (ret != 0) {
+            log_warn("[BONUS] shell command returned non-zero (%d), might have timed out or failed", ret);
+        }
+        return;
+    }
+}
+#ifndef WORKER_H
+#define WORKER_H
+
+#include "container.h"
+#include "ready_queue.h"
+#include <stdlib.h>
+#include "scheduler.h"
+#include "ready_queue.h"
+#include "../lib/log.h"
+#include <stdio.h>
+#include <unistd.h>
+#include <stdbool.h>
+
+/**
+ * @brief A small struct to pass to each core/hpc thread.
+ */
+typedef struct {
+    container_t* container;
+    struct {
+        ready_queue_t* main_rq;
+        ready_queue_t* hpc_rq;
+    } qs;
+    int core_id;
+} core_thread_pack_t;
+
+/**
+ * @brief The function each "main core" thread runs.
+ */
+void* main_core_thread(void* arg);
+
+/**
+ * @brief The function each "HPC" thread runs.
+ */
+void* hpc_thread(void* arg);
+int is_bonus_test(void);
+void set_bonus_test(int onOff);
+#endif // WORKER_H
+#include "library.h"
+#include "scoreboard.h"
+#include "log.h"
+#include <stdlib.h>
+#include <signal.h>
+
+static volatile sig_atomic_t g_skip_remaining_tests = 0;
+
+int skip_remaining_tests_requested(void) {
+    return (g_skip_remaining_tests != 0);
+}
+
+void set_skip_remaining_tests(const int val) {
+    g_skip_remaining_tests = (val ? 1 : 0);
+}
+
+void handle_signal(const int signum){
+    scoreboard_save();
+    fflush(stdout);
+    fflush(stderr);
+    if(signum == SIGINT) {
+        /* SIGINT => exit immediately, but save scoreboard + stats. */
+        log_warn("Caught Signal to exit => exiting");
+        exit(scoreboard_get_final_score());
+    }
+
+    if(signum == SIGTERM) {
+        set_skip_remaining_tests(1); // volatile value make an action possible
+    }
+    log_warn("Caught signal to stop next concurrency");
+    set_skip_remaining_tests(1);
+}
+
+// Usage : if (skip_remaining_tests_requested) do#ifndef LIBRARY_H
+#define LIBRARY_H
+int skip_remaining_tests_requested(void);
+void set_skip_remaining_tests(const int val);
+void handle_signal(int signum);
+#endif //LIBRARY_H
+#include "log.h"
+
+static log_level_t g_log_level = LOG_LEVEL_INFO;
+
+static void vlogf(log_level_t lvl, const char* prefix, const char* fmt, va_list ap){
+    if(lvl < g_log_level) return;
+    fprintf(stderr, "%s", prefix);
+    vfprintf(stderr, fmt, ap);
+    fprintf(stderr, CLR_RESET "\n");
+}
+
+void set_log_level(log_level_t lvl){
+    g_log_level = lvl;
+}
+
+void log_debug(const char* fmt, ...){
+    va_list ap;
+    va_start(ap, fmt);
+    vlogf(LOG_LEVEL_DEBUG, CLR_BLUE "[DEBUG] " CLR_RESET, fmt, ap);
+    va_end(ap);
+}
+
+void log_info(const char* fmt, ...){
+    va_list ap;
+    va_start(ap, fmt);
+    vlogf(LOG_LEVEL_INFO, CLR_GREEN "[INFO]  " CLR_RESET, fmt, ap);
+    va_end(ap);
+    fflush(stdout);
+    fflush(stderr);
+}
+
+void log_warn(const char* fmt, ...){
+    va_list ap;
+    va_start(ap, fmt);
+    vlogf(LOG_LEVEL_WARN, CLR_YELLOW "[WARN]  " CLR_RESET, fmt, ap);
+    va_end(ap);
+}
+
+void log_error(const char* fmt, ...){
+    va_list ap;
+    va_start(ap, fmt);
+    vlogf(LOG_LEVEL_ERROR, CLR_RED "[ERROR] " CLR_RESET, fmt, ap);
+    va_end(ap);
+}
+#ifndef LOG_H
+#define LOG_H
+
+#include <stdio.h>
+#include <stdarg.h>
+
+/* ======== ANSI COLORS ======== */
+#define CLR_RESET   "\033[0m"
+#define CLR_BOLD    "\033[1m"
+#define CLR_RED     "\033[31m"
+#define CLR_GREEN   "\033[32m"
+#define CLR_YELLOW  "\033[33m"
+#define CLR_BLUE    "\033[34m"
+#define CLR_MAGENTA "\033[35m"
+#define CLR_CYAN    "\033[36m"
+
+/* You can extend with e.g. #define CLR_PURPLE or reuse CLR_MAGENTA as desired */
+
+typedef enum {
+    LOG_LEVEL_DEBUG=0,
+    LOG_LEVEL_INFO,
+    LOG_LEVEL_WARN,
+    LOG_LEVEL_ERROR
+} log_level_t;
+
+void set_log_level(log_level_t lvl);
+
+void log_debug(const char* fmt, ...);
+void log_info(const char* fmt, ...);
+void log_warn(const char* fmt, ...);
+void log_error(const char* fmt, ...);
+
+#endif
+#ifndef SCHEDULER_ALG_H
+#define SCHEDULER_ALG_H
+
+/*
+   Standalone definition of the scheduling algorithm enum
+   to avoid circular includes between container.h and scheduler.h
+*/
 typedef enum {
     ALG_NONE=-1,
     ALG_FIFO=0,
@@ -958,35 +1433,18 @@ typedef enum {
     ALG_PRIO_PREEMPT
 } scheduler_alg_t;
 
-
-struct container_s;
-typedef struct container_s container_t;
-
-/* Normal scheduler prototypes. */
-unsigned long get_quantum(scheduler_alg_t alg, const process_t* p);
-void do_cpu_work(unsigned long ms, int core_id, int proc_id);
-
-/* If you also have a function like `record_timeline(container_t*, ...)`,
-   forward-declare it here, using the forward-declared container_t.
-   Example:
-*/
-// void record_timeline(container_t* c, int core_id, int proc_id,
-//                     unsigned long start_ms, unsigned long slice,
-//                     bool preempted_flag);
-
-#endif // SCHEDULER_H
+#endif // SCHEDULER_ALG_H
 #include "scoreboard.h"
+#include "../libExtern/cJSON.h"
 #include "log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../lib/cJSON.h"
 
-/* Our single scoreboard instance. */
 static scoreboard_t gSB;
 
 static double calc_percent(int total, int pass){
-    if(total == 0) return 0.0;
+    if(total <= 0) return 0.0;
     return 100.0 * ((double)pass / (double)total);
 }
 
@@ -999,41 +1457,33 @@ static void recompute(void){
     gSB.multi_hpc_percent    = calc_percent(gSB.multi_hpc_total,  gSB.multi_hpc_pass);
     gSB.bfs_percent          = calc_percent(gSB.bfs_total,        gSB.bfs_pass);
     gSB.mlfq_percent         = calc_percent(gSB.mlfq_total,       gSB.mlfq_pass);
-    gSB.prio_preempt_percent = calc_percent(gSB.prio_preempt_total, gSB.prio_preempt_pass);
+    gSB.prio_preempt_percent = calc_percent(gSB.prio_preempt_total,gSB.prio_preempt_pass);
     gSB.hpc_bfs_percent      = calc_percent(gSB.hpc_bfs_total,    gSB.hpc_bfs_pass);
 }
 
-/* Weighted final score example:
-   BASIC=10%, NORMAL=10%, EDGE=10%, HIDDEN=10%,
-   WFQ=10%, MULTI_HPC=10%, BFS=10%, MLFQ=10%,
-   PRIO_PREEMPT=10%, HPC_BFS=10%.
-   HPC bonus=+10 if sc_hpc=1, but capped at 100 total.
-*/
 int scoreboard_get_final_score(void){
     recompute();
-
-    double b    = gSB.basic_percent         * 0.10;
-    double n    = gSB.normal_percent        * 0.10;
-    double e    = gSB.edge_percent          * 0.10;
-    double hi   = gSB.hidden_percent        * 0.10;
-    double wf   = gSB.wfq_percent           * 0.10;
-    double mh   = gSB.multi_hpc_percent     * 0.10;
-    double bf   = gSB.bfs_percent           * 0.10;
-    double ml   = gSB.mlfq_percent          * 0.10;
-    double pp   = gSB.prio_preempt_percent  * 0.10;
-    double hb   = gSB.hpc_bfs_percent       * 0.10;
-
-    double HPC  = (gSB.sc_hpc ? 10.0 : 0.0);
+    // Each suite => up to 10%, HPC bonus => +10 if sc_hpc=1, capped at 100.
+    double b  = gSB.basic_percent        * 0.10;
+    double n  = gSB.normal_percent       * 0.10;
+    double e  = gSB.edge_percent         * 0.10;
+    double hi = gSB.hidden_percent       * 0.10;
+    double wf = gSB.wfq_percent          * 0.10;
+    double mh = gSB.multi_hpc_percent    * 0.10;
+    double bf = gSB.bfs_percent          * 0.10;
+    double ml = gSB.mlfq_percent         * 0.10;
+    double pp = gSB.prio_preempt_percent * 0.10;
+    double hb = gSB.hpc_bfs_percent      * 0.10;
+    double HPC = (gSB.sc_hpc ? 10.0 : 0.0);
 
     double total = b + n + e + hi + wf + mh + bf + ml + pp + hb + HPC;
     if(total > 100.0) total = 100.0;
-
     return (int)(total + 0.5);
 }
 
 static void scoreboard_defaults(void){
     memset(&gSB, 0, sizeof(gSB));
-    gSB.pass_threshold = 60.0;
+    gSB.pass_threshold = 60.0; // Some default threshold
 }
 
 void scoreboard_load(void){
@@ -1045,7 +1495,7 @@ void scoreboard_load(void){
     }
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
-    if(sz<0){
+    if(sz < 0){
         fclose(f);
         return;
     }
@@ -1069,34 +1519,35 @@ void scoreboard_load(void){
         log_warn("scoreboard parse fail => defaults");
         return;
     }
-    #define JGETINT(_o,_n,_v) do{ cJSON*_tmp=cJSON_GetObjectItemCaseSensitive(_o,_n);\
-        if(_tmp && cJSON_IsNumber(_tmp)) (_v)=_tmp->valueint;}while(0)
-    #define JGETDBL(_o,_n,_v) do{ cJSON*_tmp=cJSON_GetObjectItemCaseSensitive(_o,_n);\
-        if(_tmp && cJSON_IsNumber(_tmp)) (_v)=_tmp->valuedouble;}while(0)
 
-    JGETINT(root,"basic_total",           gSB.basic_total);
-    JGETINT(root,"basic_pass",            gSB.basic_pass);
-    JGETINT(root,"normal_total",          gSB.normal_total);
-    JGETINT(root,"normal_pass",           gSB.normal_pass);
-    JGETINT(root,"edge_total",            gSB.edge_total);
-    JGETINT(root,"edge_pass",             gSB.edge_pass);
-    JGETINT(root,"hidden_total",          gSB.hidden_total);
-    JGETINT(root,"hidden_pass",           gSB.hidden_pass);
-    JGETINT(root,"wfq_total",             gSB.wfq_total);
-    JGETINT(root,"wfq_pass",              gSB.wfq_pass);
-    JGETINT(root,"multi_hpc_total",       gSB.multi_hpc_total);
-    JGETINT(root,"multi_hpc_pass",        gSB.multi_hpc_pass);
-    JGETINT(root,"bfs_total",             gSB.bfs_total);
-    JGETINT(root,"bfs_pass",              gSB.bfs_pass);
-    JGETINT(root,"mlfq_total",            gSB.mlfq_total);
-    JGETINT(root,"mlfq_pass",             gSB.mlfq_pass);
-    JGETINT(root,"prio_preempt_total",    gSB.prio_preempt_total);
-    JGETINT(root,"prio_preempt_pass",     gSB.prio_preempt_pass);
-    JGETINT(root,"hpc_bfs_total",         gSB.hpc_bfs_total);
-    JGETINT(root,"hpc_bfs_pass",          gSB.hpc_bfs_pass);
+    #define JGETINT(o,n,v) do{ cJSON*_t=cJSON_GetObjectItemCaseSensitive(o,n); \
+        if(_t&&cJSON_IsNumber(_t)) (v)=_t->valueint;}while(0)
+    #define JGETDBL(o,n,v) do{ cJSON*_t=cJSON_GetObjectItemCaseSensitive(o,n); \
+        if(_t&&cJSON_IsNumber(_t)) (v)=_t->valuedouble;}while(0)
 
-    JGETINT(root,"sc_hpc",                gSB.sc_hpc);
-    JGETDBL(root,"pass_threshold",        gSB.pass_threshold);
+    JGETINT(root,"basic_total",        gSB.basic_total);
+    JGETINT(root,"basic_pass",         gSB.basic_pass);
+    JGETINT(root,"normal_total",       gSB.normal_total);
+    JGETINT(root,"normal_pass",        gSB.normal_pass);
+    JGETINT(root,"edge_total",         gSB.edge_total);
+    JGETINT(root,"edge_pass",          gSB.edge_pass);
+    JGETINT(root,"hidden_total",       gSB.hidden_total);
+    JGETINT(root,"hidden_pass",        gSB.hidden_pass);
+    JGETINT(root,"wfq_total",          gSB.wfq_total);
+    JGETINT(root,"wfq_pass",           gSB.wfq_pass);
+    JGETINT(root,"multi_hpc_total",    gSB.multi_hpc_total);
+    JGETINT(root,"multi_hpc_pass",     gSB.multi_hpc_pass);
+    JGETINT(root,"bfs_total",          gSB.bfs_total);
+    JGETINT(root,"bfs_pass",           gSB.bfs_pass);
+    JGETINT(root,"mlfq_total",         gSB.mlfq_total);
+    JGETINT(root,"mlfq_pass",          gSB.mlfq_pass);
+    JGETINT(root,"prio_preempt_total", gSB.prio_preempt_total);
+    JGETINT(root,"prio_preempt_pass",  gSB.prio_preempt_pass);
+    JGETINT(root,"hpc_bfs_total",      gSB.hpc_bfs_total);
+    JGETINT(root,"hpc_bfs_pass",       gSB.hpc_bfs_pass);
+
+    JGETINT(root,"sc_hpc",            gSB.sc_hpc);
+    JGETDBL(root,"pass_threshold",    gSB.pass_threshold);
 
     cJSON_Delete(root);
     log_info("Scoreboard loaded");
@@ -1104,8 +1555,8 @@ void scoreboard_load(void){
 
 void scoreboard_save(void){
     cJSON* root = cJSON_CreateObject();
-    #define JADDINT(_o,_n,_v) cJSON_AddNumberToObject(_o,_n,(double)(_v))
-    #define JADDDBL(_o,_n,_v) cJSON_AddNumberToObject(_o,_n,(_v))
+    #define JADDINT(o,n,v) cJSON_AddNumberToObject(o,n,(double)(v))
+    #define JADDDBL(o,n,v) cJSON_AddNumberToObject(o,n,(v))
 
     JADDINT(root,"basic_total",        gSB.basic_total);
     JADDINT(root,"basic_pass",         gSB.basic_pass);
@@ -1140,7 +1591,7 @@ void scoreboard_save(void){
         free(out);
         return;
     }
-    fwrite(out, 1, strlen(out), f);
+    fwrite(out,1,strlen(out),f);
     fclose(f);
     free(out);
     log_info("Scoreboard saved");
@@ -1151,70 +1602,38 @@ void scoreboard_clear(void){
     scoreboard_save();
 }
 
-void scoreboard_update_basic(int t,int p){
-    gSB.basic_total += t;
-    gSB.basic_pass  += p;
-}
-void scoreboard_update_normal(int t,int p){
-    gSB.normal_total += t;
-    gSB.normal_pass  += p;
-}
-void scoreboard_update_edge(int t,int p){
-    gSB.edge_total  += t;
-    gSB.edge_pass   += p;
-}
-void scoreboard_update_hidden(int t,int p){
-    gSB.hidden_total += t;
-    gSB.hidden_pass  += p;
-}
-void scoreboard_update_wfq(int t,int p){
-    gSB.wfq_total += t;
-    gSB.wfq_pass  += p;
-}
-void scoreboard_update_multi_hpc(int t,int p){
-    gSB.multi_hpc_total += t;
-    gSB.multi_hpc_pass  += p;
-}
-void scoreboard_update_bfs(int t,int p){
-    gSB.bfs_total += t;
-    gSB.bfs_pass  += p;
-}
-void scoreboard_update_mlfq(int t,int p){
-    gSB.mlfq_total += t;
-    gSB.mlfq_pass  += p;
-}
-void scoreboard_update_prio_preempt(int t,int p){
-    gSB.prio_preempt_total += t;
-    gSB.prio_preempt_pass  += p;
-}
-void scoreboard_update_hpc_bfs(int t,int p){
-    gSB.hpc_bfs_total += t;
-    gSB.hpc_bfs_pass  += p;
-}
+/* Updaters: */
+void scoreboard_update_basic(int t,int p){ gSB.basic_total=t; gSB.basic_pass=p; }
+void scoreboard_update_normal(int t,int p){ gSB.normal_total=t; gSB.normal_pass=p; }
+void scoreboard_update_edge(int t,int p){ gSB.edge_total=t; gSB.edge_pass=p; }
+void scoreboard_update_hidden(int t,int p){ gSB.hidden_total=t; gSB.hidden_pass=p; }
+void scoreboard_update_wfq(int t,int p){ gSB.wfq_total=t; gSB.wfq_pass=p; }
+void scoreboard_update_multi_hpc(int t,int p){ gSB.multi_hpc_total=t; gSB.multi_hpc_pass=p; }
+void scoreboard_update_bfs(int t,int p){ gSB.bfs_total=t; gSB.bfs_pass=p; }
+void scoreboard_update_mlfq(int t,int p){ gSB.mlfq_total=t; gSB.mlfq_pass=p; }
+void scoreboard_update_prio_preempt(int t,int p){ gSB.prio_preempt_total=t; gSB.prio_preempt_pass=p; }
+void scoreboard_update_hpc_bfs(int t,int p){ gSB.hpc_bfs_total=t; gSB.hpc_bfs_pass=p; }
 
 void scoreboard_set_sc_hpc(int v){
     gSB.sc_hpc = (v ? 1 : 0);
 }
 
-/*
-   Unlock logic can be used if you want gating rules
-   (not strictly used in the new design).
-*/
+/* Check if a suite is "unlocked" by meeting pass_threshold in the previous suite. */
 int scoreboard_is_unlocked(scoreboard_suite_t s){
     recompute();
-    const double T = gSB.pass_threshold;
+    double T = gSB.pass_threshold;
     switch(s){
-        case SUITE_BASIC:       return 1;
-        case SUITE_NORMAL:      return (gSB.basic_percent >= T);
-        case SUITE_EDGE:        return (gSB.normal_percent >= T);
-        case SUITE_HIDDEN:      return (gSB.edge_percent >= T);
-        case SUITE_WFQ:         return (gSB.hidden_percent >= T);
-        case SUITE_MULTI_HPC:   return (gSB.wfq_percent   >= T);
-        case SUITE_BFS:         return (gSB.normal_percent>= T);
-        case SUITE_MLFQ:        return (gSB.normal_percent>= T);
-        case SUITE_PRIO_PREEMPT:return (gSB.edge_percent  >= T);
-        case SUITE_HPC_BFS:     return (gSB.hidden_percent>= T);
-        default: return 0;
+    case SUITE_BASIC:       return 1;
+    case SUITE_NORMAL:      return (gSB.basic_percent >= T);
+    case SUITE_EDGE:        return (gSB.normal_percent >= T);
+    case SUITE_HIDDEN:      return (gSB.edge_percent >= T);
+    case SUITE_WFQ:         return (gSB.hidden_percent >= T);
+    case SUITE_MULTI_HPC:   return (gSB.wfq_percent   >= T);
+    case SUITE_BFS:         return (gSB.normal_percent>= T);
+    case SUITE_MLFQ:        return (gSB.normal_percent>= T);
+    case SUITE_PRIO_PREEMPT:return (gSB.edge_percent  >= T);
+    case SUITE_HPC_BFS:     return (gSB.hidden_percent>= T);
+    default: return 0;
     }
 }
 
@@ -1222,30 +1641,19 @@ void get_scoreboard(scoreboard_t* out){
     if(out) *out = gSB;
 }
 
-#include "scoreboard.h"
-#include "log.h"
-#include <stdio.h>
-
-// Helper for coloring
-static void print_suite_line(const char* name, int pass, int total, double percent){
-    if(total == 0){
-        printf(CLR_YELLOW "%s => %d/%d => %.1f%% (no tests?)" CLR_RESET "\n",
+/* For printing with color-coded lines. */
+static void print_suite_line(const char* name, int pass, int total, double percent) {
+    if(total == 0) {
+        printf("\033[33m%-12s => %d/%d => %.1f%% (no tests?)\033[0m\n",
                name, pass, total, percent);
         return;
     }
-
-    if(pass == total){
-        // All passed => green
-        printf(CLR_GREEN "%-12s => %d/%d => %.1f%%" CLR_RESET "\n",
-               name, pass, total, percent);
+    if(pass == total) {
+        printf("\033[32m%-12s => %d/%d => %.1f%%\033[0m\n", name, pass, total, percent);
     } else if(pass == 0) {
-        // All failed => red
-        printf(CLR_RED "%-12s => %d/%d => %.1f%%" CLR_RESET "\n",
-               name, pass, total, percent);
+        printf("\033[31m%-12s => %d/%d => %.1f%%\033[0m\n", name, pass, total, percent);
     } else {
-        // Partial => yellow
-        printf(CLR_YELLOW "%-12s => %d/%d => %.1f%%" CLR_RESET "\n",
-               name, pass, total, percent);
+        printf("\033[33m%-12s => %d/%d => %.1f%%\033[0m\n", name, pass, total, percent);
     }
 }
 
@@ -1254,23 +1662,41 @@ void show_scoreboard(void){
     get_scoreboard(&sb);
     int final = scoreboard_get_final_score();
 
-    printf("\n===== SCOREBOARD =====\n");
-    print_suite_line("BASIC",         sb.basic_pass, sb.basic_total, sb.basic_percent);
-    print_suite_line("NORMAL",        sb.normal_pass, sb.normal_total, sb.normal_percent);
-    print_suite_line("EDGE",          sb.edge_pass, sb.edge_total, sb.edge_percent);
-    print_suite_line("HIDDEN",        sb.hidden_pass, sb.hidden_total, sb.hidden_percent);
-    print_suite_line("WFQ",           sb.wfq_pass, sb.wfq_total, sb.wfq_percent);
-    print_suite_line("MULTI_HPC",     sb.multi_hpc_pass, sb.multi_hpc_total, sb.multi_hpc_percent);
-    print_suite_line("BFS",           sb.bfs_pass, sb.bfs_total, sb.bfs_percent);
-    print_suite_line("MLFQ",          sb.mlfq_pass, sb.mlfq_total, sb.mlfq_percent);
-    print_suite_line("PRIO_PREEMPT",  sb.prio_preempt_pass, sb.prio_preempt_total, sb.prio_preempt_percent);
-    print_suite_line("HPC_BFS",       sb.hpc_bfs_pass, sb.hpc_bfs_total, sb.hpc_bfs_percent);
+    printf("\n\033[1m\033[36m===== SCOREBOARD =====\033[0m\n");
+    print_suite_line("BASIC",        sb.basic_pass, sb.basic_total, sb.basic_percent);
+    print_suite_line("NORMAL",       sb.normal_pass, sb.normal_total, sb.normal_percent);
+    print_suite_line("EDGE",         sb.edge_pass,   sb.edge_total,   sb.edge_percent);
+    print_suite_line("HIDDEN",       sb.hidden_pass, sb.hidden_total, sb.hidden_percent);
+    print_suite_line("WFQ",          sb.wfq_pass,    sb.wfq_total,    sb.wfq_percent);
+    print_suite_line("MULTI_HPC",    sb.multi_hpc_pass, sb.multi_hpc_total, sb.multi_hpc_percent);
+    print_suite_line("BFS",          sb.bfs_pass,    sb.bfs_total,    sb.bfs_percent);
+    print_suite_line("MLFQ",         sb.mlfq_pass,   sb.mlfq_total,   sb.mlfq_percent);
+    print_suite_line("PRIO_PREEMPT", sb.prio_preempt_pass, sb.prio_preempt_total, sb.prio_preempt_percent);
+    print_suite_line("HPC_BFS",      sb.hpc_bfs_pass, sb.hpc_bfs_total, sb.hpc_bfs_percent);
 
     printf("HPC Bonus => %s\n", (sb.sc_hpc ? "YES" : "NO"));
     printf("Final Weighted Score => %d\n", final);
-    printf("=======================\n");
+    printf("=======================\n\n");
 }
 
+void show_legend(void){
+    /* Provide bullet list and explicit mention of each suite & HPC bonus. */
+    printf("\n\033[1m\033[35m--- Scoreboard Legend / Weights ---\033[0m\n");
+    printf(" • Each suite contributes up to 10%% towards the final score.\n");
+    printf(" • HPC Bonus adds an extra 10%% if HPC is enabled, capped at 100%%.\n");
+    printf(" • The suites tested are:\n");
+    printf("    - BASIC\n");
+    printf("    - NORMAL\n");
+    printf("    - EDGE\n");
+    printf("    - HIDDEN\n");
+    printf("    - WFQ\n");
+    printf("    - MULTI_HPC\n");
+    printf("    - BFS\n");
+    printf("    - MLFQ\n");
+    printf("    - PRIO_PREEMPT\n");
+    printf("    - HPC_BFS\n");
+    printf("------------------------------------\n");
+}
 #ifndef SCOREBOARD_H
 #define SCOREBOARD_H
 
@@ -1314,12 +1740,12 @@ typedef struct {
     int    sc_hpc;
 } scoreboard_t;
 
-/* Loading, saving, clearing scoreboard */
+/* Load/save scoreboard from JSON. */
 void scoreboard_load(void);
 void scoreboard_save(void);
 void scoreboard_clear(void);
 
-/* Updating scoreboard from test results */
+/* Update suite test counts. */
 void scoreboard_update_basic(int t,int p);
 void scoreboard_update_normal(int t,int p);
 void scoreboard_update_edge(int t,int p);
@@ -1331,638 +1757,18 @@ void scoreboard_update_mlfq(int t,int p);
 void scoreboard_update_prio_preempt(int t,int p);
 void scoreboard_update_hpc_bfs(int t,int p);
 
-/* HPC bonus switch */
+/* HPC bonus on/off. */
 void scoreboard_set_sc_hpc(int v);
 
-/* For gating logic (if you want to lock/unlock certain tests). */
-int scoreboard_is_unlocked(scoreboard_suite_t s);
+/* Gate-unlocking logic. */
+int  scoreboard_is_unlocked(scoreboard_suite_t s);
 
+/* Retrieval + final scoring. */
 void get_scoreboard(scoreboard_t* out);
 int  scoreboard_get_final_score(void);
+
+/* Display. */
 void show_scoreboard(void);
+void show_legend(void);
 
 #endif
-#include "tests.h"
-
-
-/*
-  Each test is run in a child process with a TIMEOUT
-  to avoid indefinite blocking. If the child times out,
-  we kill it => test FAIL => move on.
-*/
-
-/* A small helper to wait up to N seconds for the child to finish. */
-static bool do_wait_with_timeout(pid_t pid, int timeout_sec, int *exit_code){
-    int status;
-    for(int i=0; i < timeout_sec*10; i++){
-        pid_t w = waitpid(pid, &status, WNOHANG);
-        if(w == pid){
-            if(WIFEXITED(status)){
-                *exit_code = WEXITSTATUS(status);
-                return true;
-            } else {
-                /* e.g. if child was killed by signal */
-                *exit_code = 1; /* fail */
-                return true;
-            }
-        }
-        usleep(100000); /* 0.1s */
-    }
-    /* Timed out => kill child => test fail */
-    kill(pid, SIGKILL);
-    waitpid(pid, &status, 0);
-    *exit_code = 1;
-    return false;
-}
-
-/**
- * @brief Helper to run test_func() in a child with a timeout.
- *
- * @param test_name    name of the test (for logging)
- * @param test_func    function returning `bool` (true=pass, false=fail)
- * @param suite        scoreboard suite enum
- * @param timeout_sec  kill after these many seconds
- * @return true if pass, false if fail
- */
-static bool run_test_in_subproc(
-    const char* test_name,
-    bool (*test_func)(void),
-    scoreboard_suite_t suite,
-    int timeout_sec)
-{
-    pid_t pid = fork();
-    if(pid < 0){
-        log_error("fork() failed => cannot run test %s", test_name);
-        return false;
-    }
-    if(pid == 0){
-        /* Child: just run the test function. */
-        bool pass = test_func();
-        _exit(pass ? 0 : 1);
-    }
-
-    /* Parent: wait up to timeout_sec for child to exit. */
-    int exit_code = 1;
-    bool finished = do_wait_with_timeout(pid, timeout_sec, &exit_code);
-
-    bool pass = false;
-    if(!finished){
-        /* We had to kill it => TIMEOUT => fail. */
-        log_error("%s => TIMEOUT => FAIL", test_name);
-    } else {
-        pass = (exit_code == 0);
-        if(pass){
-            log_info("%s PASS", test_name);
-        } else {
-            log_error("%s FAIL", test_name);
-        }
-    }
-
-    /* Update scoreboard for this suite.
-       We consider 1 test, pass or fail => (t=1, p=(pass?1:0)). */
-    int t = 1, p = pass ? 1 : 0;
-    switch(suite){
-        case SUITE_BASIC:        scoreboard_update_basic(t,p);         break;
-        case SUITE_NORMAL:       scoreboard_update_normal(t,p);        break;
-        case SUITE_EDGE:         scoreboard_update_edge(t,p);          break;
-        case SUITE_HIDDEN:       scoreboard_update_hidden(t,p);        break;
-        case SUITE_WFQ:          scoreboard_update_wfq(t,p);           break;
-        case SUITE_MULTI_HPC:    scoreboard_update_multi_hpc(t,p);     break;
-        case SUITE_BFS:          scoreboard_update_bfs(t,p);           break;
-        case SUITE_MLFQ:         scoreboard_update_mlfq(t,p);          break;
-        case SUITE_PRIO_PREEMPT: scoreboard_update_prio_preempt(t,p);  break;
-        case SUITE_HPC_BFS:      scoreboard_update_hpc_bfs(t,p);       break;
-        default: break;
-    }
-    return pass;
-}
-
-/* Helper: check if all given processes are done. */
-static bool all_done(const process_t* arr, int count){
-    for(int i=0;i<count;i++){
-        if(arr[i].remaining_time>0) return false;
-    }
-    return true;
-}
-
-
-/* ------------------------------------------------------------------------
-   TEST IMPLEMENTATIONS (child side).
-   They each return bool: true => pass, false => fail.
-
-   We show them in a simpler manner.
-   Some only check that the processes finish.
-   Some can do extra timeline checks if you wish.
------------------------------------------------------------------------- */
-
-/* 1) Basic FIFO test. */
-static bool test_basic_fifo_impl(void){
-    log_info("Running test_basic_fifo");
-    process_t p[2];
-    init_process(&p[0], 3, 5, 0, 1.0);
-    init_process(&p[1], 5, 7, 2, 1.0);
-
-    container_t c;
-    container_init(&c, 1, 0, ALG_FIFO, ALG_NONE, p, 2, NULL, 0, 20);
-
-    /* Run single container. */
-    orchestrator_run(&c, 1);
-
-    /* Check if all done. */
-    return all_done(p, 2);
-}
-
-/* 2) Round Robin normal test. */
-static bool test_normal_rr_impl(void){
-    log_info("Running test_normal_rr");
-    process_t p[2];
-    init_process(&p[0], 4, 3, 0, 1.0);
-    init_process(&p[1], 2, 2, 1, 1.0);
-
-    container_t c;
-    container_init(&c, 2, 0, ALG_RR, ALG_NONE, p, 2, NULL, 0, 20);
-
-    orchestrator_run(&c, 1);
-    return all_done(p,2);
-}
-
-/* 3) Priority scheduling (non-preemptive). */
-static bool test_edge_priority_impl(void){
-    log_info("Running test_edge_priority");
-    process_t p[3];
-    init_process(&p[0], 2, 1, 0, 1.0);
-    init_process(&p[1], 4, 5, 0, 1.0);
-    init_process(&p[2], 2, 2, 1, 1.0);
-
-    container_t c;
-    container_init(&c, 1, 0, ALG_PRIORITY, ALG_NONE, p, 3, NULL, 0, 30);
-
-    orchestrator_run(&c, 1);
-    return all_done(p,3);
-}
-
-/* 4) HPC hidden test => SJF + HPC. */
-static bool test_hidden_hpc_impl(void){
-    log_info("Running test_hidden_hpc");
-    process_t mp[2];
-    init_process(&mp[0], 5, 2, 0, 1.0);
-    init_process(&mp[1], 5, 1, 2, 1.0);
-
-    process_t hp[1];
-    init_process(&hp[0], 6, 1, 1, 1.0);
-
-    container_t c;
-    container_init(&c, 1, 1, ALG_SJF, ALG_HPC, mp, 2, hp, 1, 30);
-
-    orchestrator_run(&c, 1);
-    return (all_done(mp,2) && all_done(hp,1));
-}
-
-/* 5) Weighted Fair Queueing test. */
-static bool test_wfq_impl(void){
-    log_info("Running test_wfq");
-    process_t p[3];
-    init_process(&p[0], 6, 0, 0, 2.0);
-    init_process(&p[1], 4, 0, 0, 1.0);
-    init_process(&p[2], 3, 0, 2, 3.0);
-
-    container_t c;
-    container_init(&c, 2, 0, ALG_WFQ, ALG_NONE, p, 3, NULL, 0, 40);
-
-    orchestrator_run(&c, 1);
-    return all_done(p,3);
-}
-
-/* 6) Multiple HPC threads. */
-static bool test_multi_hpc_impl(void){
-    log_info("Running test_multi_hpc");
-    process_t mp[2];
-    init_process(&mp[0], 5, 2, 0, 1.0);
-    init_process(&mp[1], 5, 1, 0, 1.0);
-
-    process_t hp[3];
-    init_process(&hp[0], 3, 2, 0, 2.0);
-    init_process(&hp[1], 4, 2, 1, 1.0);
-    init_process(&hp[2], 5, 1, 2, 1.5);
-
-    container_t c;
-    container_init(&c, 2, 2, ALG_RR, ALG_HPC, mp, 2, hp, 3, 50);
-
-    orchestrator_run(&c, 1);
-    return (all_done(mp,2) && all_done(hp,3));
-}
-
-/* 7) BFS scheduling. */
-static bool test_bfs_scheduling_impl(void){
-    log_info("Running test_bfs_scheduling");
-    process_t p[3];
-    init_process(&p[0], 3, 0, 0, 1.0);
-    init_process(&p[1], 8, 0, 0, 1.0);
-    init_process(&p[2], 6, 0, 2, 1.0);
-
-    container_t c;
-    container_init(&c, 1, 0, ALG_BFS, ALG_NONE, p, 3, NULL, 0, 50);
-
-    orchestrator_run(&c, 1);
-    return all_done(p,3);
-}
-
-/* 8) MLFQ scheduling. */
-static bool test_mlfq_scheduling_impl(void){
-    log_info("Running test_mlfq_scheduling");
-    process_t p[3];
-    init_process(&p[0], 10, 0, 0, 1.0);
-    init_process(&p[1], 5, 0, 0, 1.0);
-    init_process(&p[2], 7, 0, 3, 1.0);
-
-    container_t c;
-    container_init(&c, 2, 0, ALG_MLFQ, ALG_NONE, p, 3, NULL, 0, 80);
-
-    orchestrator_run(&c, 1);
-    return all_done(p,3);
-}
-
-/* 9) Preemptive Priority scheduling. */
-static bool test_preemptive_priority_impl(void){
-    log_info("Running test_preemptive_priority");
-    process_t p[3];
-    init_process(&p[0], 8, 5, 0, 1.0);
-    init_process(&p[1], 3, 1, 3, 1.0);
-    init_process(&p[2], 2,10, 2, 1.0);
-
-    container_t c;
-    container_init(&c, 1, 0, ALG_PRIO_PREEMPT, ALG_NONE, p, 3, NULL, 0, 50);
-
-    orchestrator_run(&c, 1);
-    return all_done(p,3);
-}
-
-/* 10) HPC BFS test => HPC with BFS, 0 main cores + main processes => HPC steals them. */
-static bool test_hpc_bfs_impl(void){
-    log_info("Running test_hpc_bfs");
-    process_t mainP[1];
-    init_process(&mainP[0], 4, 0, 0, 1.0);
-
-    process_t hpcP[2];
-    init_process(&hpcP[0], 3, 0, 1, 1.0);
-    init_process(&hpcP[1], 4, 0, 2, 1.0);
-
-    container_t c;
-    /* 0 main cores, 2 HPC threads => BFS on HPC side.
-       container_init sees there's 1 main process but 0 cores => c->allow_hpc_steal=true
-       => HPC BFS threads can run that main process.
-    */
-    container_init(&c, 0, 2, ALG_NONE, ALG_BFS, mainP, 1, hpcP, 2, 40);
-
-    orchestrator_run(&c, 1);
-
-    return (all_done(mainP,1) && all_done(hpcP,2));
-}
-
-/* ------------------------------------------------------------------------
-   run_all_tests()
-   Launch each test in a subproc with 5s timeout.
------------------------------------------------------------------------- */
-void run_all_tests(void){
-    run_test_in_subproc("test_basic_fifo",          test_basic_fifo_impl,         SUITE_BASIC,       5);
-    run_test_in_subproc("test_normal_rr",           test_normal_rr_impl,          SUITE_NORMAL,      5);
-    run_test_in_subproc("test_edge_priority",       test_edge_priority_impl,      SUITE_EDGE,        5);
-    run_test_in_subproc("test_hidden_hpc",          test_hidden_hpc_impl,         SUITE_HIDDEN,      5);
-    run_test_in_subproc("test_wfq",                 test_wfq_impl,                SUITE_WFQ,         5);
-    run_test_in_subproc("test_multi_hpc",           test_multi_hpc_impl,          SUITE_MULTI_HPC,   5);
-    run_test_in_subproc("test_bfs_scheduling",      test_bfs_scheduling_impl,     SUITE_BFS,         5);
-    run_test_in_subproc("test_mlfq_scheduling",     test_mlfq_scheduling_impl,    SUITE_MLFQ,        5);
-    run_test_in_subproc("test_preemptive_priority", test_preemptive_priority_impl,SUITE_PRIO_PREEMPT,5);
-    run_test_in_subproc("test_hpc_bfs",             test_hpc_bfs_impl,            SUITE_HPC_BFS,     5);
-
-    /* Each test logs pass/fail individually. The scoreboard is updated. */
-}
-#ifndef TESTS_H
-#define TESTS_H
-#include "scoreboard.h"
-#include "log.h"
-#include <sys/wait.h>
-#include <unistd.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include "container.h"
-/**
- * @brief Run all test cases.
- */
-void run_all_tests(void);
-
-#endif
-#include "worker.h"
-
-/* Forward helpers */
-static bool is_time_exhausted(container_t* c){
-    pthread_mutex_lock(&c->finish_lock);
-    bool r = c->time_exhausted ||
-             (c->accumulated_cpu >= c->max_cpu_time_ms);
-    pthread_mutex_unlock(&c->finish_lock);
-    return r;
-}
-
-/**
- * @brief Stop everything by pushing termination markers into the queues.
- */
-static void force_stop(container_t* c, ready_queue_t* rq_main, ready_queue_t* rq_hpc){
-    for(int i=0;i<c->nb_cores;i++){
-        rq_push(rq_main, NULL);
-    }
-    for(int i=0;i<c->nb_hpc_threads;i++){
-        rq_push(rq_hpc, NULL);
-    }
-}
-
-static void check_main_arrivals(container_t* c, ready_queue_t* rq){
-    pthread_mutex_lock(&c->finish_lock);
-    unsigned long now = c->sim_time;
-    pthread_mutex_unlock(&c->finish_lock);
-
-    for(int i=0;i<c->main_count;i++){
-        process_t* p = &c->main_procs[i];
-        if(p->remaining_time>0 && p->arrival_time>0){
-            if(p->arrival_time <= now){
-                fprintf(stderr, "\033[94m[MAIN ARRIVE] P%d arrives at t=%lu => push mainRQ\033[0m\n",
-                        p->id, now);
-                rq_push(rq, p);
-                p->arrival_time = 0;
-            }
-        }
-    }
-}
-
-static void check_hpc_arrivals(container_t* c, ready_queue_t* rq){
-    pthread_mutex_lock(&c->finish_lock);
-    unsigned long now = c->sim_time;
-    pthread_mutex_unlock(&c->finish_lock);
-
-    for(int i=0;i<c->hpc_count;i++){
-        process_t* p = &c->hpc_procs[i];
-        if(p->remaining_time>0 && p->arrival_time>0){
-            if(p->arrival_time <= now){
-                fprintf(stderr, "\033[95m[HPC ARRIVE]  P%d arrives at t=%lu => push hpcRQ\033[0m\n",
-                        p->id, now);
-                rq_push(rq, p);
-                p->arrival_time = 0;
-            }
-        }
-    }
-}
-
-/* The central "slice run" function.
-   This is basically the same logic as your original run_slice,
-   but factoring out to be used by main/hpc threads.
-*/
-static void run_slice(container_t* c, ready_queue_t* main_rq, ready_queue_t* hpc_rq,
-                      process_t* p, scheduler_alg_t alg,
-                      int core_id, unsigned long* used_ms)
-{
-    *used_ms = 0;
-    if(!p || p->remaining_time == 0) return;
-
-    unsigned long quantum = get_quantum(alg, p);
-
-    pthread_mutex_lock(&c->finish_lock);
-    unsigned long start_ms = c->sim_time;
-    if(!p->responded){
-        p->responded = true;
-        p->first_response = start_ms;
-    }
-    pthread_mutex_unlock(&c->finish_lock);
-
-    bool preempted_flag = false;
-    unsigned long slice_used = 0;
-    unsigned long slice_remaining = quantum;
-
-    while(slice_remaining > 0 && !c->time_exhausted && p->remaining_time > 0){
-        unsigned long step = (slice_remaining < p->remaining_time)
-                                 ? slice_remaining
-                                 : p->remaining_time;
-
-        if(step > 0){
-            do_cpu_work(step, core_id, p->id);
-        }
-
-        pthread_mutex_lock(&c->finish_lock);
-
-        p->remaining_time -= step;
-        c->accumulated_cpu += step;
-        c->sim_time        += step;
-
-        slice_used += step;
-        slice_remaining -= step;
-
-        if(p->remaining_time == 0){
-            p->end_time = p->first_response + p->burst_time;
-            c->remaining_count--;
-            if(c->remaining_count <= 0){
-                c->time_exhausted = true;
-            }
-        }
-        if(c->accumulated_cpu >= c->max_cpu_time_ms){
-            c->time_exhausted = true;
-        }
-        pthread_mutex_unlock(&c->finish_lock);
-
-        /* For preemptive priority, check arrivals or a higher priority arrival. */
-        if(alg == ALG_PRIO_PREEMPT){
-            bool got_preempted = try_preempt_if_needed(main_rq, p);
-            if(got_preempted){
-                preempted_flag = true;
-                break;
-            }
-        }
-
-        if(c->time_exhausted){
-            break;
-        }
-    }
-
-    if(alg == ALG_MLFQ && p->remaining_time>0 && slice_used == quantum){
-        /* MLFQ => demote if used the entire quantum. */
-        p->mlfq_level++;
-    }
-
-    *used_ms = slice_used;
-    record_timeline(c, core_id, p->id, start_ms, slice_used, preempted_flag);
-    if(preempted_flag){
-        fprintf(stderr, "\033[33m[CORE %d] PREEMPTED process P%d after %lu ms!\033[0m\n",
-                core_id, p->id, slice_used);
-    }
-}
-
-/* ---------------------------
-   MAIN CORE THREAD
-   --------------------------- */
-void* main_core_thread(void* arg){
-    core_thread_pack_t* pack = (core_thread_pack_t*)arg;
-    container_t* c = pack->container;
-    ready_queue_t* main_rq = pack->qs.main_rq;
-    ready_queue_t* hpc_rq  = pack->qs.hpc_rq;
-    int core_id = pack->core_id;
-    free(pack);
-
-    while(!is_time_exhausted(c)){
-        bool term_marker=false;
-        process_t* p = rq_pop(main_rq, &term_marker);
-        if(term_marker || !p){
-            fprintf(stderr, "\033[32m[CORE %d] Termination marker => exiting.\033[0m\n", core_id);
-            break;
-        }
-        fprintf(stderr, "\033[32m[CORE %d] Popped P%d (remaining=%lu)\033[0m\n",
-                core_id, p->id, p->remaining_time);
-
-        unsigned long used=0;
-        run_slice(c, main_rq, hpc_rq, p, c->main_alg, core_id, &used);
-
-        if(!is_time_exhausted(c) && p->remaining_time>0){
-            fprintf(stderr, "\033[32m[CORE %d] Re-queue P%d (remaining=%lu)\033[0m\n",
-                    core_id, p->id, p->remaining_time);
-            rq_push(main_rq, p);
-        }
-
-        /* Check arrivals after the slice. */
-        check_main_arrivals(c, main_rq);
-        check_hpc_arrivals(c, hpc_rq);
-
-        if(is_time_exhausted(c)){
-            force_stop(c, main_rq, hpc_rq);
-            break;
-        }
-    }
-    return NULL;
-}
-
-/* ---------------------------
-   HPC THREAD
-   --------------------------- */
-void* hpc_thread(void* arg){
-    core_thread_pack_t* pack = (core_thread_pack_t*)arg;
-    container_t* c = pack->container;
-    ready_queue_t* main_rq = pack->qs.main_rq;
-    ready_queue_t* hpc_rq  = pack->qs.hpc_rq;
-    int hpc_idx = pack->core_id;
-    int timeline_id = -1 - hpc_idx;  /* HPC thread gets negative ID for timeline logs. */
-    free(pack);
-
-    while(!is_time_exhausted(c)){
-        /* 1) Check HPC arrivals first. */
-        check_hpc_arrivals(c, hpc_rq);
-        check_main_arrivals(c, main_rq);
-
-        /* 2) HPC steal if HPC queue is empty. */
-        pthread_mutex_lock(&hpc_rq->lock);
-        int hpc_size = hpc_rq->size;
-        pthread_mutex_unlock(&hpc_rq->lock);
-
-        if(hpc_size == 0 && c->allow_hpc_steal){
-            bool dummy=false;
-            process_t* stolen = rq_pop(main_rq, &dummy);
-            if(stolen && !dummy){
-                fprintf(stderr, "\033[35m[HPC %d] Steal from main => P%d\033[0m\n",
-                        hpc_idx, stolen->id);
-
-                /* --- FIX for HPC-BFS ---
-                   Instead of using c->main_alg for stolen process,
-                   we use c->hpc_alg => e.g. BFS quantum=4
-                   so we don't get stuck re-queuing 2ms slices. */
-                unsigned long used=0;
-                run_slice(c, main_rq, hpc_rq, stolen, /* was c->main_alg => BUG */
-                          c->hpc_alg, /* <--- FIX: use HPC's scheduling for stolen procs */
-                          timeline_id, &used);
-
-                if(!is_time_exhausted(c) && stolen->remaining_time>0){
-                    fprintf(stderr, "\033[35m[HPC %d] Done slice => re-push P%d to MAIN\033[0m\n",
-                            hpc_idx, stolen->id);
-                    rq_push(main_rq, stolen);
-                }
-            }
-        }
-
-        /* Re-check HPC queue size. */
-        pthread_mutex_lock(&hpc_rq->lock);
-        hpc_size = hpc_rq->size;
-        pthread_mutex_unlock(&hpc_rq->lock);
-
-        /* 3) If HPC queue is STILL empty => do a short "idle" to allow time to advance. */
-        if(hpc_size == 0){
-            if(is_time_exhausted(c)) break;
-
-            /* Idle 1ms in simulation => do a small usleep in real-time. */
-            pthread_mutex_lock(&c->finish_lock);
-            c->sim_time += 1;
-            c->accumulated_cpu += 1;
-            if(c->accumulated_cpu >= c->max_cpu_time_ms){
-                c->time_exhausted = true;
-            }
-            pthread_mutex_unlock(&c->finish_lock);
-
-            usleep(3000);
-            continue;
-        }
-
-        /* 4) Pop HPC queue. */
-        bool term_marker=false;
-        process_t* p = rq_pop(hpc_rq, &term_marker);
-        if(term_marker || !p){
-            fprintf(stderr, "\033[35m[HPC %d] Termination marker => exiting.\033[0m\n", hpc_idx);
-            break;
-        }
-        fprintf(stderr, "\033[35m[HPC %d] HPC pop => P%d (remaining=%lu)\033[0m\n",
-                hpc_idx, p->id, p->remaining_time);
-
-        unsigned long used=0;
-        run_slice(c, main_rq, hpc_rq, p, c->hpc_alg, timeline_id, &used);
-
-        if(!is_time_exhausted(c) && p->remaining_time>0){
-            fprintf(stderr, "\033[35m[HPC %d] Re-queue HPC P%d (remaining=%lu)\033[0m\n",
-                    hpc_idx, p->id, p->remaining_time);
-            rq_push(hpc_rq, p);
-        }
-
-        if(is_time_exhausted(c)){
-            force_stop(c, main_rq, hpc_rq);
-            break;
-        }
-    }
-    return NULL;
-}
-#ifndef WORKER_H
-#define WORKER_H
-
-#include "container.h"
-#include "ready_queue.h"
-#include <stdlib.h>
-#include "scheduler.h"
-#include "ready_queue.h"
-#include "log.h"
-#include <stdio.h>
-#include <unistd.h>
-#include <stdbool.h>
-
-/**
- * @brief A small struct to pass to each core/hpc thread.
- */
-typedef struct {
-    container_t* container;
-    struct {
-        ready_queue_t* main_rq;
-        ready_queue_t* hpc_rq;
-    } qs;
-    int core_id;
-} core_thread_pack_t;
-
-/**
- * @brief The function each "main core" thread runs.
- */
-void* main_core_thread(void* arg);
-
-/**
- * @brief The function each "HPC" thread runs.
- */
-void* hpc_thread(void* arg);
-
-#endif // WORKER_H

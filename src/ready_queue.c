@@ -17,9 +17,8 @@ static int burst_asc_cmp(const process_t* A, const process_t* B){
     return 0;
 }
 
-/* Simple ascending sort insertion if cmp is not NULL.
-   If cmp is NULL => we do tail insertion (FIFO).
- */
+/* Simple ascending sort insertion if cmp != NULL,
+   or tail insertion (FIFO) if cmp == NULL. */
 static void rq_insert_sorted(ready_queue_t* rq, process_t* p, proc_cmp_fn cmp){
     rq_node_t* n = (rq_node_t*)malloc(sizeof(rq_node_t));
     n->proc = p;
@@ -55,9 +54,6 @@ static void rq_insert_sorted(ready_queue_t* rq, process_t* p, proc_cmp_fn cmp){
     px->next = n;
 }
 
-/* ------------------------------------------------------
-   Implementation
-   ------------------------------------------------------ */
 void rq_init(ready_queue_t* rq, scheduler_alg_t alg){
     memset(rq, 0, sizeof(*rq));
     pthread_mutex_init(&rq->lock, NULL);
@@ -82,11 +78,9 @@ void rq_destroy(ready_queue_t* rq){
 void rq_push(ready_queue_t* rq, process_t* p){
     pthread_mutex_lock(&rq->lock);
 
-    rq_node_t* n = NULL;
-
     if(!p){
         /* termination marker => push front always. */
-        n = (rq_node_t*)malloc(sizeof(rq_node_t));
+        rq_node_t* n = (rq_node_t*)malloc(sizeof(rq_node_t));
         n->proc = NULL;
         n->next = rq->head;
         rq->head = n;
@@ -111,11 +105,13 @@ void rq_push(ready_queue_t* rq, process_t* p){
         break;
     case ALG_HPC:
         /* HPC example => push front. */
-        n = (rq_node_t*)malloc(sizeof(rq_node_t));
+    {
+        rq_node_t* n = (rq_node_t*)malloc(sizeof(rq_node_t));
         n->proc = p;
         n->next = rq->head;
         rq->head = n;
         break;
+    }
     default:
         /* default => FIFO for RR, BFS, MLFQ, WFQ, etc. */
         rq_insert_sorted(rq, p, NULL);
@@ -219,10 +215,9 @@ bool try_preempt_if_needed(ready_queue_t* rq, process_t* p){
     if(front->priority < p->priority){
         /* Preempt => put p back, pop the new highest prio. */
         p->was_preempted = true;
+        /* Insert p into the queue sorted by priority. */
         rq_insert_sorted(rq, p, prio_asc_cmp);
-        rq->size++; /* We re-insert => effectively increment size.
-                       But note that the node creation in rq_insert_sorted
-                       does not do that for us. */
+        rq->size++;
         pthread_mutex_unlock(&rq->lock);
         return true;
     }

@@ -1,13 +1,11 @@
 #ifndef SCHEDULER_H
 #define SCHEDULER_H
-
 #include <stdbool.h>
-#include <unistd.h>
 #include "../lib/scheduler_alg.h"
 #include "process.h"
+#include "container.h"
 
-/* Forward-declare container_t so we can have record_timeline(...) prototype
-   without including container.h (prevents circular includes). */
+/* Forward-declare container_t for function prototypes: */
 struct container_s;
 typedef struct container_s container_t;
 
@@ -18,7 +16,7 @@ unsigned long get_quantum(scheduler_alg_t alg, const process_t* p);
 
 /**
  * @brief Perform actual CPU-bound "work" for `ms` milliseconds,
- *        with a reduced slowdown so HPC BFS won't time out quickly.
+ *        with optional slow-mode vs. fast-mode behavior.
  */
 void do_cpu_work(unsigned long ms, int core_id, int proc_id);
 
@@ -31,5 +29,12 @@ void record_timeline(container_t* c,
                      unsigned long start_ms,
                      unsigned long slice,
                      bool preempted_flag);
+
+/**
+ * @brief Enable or disable slow mode concurrency.
+ *        HPC shell is only used if found in ../../libExtern/ ;
+ *        otherwise HPC-based tests that rely on it will fail gracefully.
+ */
+void set_slow_mode(int onOff);
 
 #endif // SCHEDULER_H

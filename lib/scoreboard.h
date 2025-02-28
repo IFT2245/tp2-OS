@@ -41,12 +41,12 @@ typedef struct {
     int    sc_hpc;
 } scoreboard_t;
 
-/* Loading, saving, clearing scoreboard */
+/* Load/save scoreboard from JSON. */
 void scoreboard_load(void);
 void scoreboard_save(void);
 void scoreboard_clear(void);
 
-/* Updating scoreboard from test results */
+/* Update suite test counts. */
 void scoreboard_update_basic(int t,int p);
 void scoreboard_update_normal(int t,int p);
 void scoreboard_update_edge(int t,int p);
@@ -58,14 +58,18 @@ void scoreboard_update_mlfq(int t,int p);
 void scoreboard_update_prio_preempt(int t,int p);
 void scoreboard_update_hpc_bfs(int t,int p);
 
-/* HPC bonus switch */
+/* HPC bonus on/off. */
 void scoreboard_set_sc_hpc(int v);
 
-/* For gating logic (if you want to lock/unlock certain tests). */
-int scoreboard_is_unlocked(scoreboard_suite_t s);
+/* Gate-unlocking logic. */
+int  scoreboard_is_unlocked(scoreboard_suite_t s);
 
+/* Retrieval + final scoring. */
 void get_scoreboard(scoreboard_t* out);
 int  scoreboard_get_final_score(void);
+
+/* Display. */
 void show_scoreboard(void);
+void show_legend(void);
 
 #endif

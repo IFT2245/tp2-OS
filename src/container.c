@@ -8,9 +8,9 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <dirent.h>
 
-/* =========== (A) ephemeral code =========== */
-
+/* =========== (A) ephemeral remove code =========== */
 #ifdef EPHEMERAL_RM_RECURSIVE
 static int remove_directory_recursive(const char* path){
     DIR* dir = opendir(path);
@@ -22,7 +22,7 @@ static int remove_directory_recursive(const char* path){
             continue;
         }
         char buf[512];
-        snprintf(buf,sizeof(buf),"%s/%s",path,entry->d_name);
+        snprintf(buf,sizeof(buf),"%s/%s", path, entry->d_name);
         struct stat st;
         if(stat(buf,&st)==0){
             if(S_ISDIR(st.st_mode)){
@@ -53,7 +53,8 @@ static char* ephemeral_create_container(void){
         free(p);
         return NULL;
     }
-    log_info("ephemeral created => %s", p);
+    /* Make ephemeral container logs purple: */
+    log_info("\033[35mephemeral created => %s\033[0m", p);
     return p;
 }
 
@@ -65,9 +66,9 @@ static void ephemeral_remove_container(const char* path){
     int r = rmdir(path);
 #endif
     if(r==0){
-        log_info("ephemeral removed => %s", path);
+        log_info("\033[35mephemeral removed => %s\033[0m", path);
     } else {
-        log_warn("ephemeral remove fail => %s : %s", path,strerror(errno));
+        log_warn("ephemeral remove fail => %s : %s", path, strerror(errno));
     }
 }
 
@@ -83,7 +84,7 @@ static int compare_timeline(const void* a, const void* b){
 }
 
 static void print_container_timeline(const container_t* c){
-    if(c->timeline_count==0){
+    if(c->timeline_count == 0){
         printf("\n\033[1m\033[33mNo timeline for container.\033[0m\n");
         return;
     }
@@ -91,10 +92,10 @@ static void print_container_timeline(const container_t* c){
 
     printf("\033[1m\033[36m\n--- Container Timeline ---\n\033[0m");
     int current_core=9999999;
-    for(int i=0;i<c->timeline_count;i++){
+    for(int i=0; i<c->timeline_count; i++){
         int cid = c->timeline[i].core_id;
         if(cid != current_core){
-            if(cid>=0){
+            if(cid >= 0){
                 printf("\033[1m\033[32m\nMain Core %d:\n\033[0m", cid);
             } else {
                 int hpc_idx = (-1 - cid);
@@ -128,11 +129,11 @@ static void* container_thread_runner(void* arg){
     }
 
     /* HPC procs offset 1000. */
-    for(int i=0;i<c->main_count;i++){
+    for(int i=0; i<c->main_count; i++){
         c->main_procs[i].id = i;
     }
-    for(int i=0;i<c->hpc_count;i++){
-        c->hpc_procs[i].id = 1000+i;
+    for(int i=0; i<c->hpc_count; i++){
+        c->hpc_procs[i].id = 1000 + i;
     }
 
     /* Build local RQs. */
@@ -141,62 +142,62 @@ static void* container_thread_runner(void* arg){
     rq_init(&hpc_q, c->hpc_alg);
 
     /* Push immediate arrivals. */
-    for(int i=0;i<c->main_count;i++){
+    for(int i=0; i<c->main_count; i++){
         process_t* p=&c->main_procs[i];
         if(p->remaining_time>0 && p->arrival_time==0){
-            rq_push(&main_q,p);
+            rq_push(&main_q, p);
         }
     }
-    for(int i=0;i<c->hpc_count;i++){
+    for(int i=0; i<c->hpc_count; i++){
         process_t* p=&c->hpc_procs[i];
         if(p->remaining_time>0 && p->arrival_time==0){
-            rq_push(&hpc_q,p);
+            rq_push(&hpc_q, p);
         }
     }
 
     /* Create main threads. */
-    pthread_t* main_threads=calloc(c->nb_cores,sizeof(pthread_t));
+    pthread_t* main_threads = calloc(c->nb_cores, sizeof(pthread_t));
     if(!main_threads){
         log_error("container_run => no memory for main_threads");
         return NULL;
     }
-    for(int i=0;i<c->nb_cores;i++){
-        core_thread_pack_t* pack=malloc(sizeof(core_thread_pack_t));
-        pack->container=c;
-        pack->qs.main_rq=&main_q;
-        pack->qs.hpc_rq=&hpc_q;
-        pack->core_id=i;
+    for(int i=0; i<c->nb_cores; i++){
+        core_thread_pack_t* pack = malloc(sizeof(core_thread_pack_t));
+        pack->container = c;
+        pack->qs.main_rq = &main_q;
+        pack->qs.hpc_rq  = &hpc_q;
+        pack->core_id = i;
         pthread_create(&main_threads[i], NULL, main_core_thread, pack);
     }
 
     /* HPC threads. */
-    pthread_t* hpc_threads=NULL;
-    if(c->nb_hpc_threads>0){
-        hpc_threads=calloc(c->nb_hpc_threads,sizeof(pthread_t));
+    pthread_t* hpc_threads = NULL;
+    if(c->nb_hpc_threads > 0){
+        hpc_threads = calloc(c->nb_hpc_threads, sizeof(pthread_t));
         if(!hpc_threads){
             log_error("container_run => no memory for hpc_threads");
         } else {
-            for(int i=0;i<c->nb_hpc_threads;i++){
-                core_thread_pack_t* pack=malloc(sizeof(core_thread_pack_t));
-                pack->container=c;
-                pack->qs.main_rq=&main_q;
-                pack->qs.hpc_rq=&hpc_q;
-                pack->core_id=i;
-                pthread_create(&hpc_threads[i],NULL,hpc_thread,pack);
+            for(int i=0; i<c->nb_hpc_threads; i++){
+                core_thread_pack_t* pack = malloc(sizeof(core_thread_pack_t));
+                pack->container = c;
+                pack->qs.main_rq = &main_q;
+                pack->qs.hpc_rq  = &hpc_q;
+                pack->core_id = i;
+                pthread_create(&hpc_threads[i], NULL, hpc_thread, pack);
             }
         }
     }
 
     /* Join main cores. */
-    for(int i=0;i<c->nb_cores;i++){
+    for(int i=0; i<c->nb_cores; i++){
         pthread_join(main_threads[i], NULL);
     }
     free(main_threads);
 
     /* Join HPC threads. */
     if(c->nb_hpc_threads>0 && hpc_threads){
-        for(int i=0;i<c->nb_hpc_threads;i++){
-            pthread_join(hpc_threads[i],NULL);
+        for(int i=0; i<c->nb_hpc_threads; i++){
+            pthread_join(hpc_threads[i], NULL);
         }
         free(hpc_threads);
     }
@@ -215,7 +216,7 @@ static void* container_thread_runner(void* arg){
 
     if(c->timeline){
         free(c->timeline);
-        c->timeline=NULL;
+        c->timeline = NULL;
     }
     pthread_mutex_destroy(&c->timeline_lock);
     pthread_mutex_destroy(&c->finish_lock);
@@ -223,7 +224,6 @@ static void* container_thread_runner(void* arg){
     return NULL;
 }
 
-/* =========== (D) container_init, container_run, orchestrator_run =========== */
 void container_init(container_t* c,
                     int nb_cores,
                     int nb_hpc_threads,
@@ -248,31 +248,31 @@ void container_init(container_t* c,
         max_cpu_ms=100;
     }
 
-    c->nb_cores=nb_cores;
-    c->nb_hpc_threads=nb_hpc_threads;
-    c->main_alg=main_alg;
-    c->hpc_alg=hpc_alg;
-    c->main_procs=main_list;
-    c->main_count=main_count;
-    c->hpc_procs=hpc_list;
-    c->hpc_count=hpc_count;
-    c->max_cpu_time_ms=max_cpu_ms;
-    c->remaining_count=main_count+hpc_count;
+    c->nb_cores       = nb_cores;
+    c->nb_hpc_threads = nb_hpc_threads;
+    c->main_alg       = main_alg;
+    c->hpc_alg        = hpc_alg;
+    c->main_procs     = main_list;
+    c->main_count     = main_count;
+    c->hpc_procs      = hpc_list;
+    c->hpc_count      = hpc_count;
+    c->max_cpu_time_ms= max_cpu_ms;
+    c->remaining_count= main_count + hpc_count;
 
     pthread_mutex_init(&c->finish_lock,NULL);
     pthread_mutex_init(&c->timeline_lock,NULL);
 
-    c->timeline=NULL;
-    c->timeline_count=0;
-    c->timeline_cap=0;
-    c->time_exhausted=false;
-    c->accumulated_cpu=0;
-    c->sim_time=0;
+    c->timeline       = NULL;
+    c->timeline_count = 0;
+    c->timeline_cap   = 0;
+    c->time_exhausted = false;
+    c->accumulated_cpu= 0;
+    c->sim_time       = 0;
 
     /* HPC steal if 0 main cores but have main processes. */
-    if(nb_cores==0 && main_count>0){
+    if(nb_cores == 0 && main_count>0){
         log_info("container_init => no main cores but main processes => enabling HPC steal");
-        c->allow_hpc_steal=true;
+        c->allow_hpc_steal = true;
     }
 }
 
@@ -281,17 +281,16 @@ void container_run(container_t* c){
 }
 
 void orchestrator_run(container_t* arr, int count){
-    /* Example: run each container in parallel. */
-    pthread_t* tids=calloc(count,sizeof(pthread_t));
+    pthread_t* tids = calloc(count, sizeof(pthread_t));
     if(!tids){
         log_error("orchestrator_run => cannot allocate");
         return;
     }
-    for(int i=0;i<count;i++){
-        pthread_create(&tids[i],NULL,container_thread_runner,&arr[i]);
+    for(int i=0; i<count; i++){
+        pthread_create(&tids[i], NULL, container_thread_runner, &arr[i]);
     }
-    for(int i=0;i<count;i++){
-        pthread_join(tids[i],NULL);
+    for(int i=0; i<count; i++){
+        pthread_join(tids[i], NULL);
     }
     free(tids);
 }

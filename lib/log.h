@@ -14,6 +14,8 @@
 #define CLR_MAGENTA "\033[35m"
 #define CLR_CYAN    "\033[36m"
 
+/* You can extend with e.g. #define CLR_PURPLE or reuse CLR_MAGENTA as desired */
+
 typedef enum {
     LOG_LEVEL_DEBUG=0,
     LOG_LEVEL_INFO,
