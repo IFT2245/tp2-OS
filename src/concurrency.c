@@ -1,8 +1,8 @@
-#include <unistd.h>
 #include <stdlib.h>
 #include <pthread.h>
 #include <string.h>
 #include <errno.h>
+#include <unistd.h>
 #include "concurrency.h"
 #include "ephemeral.h"
 #include "log.h"
@@ -188,6 +188,7 @@ static process_t* rq_pop(ready_queue_t* rq, bool* got_termination_marker){
     pthread_mutex_lock(&rq->lock);
 
     while(rq->size == 0){
+        /* Wait for something to be pushed. */
         pthread_cond_wait(&rq->cond, &rq->lock);
     }
 
@@ -318,7 +319,10 @@ static void record_timeline(container_t* c, int core_id, int proc_id,
 }
 
 /* CPU-bound simulation, scaled for demonstration. */
-static void do_cpu_work(unsigned long ms){
+static void do_cpu_work(unsigned long ms, int core_id, int proc_id){
+    /* Show slow-motion concurrency log with color. */
+    fprintf(stderr, "\033[36m[CORE %d] Running proc P%d for %lu ms...\033[0m\n",
+            core_id, proc_id, ms);
     usleep((useconds_t)(ms * 3000U));
 }
 
@@ -374,7 +378,7 @@ static void run_slice(container_t* c, process_t* p,
                              ? slice_remaining : p->remaining_time;
 
         if(step > 0){
-            do_cpu_work(step);
+            do_cpu_work(step, core_id, p->id);
         }
 
         pthread_mutex_lock(&c->finish_lock);
@@ -419,6 +423,10 @@ static void run_slice(container_t* c, process_t* p,
 
     *used_ms = slice_used;
     record_timeline(c, core_id, p->id, start_ms, slice_used, preempted_flag);
+    if(preempted_flag){
+        fprintf(stderr, "\033[33m[CORE %d] PREEMPTED process P%d after %lu ms!\033[0m\n",
+                core_id, p->id, slice_used);
+    }
 }
 
 /* STOP + ARRIVAL CHECKS */
@@ -448,6 +456,8 @@ static void check_main_arrivals(container_t* c, ready_queue_t* rq){
         process_t* p = &c->main_procs[i];
         if(p->remaining_time>0 && p->arrival_time>0){
             if(p->arrival_time <= now){
+                fprintf(stderr, "\033[94m[MAIN ARRIVE] P%d arrives at t=%lu => push mainRQ\033[0m\n",
+                        p->id, now);
                 rq_push(rq, p);
                 p->arrival_time = 0;
             }
@@ -464,6 +474,8 @@ static void check_hpc_arrivals(container_t* c, ready_queue_t* rq){
         process_t* p = &c->hpc_procs[i];
         if(p->remaining_time>0 && p->arrival_time>0){
             if(p->arrival_time <= now){
+                fprintf(stderr, "\033[95m[HPC ARRIVE]  P%d arrives at t=%lu => push hpcRQ\033[0m\n",
+                        p->id, now);
                 rq_push(rq, p);
                 p->arrival_time = 0;
             }
@@ -489,12 +501,18 @@ static void* main_core_thread(void* arg){
         bool term_marker=false;
         process_t* p = rq_pop(&qs->main_rq, &term_marker);
         if(term_marker || !p){
+            fprintf(stderr, "\033[32m[CORE %d] Termination marker => exiting.\033[0m\n", core_id);
             break;
         }
+        fprintf(stderr, "\033[32m[CORE %d] Popped P%d (remaining=%lu)\033[0m\n",
+                core_id, p->id, p->remaining_time);
+
         unsigned long used=0;
         run_slice(c, p, c->main_alg, core_id, qs, &used);
 
         if(!is_time_exhausted(c) && p->remaining_time>0){
+            fprintf(stderr, "\033[32m[CORE %d] Re-queue P%d (remaining=%lu)\033[0m\n",
+                    core_id, p->id, p->remaining_time);
             rq_push(&qs->main_rq, p);
         }
 
@@ -509,47 +527,90 @@ static void* main_core_thread(void* arg){
     return NULL;
 }
 
-/* HPC THREAD */
+/* HPC THREAD with new approach:
+   - Check arrivals
+   - If HPC queue empty => attempt HPC steal
+   - If still empty => do a short idle step to advance time
+   - Then pop from HPC queue for next process
+*/
 static void* hpc_thread(void* arg){
     core_pack_t* pack = (core_pack_t*)arg;
     container_t* c    = pack->container;
     container_queues_t* qs = pack->qs;
-    int hpc_id = pack->core_id; /* negative ID for timeline. */
+    /* We'll store HPC thread IDs as negative for timeline, but keep an integer for logs. */
+    int hpc_idx = pack->core_id; // e.g. 0,1,2 for HPC
+    int timeline_id = -1 - hpc_idx;
     free(pack);
 
     while(!is_time_exhausted(c)){
-        bool term_marker=false;
-        process_t* p = rq_pop(&qs->hpc_rq, &term_marker);
-        if(term_marker || !p){
-            break;
-        }
+        /* 1) Check arrivals first so newly arrived HPC processes can go to HPC queue. */
+        check_hpc_arrivals(c, &qs->hpc_rq);
+        check_main_arrivals(c, &qs->main_rq);
 
-        unsigned long used=0;
-        run_slice(c, p, c->hpc_alg, hpc_id, qs, &used);
+        /* 2) HPC steal if HPC queue is empty. */
+        pthread_mutex_lock(&qs->hpc_rq.lock);
+        int hpc_size = qs->hpc_rq.size;
+        pthread_mutex_unlock(&qs->hpc_rq.lock);
 
-        if(!is_time_exhausted(c) && p->remaining_time>0){
-            rq_push(&qs->hpc_rq, p);
-        }
-
-        /* HPC steal from main if allowed + HPC is empty? */
-        if(c->allow_hpc_steal){
-            pthread_mutex_lock(&qs->hpc_rq.lock);
-            int hpc_size = qs->hpc_rq.size;
-            pthread_mutex_unlock(&qs->hpc_rq.lock);
-            if(hpc_size == 0){
-                bool dummy=false;
-                process_t* stolen = rq_pop(&qs->main_rq, &dummy);
-                if(stolen && !dummy){
-                    run_slice(c, stolen, c->main_alg, hpc_id, qs, &used);
-                    if(!is_time_exhausted(c) && stolen->remaining_time>0){
-                        rq_push(&qs->main_rq, stolen);
-                    }
+        if(hpc_size == 0 && c->allow_hpc_steal){
+            bool dummy=false;
+            process_t* stolen = rq_pop(&qs->main_rq, &dummy);
+            if(stolen && !dummy){
+                fprintf(stderr, "\033[35m[HPC %d] Steal from main => P%d\033[0m\n",
+                        hpc_idx, stolen->id);
+                unsigned long used=0;
+                run_slice(c, stolen, c->main_alg, timeline_id, qs, &used);
+                if(!is_time_exhausted(c) && stolen->remaining_time>0){
+                    /* Put it back to main queue or HPC queue? Usually we put it back to main. */
+                    fprintf(stderr, "\033[35m[HPC %d] Done slice => re-push P%d to MAIN\033[0m\n",
+                            hpc_idx, stolen->id);
+                    rq_push(&qs->main_rq, stolen);
                 }
             }
         }
 
-        check_main_arrivals(c, &qs->main_rq);
-        check_hpc_arrivals(c, &qs->hpc_rq);
+        /* Re-check HPC queue size. */
+        pthread_mutex_lock(&qs->hpc_rq.lock);
+        hpc_size = qs->hpc_rq.size;
+        pthread_mutex_unlock(&qs->hpc_rq.lock);
+
+        /* 3) If HPC queue is STILL empty => maybe everything is done or arrived in the future.
+              We do a short "idle" to increment sim_time. */
+        if(hpc_size == 0){
+            if(is_time_exhausted(c)){
+                break;
+            }
+            /* Idle 1ms => helps time to advance, let arrivals happen. */
+            pthread_mutex_lock(&c->finish_lock);
+            c->sim_time += 1;
+            c->accumulated_cpu += 1; /* or we can do no CPU usage, but let's do this to unify logic. */
+            if(c->accumulated_cpu >= c->max_cpu_time_ms){
+                c->time_exhausted = true;
+            }
+            pthread_mutex_unlock(&c->finish_lock);
+
+            usleep(3000); /* idle in real-time too. */
+            continue;
+        }
+
+        /* 4) Actually pop from HPC queue. */
+        bool term_marker=false;
+        process_t* p = rq_pop(&qs->hpc_rq, &term_marker);
+        if(term_marker || !p){
+            fprintf(stderr, "\033[35m[HPC %d] Termination marker => exiting.\033[0m\n", hpc_idx);
+            break;
+        }
+        fprintf(stderr, "\033[35m[HPC %d] HPC pop => P%d (remaining=%lu)\033[0m\n",
+                hpc_idx, p->id, p->remaining_time);
+
+        unsigned long used=0;
+        run_slice(c, p, c->hpc_alg, timeline_id, qs, &used);
+
+        if(!is_time_exhausted(c) && p->remaining_time>0){
+            fprintf(stderr, "\033[35m[HPC %d] Re-queue HPC P%d (remaining=%lu)\033[0m\n",
+                    hpc_idx, p->id, p->remaining_time);
+            rq_push(&qs->hpc_rq, p);
+        }
 
         if(is_time_exhausted(c)){
             force_stop(c, &qs->main_rq, &qs->hpc_rq);
@@ -676,7 +737,7 @@ static void* container_run(void* arg){
                 }
                 pack->container = c;
                 pack->qs        = &qs;
-                pack->core_id   = -1 - i;
+                pack->core_id   = i; /* HPC index, not negative yet */
                 pthread_create(&hpc_threads[i], NULL, hpc_thread, pack);
             }
         }
