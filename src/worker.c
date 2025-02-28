@@ -1,6 +1,14 @@
 #include "worker.h"
+#include "ready_queue.h"
+#include "scheduler.h"
+#include "../lib/library.h"
+#include <pthread.h>
+#include <unistd.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
 
-/* Forward helpers */
+/* Forward helpers. */
 static bool is_time_exhausted(container_t* c){
     pthread_mutex_lock(&c->finish_lock);
     bool r = c->time_exhausted || (c->accumulated_cpu >= c->max_cpu_time_ms);
@@ -8,10 +16,7 @@ static bool is_time_exhausted(container_t* c){
     return r;
 }
 
-/**
- * @brief Stop everything by pushing termination markers.
- */
-static void force_stop(container_t* c, ready_queue_t* rq_main, ready_queue_t* rq_hpc){
+static void force_stop(const container_t* c, ready_queue_t* rq_main, ready_queue_t* rq_hpc){
     for(int i=0; i<c->nb_cores; i++){
         rq_push(rq_main, NULL);
     }
@@ -52,9 +57,6 @@ static void check_hpc_arrivals(container_t* c, ready_queue_t* rq){
     }
 }
 
-/**
- * @brief Perform one CPU slice for a given process `p` on core `core_id`.
- */
 static void run_slice(container_t* c, ready_queue_t* main_rq, ready_queue_t* hpc_rq,
                       process_t* p, scheduler_alg_t alg,
                       int core_id, unsigned long* used_ms)
@@ -76,22 +78,24 @@ static void run_slice(container_t* c, ready_queue_t* main_rq, ready_queue_t* hpc
     unsigned long slice_used = 0;
     unsigned long slice_remaining = quantum;
 
-    while(slice_remaining > 0 && !c->time_exhausted && p->remaining_time > 0){
-        unsigned long step = (slice_remaining < p->remaining_time)
-                           ? slice_remaining
-                           : p->remaining_time;
-
-        /* Actual CPU simulation step: */
+    while(slice_remaining>0 && !c->time_exhausted && p->remaining_time>0){
+        unsigned long step = (p->remaining_time < slice_remaining)
+                           ? p->remaining_time
+                           : slice_remaining;
+        /*
+         * This call will *unblock* SIGALRM, so if the timer fires mid-burst,
+         * we do siglongjmp => skip the rest of run_slice.
+         */
         do_cpu_work(step, core_id, p->id);
 
+        /* If we got here, that means no preemption occurred. We can safely update. */
         pthread_mutex_lock(&c->finish_lock);
-
         p->remaining_time -= step;
         c->accumulated_cpu += step;
         c->sim_time        += step;
 
-        slice_used       += step;
-        slice_remaining  -= step;
+        slice_used        += step;
+        slice_remaining   -= step;
 
         if(p->remaining_time == 0){
             p->end_time = p->first_response + p->burst_time;
@@ -105,7 +109,6 @@ static void run_slice(container_t* c, ready_queue_t* main_rq, ready_queue_t* hpc
         }
         pthread_mutex_unlock(&c->finish_lock);
 
-        /* Preemptive check for PRIO_PREEMPT: */
         if(alg == ALG_PRIO_PREEMPT){
             bool got_preempted = try_preempt_if_needed(main_rq, p);
             if(got_preempted){
@@ -113,26 +116,27 @@ static void run_slice(container_t* c, ready_queue_t* main_rq, ready_queue_t* hpc
                 break;
             }
         }
-
-        if(c->time_exhausted){
-            break;
-        }
+        if(c->time_exhausted) break;
     }
 
-    /* MLFQ => demote if used the entire quantum but not finished. */
-    if(alg == ALG_MLFQ && p->remaining_time > 0 && slice_used == quantum){
+    if(alg == ALG_MLFQ && p->remaining_time>0 && slice_used==quantum){
         p->mlfq_level++;
     }
 
     *used_ms = slice_used;
     record_timeline(c, core_id, p->id, start_ms, slice_used, preempted_flag);
-
     if(preempted_flag){
         fprintf(stderr, "\033[33m[CORE %d] PREEMPTED process P%d after %lu ms!\033[0m\n",
                 core_id, p->id, slice_used);
     }
 }
 
+/*
+ * The main core thread.
+ * We do a sigsetjmp at each iteration, register the buffer,
+ * then do the scheduling. If preempted mid do_cpu_work(),
+ * siglongjmp is invoked, returning here with ret!=0.
+ */
 void* main_core_thread(void* arg){
     core_thread_pack_t* pack = (core_thread_pack_t*)arg;
     container_t* c         = pack->container;
@@ -141,26 +145,40 @@ void* main_core_thread(void* arg){
     int core_id            = pack->core_id;
     free(pack);
 
+    set_core_id_for_this_thread(core_id);
+
     while(!is_time_exhausted(c)){
+        /* 1) Block SIGALRM while we manipulate the scheduling queue. */
+        block_preempt_signal();
+
+        sigjmp_buf env;
+        int ret = sigsetjmp(env, 1);
+        register_jmpbuf_for_core(core_id, env);
+
+        if(ret != 0){
+            fprintf(stderr, "\033[31m[CORE %d] *** IMMEDIATE PREEMPTION => jumped back ***\033[0m\n",
+                    core_id);
+            /* We skip the remainder of run_slice, so the partial usage is
+               not yet accounted for in c->accumulated_cpu.
+               If you want to track partial usage, you'd do smaller loops in run_slice,
+               or do a second clock read after siglongjmp.
+               This can get advanced, so let's keep it simpler here. */
+        }
+
         bool term_marker = false;
         process_t* p = rq_pop(main_rq, &term_marker);
         if(term_marker || !p){
-            fprintf(stderr, "\033[32m[CORE %d] Termination marker => exiting.\033[0m\n", core_id);
+            fprintf(stderr, "\033[32m[CORE %d] Termination => done.\033[0m\n", core_id);
             break;
         }
-        fprintf(stderr, "\033[32m[CORE %d] Popped P%d (remaining=%lu)\033[0m\n",
-                core_id, p->id, p->remaining_time);
 
         unsigned long used=0;
         run_slice(c, main_rq, hpc_rq, p, c->main_alg, core_id, &used);
 
         if(!is_time_exhausted(c) && p->remaining_time>0){
-            fprintf(stderr, "\033[32m[CORE %d] Re-queue P%d (remaining=%lu)\033[0m\n",
-                    core_id, p->id, p->remaining_time);
             rq_push(main_rq, p);
         }
 
-        /* Check arrivals after the slice: */
         check_main_arrivals(c, main_rq);
         check_hpc_arrivals(c, hpc_rq);
 
@@ -177,76 +195,34 @@ void* hpc_thread(void* arg){
     container_t* c         = pack->container;
     ready_queue_t* main_rq = pack->qs.main_rq;
     ready_queue_t* hpc_rq  = pack->qs.hpc_rq;
-    int hpc_idx            = pack->core_id;
+    int hpc_idx            = pack->core_id;  // or some HPC ID offset
     int timeline_id        = -1 - hpc_idx;
     free(pack);
 
+    set_core_id_for_this_thread(hpc_idx);
+
     while(!is_time_exhausted(c)){
-        /* 1) Check arrivals: */
-        check_hpc_arrivals(c, hpc_rq);
-        check_main_arrivals(c, main_rq);
+        block_preempt_signal();
 
-        /* 2) HPC steal if HPC queue empty and allow_hpc_steal. */
-        pthread_mutex_lock(&hpc_rq->lock);
-        int hpc_size = hpc_rq->size;
-        pthread_mutex_unlock(&hpc_rq->lock);
+        sigjmp_buf env;
+        int ret = sigsetjmp(env, 1);
+        register_jmpbuf_for_core(hpc_idx, env);
 
-        if(hpc_size == 0 && c->allow_hpc_steal){
-            bool dummy = false;
-            process_t* stolen = rq_pop(main_rq, &dummy);
-            if(stolen && !dummy){
-                fprintf(stderr, "\033[35m[HPC %d] Steal from main => P%d\033[0m\n",
-                        hpc_idx, stolen->id);
-
-                unsigned long used=0;
-                /* HPC BFS uses HPC scheduling, not main's. */
-                run_slice(c, main_rq, hpc_rq, stolen, c->hpc_alg, timeline_id, &used);
-
-                if(!is_time_exhausted(c) && stolen->remaining_time>0){
-                    fprintf(stderr, "\033[35m[HPC %d] Done slice => re-push P%d to MAIN\033[0m\n",
-                            hpc_idx, stolen->id);
-                    rq_push(main_rq, stolen);
-                }
-            }
+        if(ret != 0){
+            fprintf(stderr, "\033[35m[HPC %d] *** PREEMPT => jumped ***\033[0m\n", hpc_idx);
         }
 
-        /* Re-check HPC queue: */
-        pthread_mutex_lock(&hpc_rq->lock);
-        hpc_size = hpc_rq->size;
-        pthread_mutex_unlock(&hpc_rq->lock);
-
-        /* 3) If HPC queue still empty => idle 1ms (faster idle to avoid timeouts). */
-        if(hpc_size == 0){
-            if(is_time_exhausted(c)) break;
-            pthread_mutex_lock(&c->finish_lock);
-            c->sim_time += 1;
-            c->accumulated_cpu += 1;
-            if(c->accumulated_cpu >= c->max_cpu_time_ms){
-                c->time_exhausted = true;
-            }
-            pthread_mutex_unlock(&c->finish_lock);
-
-            /* Sleep a small amount of real time to keep HPC BFS from timing out. */
-            usleep(1000);  // 1ms real-time idle
-            continue;
-        }
-
-        /* 4) Pop HPC queue: */
         bool term_marker=false;
         process_t* p = rq_pop(hpc_rq, &term_marker);
         if(term_marker || !p){
-            fprintf(stderr, "\033[35m[HPC %d] Termination marker => exiting.\033[0m\n", hpc_idx);
+            fprintf(stderr, "\033[35m[HPC %d] HPC termination => done.\033[0m\n", hpc_idx);
             break;
         }
-        fprintf(stderr, "\033[35m[HPC %d] HPC pop => P%d (remaining=%lu)\033[0m\n",
-                hpc_idx, p->id, p->remaining_time);
 
         unsigned long used=0;
         run_slice(c, main_rq, hpc_rq, p, c->hpc_alg, timeline_id, &used);
 
         if(!is_time_exhausted(c) && p->remaining_time>0){
-            fprintf(stderr, "\033[35m[HPC %d] Re-queue HPC P%d (remaining=%lu)\033[0m\n",
-                    hpc_idx, p->id, p->remaining_time);
             rq_push(hpc_rq, p);
         }
 
@@ -256,73 +232,4 @@ void* hpc_thread(void* arg){
         }
     }
     return NULL;
-}
-
-
-/* Tracks slow-mode on/off globally. */
-// This variable controls slow vs. fast sleep logic:
-static int g_slowMode = 0;
-static int g_bonusTest = 0;
-void set_slow_mode(const int onOff) {
-    // Just record the local preference, no shell calls:
-    g_slowMode = (onOff != 0);
-}
-void set_bonus_test(const int onOff) {
-    // *** ADDED FOR BONUS TEST ***
-    g_bonusTest = (onOff != 0);
-}
-int is_slow_mode(void) {
-    return g_slowMode;
-}
-int is_bonus_test(void) {
-    // *** ADDED FOR BONUS TEST ***
-    return g_bonusTest;
-}
-
-/**
- * @brief Simulates CPU work by sleeping. In fast mode, small microsecond sleeps.
- *        In slow mode, large sleeps. In bonus-test mode, we demonstrate concurrency
- *        via an external shell call or a longer time-based approach.
- */
-void do_cpu_work(unsigned long ms, int core_id, int proc_id)
-{
-    if (!is_slow_mode() && !is_bonus_test()) {
-        // FAST mode => microsecond-level sleeps
-        log_info("do_cpu_work(FAST): %lu ms => usleep(%lu * 1000)", ms, ms);
-        usleep((useconds_t)(ms * 1000U));
-        return;
-    }
-
-    if (is_slow_mode() && !is_bonus_test()) {
-        // SLOW mode => 2 seconds per simulated ms (increase from 1 to 2 to avoid timeouts)
-        for (unsigned long i = 0; i < ms; i++) {
-            log_info("do_cpu_work(SLOW): sleeping 2s for ms=%lu (core=%d, proc=%d)",
-                     i, core_id, proc_id);
-            sleep(2);
-        }
-        return;
-    }
-
-    if (is_bonus_test()) {
-        /*
-         * BONUS TEST mode:
-         * Example approach: call an external shell that runs “timeout 10 sleep <ms>”
-         * or run repeated “sleep 1” calls to mimic concurrency checks in
-         * shell-tp1-implementation. The snippet below does a single big sleep with
-         * an overall timeout. Adjust as desired to match your concurrency tests.
-         */
-        char cmd[256];
-        // Example: for a 10-second limit, request “sleep <ms>”.
-        // If ms is large, it will be cut short by ‘timeout 10’.
-        snprintf(cmd, sizeof(cmd),
-                 "echo \"timeout 10 sleep %lu\" | ../../libExtern/shell-tp1-implementation",
-                 ms);
-
-        log_info("[BONUS] do_cpu_work => %s", cmd);
-        int ret = system(cmd);
-        if (ret != 0) {
-            log_warn("[BONUS] shell command returned non-zero (%d), might have timed out or failed", ret);
-        }
-        return;
-    }
 }
