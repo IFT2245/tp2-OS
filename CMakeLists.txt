@@ -7,10 +7,9 @@ endif ()
 project(
         TP2
         VERSION 24
-        DESCRIPTION "Scheduler"
+        DESCRIPTION "Scheduling"
         LANGUAGES C)
 
 set(CMAKE_C_STANDARD 17)
-include(cmake/testing.cmake)
 include(cmake/dependencies.cmake)
 add_subdirectory(src)

@@ -1,38 +1,20 @@
 
 add_executable(main
-        os.c
-        os.h
-        ready_queue.c
-        ready_queue.h
-        worker.c
-        worker.h
-        process.c
-        process.h
-        scheduler.c
-        scheduler.h
-        runner.c
-        runner.h
-        safe_calls_library.c
-        safe_calls_library.h
-        ../test/basic-test.c
-        ../test/basic-test.h
-        ../test/normal-test.c
-        ../test/normal-test.h
-        ../test/modes-test.c
-        ../test/modes-test.h
-        ../test/edge-test.c
-        ../test/edge-test.h
-        ../test/hidden-test.c
-        ../test/hidden-test.h
-        ../test/external-test.c
-        ../test/external-test.h
-        stats.c
-        stats.h
-        main.c
+        ../lib/cJSON.c
+        ../lib/cJSON.h
+        library.c
+        library.h
+        log.c
+        log.h
+        ephemeral.c
+        ephemeral.h
         scoreboard.c
         scoreboard.h
-        menu.c
-        menu.h
+        concurrency.c
+        concurrency.h
+        tests.c
+        tests.h
+        main.c
 )
 
-target_link_libraries(main PRIVATE Threads::Threads m)
+target_link_libraries(main PRIVATE Threads::Threads)

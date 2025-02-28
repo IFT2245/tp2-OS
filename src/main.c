@@ -1,29 +1,38 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include "safe_calls_library.h"
+#include <signal.h>
+#include "log.h"
+#include "scoreboard.h"
+#include "tests.h"
+#include "library.h"
 
-/* ----------------------------------------------------------------
-   MAIN
-   ----------------------------------------------------------------
-*/
-int main(const int argc, char** argv) {
-    (void)argc;
-    (void)argv;
+/**
+ * @brief Entry point:
+ *  - Loads scoreboard
+ *  - Runs all tests (with sub-process + timeout logic)
+ *  - Shows final scoreboard
+ *  - Returns final numeric score
+ */
+int main(void){
+     /* Set desired log level. */
+     set_log_level(LOG_LEVEL_INFO);
 
-    scoreboard_load();
-    os_init();
-    stats_init();
+     /* Install signal handlers to save scoreboard on INT/TERM. */
+     signal(SIGINT, handle_signal);
+     signal(SIGTERM, handle_signal);
 
-    /* Register signals */
-    signal(SIGINT,  handle_signal);
-    signal(SIGTERM, handle_signal);
+     /* Load scoreboard (if scoreboard.json exists). */
+     scoreboard_load();
+     /* Example: we set HPC bonus on by default. */
+     scoreboard_set_sc_hpc(1);
 
-    /* Enter the main menu loop (never returns unless user chooses Exit) */
-    menu_main_loop();
+     /* Run all tests. Each test logs PASS/FAIL and updates scoreboard. */
+     run_all_tests();
 
-    /* If we ever break out, do final cleanup. */
-    const int fs = scoreboard_get_final_score();
-    cleanup_and_exit(fs);
-    /* No code below here is reachable. */
-    return 0;
+     /* Show scoreboard + save it. */
+     show_scoreboard();
+     scoreboard_save();
+
+     /* Return final integer score as the program exit code. */
+     int final_score = scoreboard_get_final_score();
+     log_info("Final Score = %d", final_score);
+     return final_score;
 }
