@@ -5,171 +5,216 @@
 #include "../src/stats.h"
 #include "../src/os.h"
 #include <stdio.h>
-#include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#include <errno.h>
 #include <sys/wait.h>
+#include "../src/logger.h"
 
 /*
-  We'll define 12 external tests, each one tries to run the external shell
-  with a small concurrency scenario under scheduling mode i.
-
-  If the external shell binary is not found, all fail with a message.
+  concurrency_test_case1:
+   - Creates 1 container with HPC disabled => ALG_FIFO
+   - Creates 1 container with HPC => ALG_RR + ALG_HPC
+   - Runs them => checks if all processes ended
 */
+void concurrency_test_case1(void)
+{
+    /* Container #1 => 2 procs, no HPC, FIFO, 2 cores */
+    process_t c1_procs[2];
+    init_process(&c1_procs[0], 3, 5, 0);
+    init_process(&c1_procs[1], 5, 7, 0);
+    container_t c1;
+    container_init(&c1, 2, false, ALG_FIFO, ALG_NONE,
+                   c1_procs, 2,
+                   NULL,     0);
 
-static int g_tests_run_ext    = 0;
-static int g_tests_failed_ext = 0;
-static char g_fail_reason[256] = {0};
+    /* Container #2 => HPC => main=ALG_RR, HPC=ALG_HPC, 2 cores */
+    process_t c2_main[2];
+    init_process(&c2_main[0], 2, 2, 0);
+    init_process(&c2_main[1], 6, 4, 0);
 
-/* We want to check presence of "shell-tp1-implementation". */
-static int check_shell_binary(void) {
-    if(access("../../shell-tp1-implementation", X_OK) != 0) {
-        snprintf(g_fail_reason, sizeof(g_fail_reason),
-                 "shell-tp1-implementation NOT FOUND => all tests fail");
-        return 0;
+    process_t c2_hpc[1];
+    init_process(&c2_hpc[0], 4, 1, 0);
+
+    container_t c2;
+    container_init(&c2, 2, true, ALG_RR, ALG_HPC,
+                   c2_main, 2,
+                   c2_hpc,  1);
+
+    container_t containers[2] = { c1, c2 };
+    orchestrator_run(containers, 2);
+
+    /* Check quickly if everything ended. (All processes should have remaining_time=0). */
+    bool pass = true;
+    for(int i=0; i<2; i++){
+        if(c1_procs[i].remaining_time>0){
+            pass = false;
+        }
     }
-    return 1;
-}
-
-/* A small helper that actually does the concurrency run for schedule mode `m`. */
-static int do_external_test_for_mode(int m) {
-
-
-    // We'll create 2 lines:
-    char* lines[2];
-    lines[0] = strdup("sleep 1");
-    lines[1] = strdup("sleep 2");
-
-    NULL;
-    free(lines[0]);
-    free(lines[1]);
-
-    // We do not have a perfect "success/fail" signal from run_shell_commands_concurrently,
-    // but if we didn't see that the shell was missing (check_shell_binary()) and didn't forcibly SIGTERM,
-    // let's consider it "pass".
-    return 1;
-}
-
-/*
-  We define each of the 12 test functions:
-*/
-static int test_schedule_mode_0_fifo(void)          { return do_external_test_for_mode(0); }
-static int test_schedule_mode_1_rr(void)            { return do_external_test_for_mode(1); }
-static int test_schedule_mode_2_cfs(void)           { return do_external_test_for_mode(2); }
-static int test_schedule_mode_3_cfs_srtf(void)      { return do_external_test_for_mode(3); }
-static int test_schedule_mode_4_bfs(void)           { return do_external_test_for_mode(4); }
-static int test_schedule_mode_5_sjf(void)           { return do_external_test_for_mode(5); }
-static int test_schedule_mode_6_strf(void)          { return do_external_test_for_mode(6); }
-static int test_schedule_mode_7_hrrn(void)          { return do_external_test_for_mode(7); }
-static int test_schedule_mode_8_hrrn_rt(void)       { return do_external_test_for_mode(8); }
-static int test_schedule_mode_9_priority(void)      { return do_external_test_for_mode(9); }
-static int test_schedule_mode_10_hpc_over(void)     { return do_external_test_for_mode(10); }
-static int test_schedule_mode_11_mlfq(void)         { return do_external_test_for_mode(11); }
-
-/* We'll store them in an array for convenience. */
-typedef int (*ext_test_fn)(void);
-static ext_test_fn external_test_fns[12] = {
-    test_schedule_mode_0_fifo,
-    test_schedule_mode_1_rr,
-    test_schedule_mode_2_cfs,
-    test_schedule_mode_3_cfs_srtf,
-    test_schedule_mode_4_bfs,
-    test_schedule_mode_5_sjf,
-    test_schedule_mode_6_strf,
-    test_schedule_mode_7_hrrn,
-    test_schedule_mode_8_hrrn_rt,
-    test_schedule_mode_9_priority,
-    test_schedule_mode_10_hpc_over,
-    test_schedule_mode_11_mlfq
-};
-
-static const char* external_test_names[12] = {
-    "FIFO",
-    "RR",
-    "CFS",
-    "CFS-SRTF",
-    "BFS",
-    "SJF",
-    "STRF",
-    "HRRN",
-    "HRRN-RT",
-    "PRIORITY",
-    "HPC-OVER",
-    "MLFQ"
-};
-
-/* We expose external_test_count=12. */
-int external_test_count(void) {
-    return 12;
-}
-
-/* Single test run => i in [0..11]. */
-void external_test_run_single(int i, int* pass_out) {
-    if(!pass_out) return;
-    if(i<0 || i>=12) {
-        *pass_out=0;
-        return;
+    for(int i=0; i<2; i++){
+        if(c2_main[i].remaining_time>0){
+            pass = false;
+        }
+    }
+    if(c2_hpc[0].remaining_time>0){
+        pass=false;
     }
 
-    // Start from no fail reason:
-    g_fail_reason[0] = '\0';
-
-    g_tests_run_ext++;
-    if(!check_shell_binary()) {
-        // If the shell is missing, test fails
-        g_tests_failed_ext++;
-        *pass_out = 0;
-        return;
-    }
-    int ok = external_test_fns[i]();
-    if(!ok) {
-        g_tests_failed_ext++;
-        *pass_out=0;
+    if(pass){
+        printf("[TestCase1] => PASS\n");
+        stats_inc_tests_passed(1);
+        scoreboard_update_external(1,1); /* or scoreboard_update_modes(1,1), up to you */
     } else {
-        *pass_out=1;
+        printf("[TestCase1] => FAIL => Some process did not finish.\n");
+        stats_inc_tests_failed(1);
+        scoreboard_update_external(1,0);
     }
 }
 
 /*
-   run_external_tests(&total, &passed) => runs all 12 tests in a row,
-   printing pass/fail lines, then prints final summary.
+  concurrency_test_case2:
+   - 2 containers each with HPC, BFS + HPC, Priority + HPC
+   - 3 processes in each container
 */
-void run_external_tests(int* total, int* passed) {
-    if(!total || !passed) return;
+void concurrency_test_case2(void)
+{
+    process_t c1_main[2];
+    init_process(&c1_main[0], 4, 3, 0);
+    init_process(&c1_main[1], 4, 2, 0);
 
-    // reset counters
-    g_tests_run_ext    = 0;
-    g_tests_failed_ext = 0;
-    g_fail_reason[0]   = '\0';
+    process_t c1_hpc[1];
+    init_process(&c1_hpc[0], 5, 1, 0);
 
-    printf("\n" CLR_BOLD CLR_YELLOW "╔════════════ EXTERNAL TESTS START ═══════════╗" CLR_RESET "\n");
+    container_t c1;
+    container_init(&c1, 3, true, ALG_BFS, ALG_HPC,
+                   c1_main, 2,
+                   c1_hpc,  1);
 
-    // For i=0..11
-    int count = external_test_count();
-    for(int i=0; i<count; i++){
-        int pass = 0;
-        external_test_run_single(i, &pass);
-        const char* name = external_test_names[i];
-        if(pass) {
-            printf("  PASS: %s\n", name);
-        } else {
-            printf("  FAIL: %s", name);
-            if(g_fail_reason[0]) {
-                printf(" => %s", g_fail_reason);
-            }
-            printf("\n");
+    /* second container => Priority + HPC, 2 cores */
+    process_t c2_main[2];
+    init_process(&c2_main[0], 3, 1, 0);
+    init_process(&c2_main[1], 2, 5, 0);
+
+    process_t c2_hpc[1];
+    init_process(&c2_hpc[0], 6, 2, 0);
+
+    container_t c2;
+    container_init(&c2, 2, true, ALG_PRIORITY, ALG_HPC,
+                   c2_main, 2,
+                   c2_hpc,  1);
+
+    container_t containers[2] = { c1, c2 };
+    orchestrator_run(containers, 2);
+
+    /* check pass/fail: did all processes finish? */
+    bool pass = true;
+    for(int i=0; i<2; i++){
+        if(c1_main[i].remaining_time>0) pass=false;
+    }
+    if(c1_hpc[0].remaining_time>0) pass=false;
+
+    for(int i=0; i<2; i++){
+        if(c2_main[i].remaining_time>0) pass=false;
+    }
+    if(c2_hpc[0].remaining_time>0) pass=false;
+
+    if(pass){
+        printf("[TestCase2] => PASS\n");
+        stats_inc_tests_passed(1);
+        scoreboard_update_external(1,1); /* or scoreboard_update_modes(1,1), etc. */
+    } else {
+        printf("[TestCase2] => FAIL => Some process did not finish.\n");
+        stats_inc_tests_failed(1);
+        scoreboard_update_external(1,0);
+    }
+}
+
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>XXZ
+
+/*
+ * concurrency_test_shell():
+ *  - We run multiple "shell-tp1-implementation" in parallel
+ *    passing them "sleep X" commands.
+ *  - We do ephemeral container usage automatically in container_run,
+ *    so let's just fork shells here.
+ *
+ *  - We'll color the logs, measure pass/fail if all shells completed
+ *    within some timeframe.
+ */
+void concurrency_test_shell(void)
+{
+    log_info(CLR_BOLD CLR_YELLOW "=== Starting external shell concurrency test ===" CLR_RESET);
+
+    /* We'll spawn e.g. 3 shells in parallel, each "sleep N". */
+    int N=3;
+    pid_t pids[3];
+    for(int i=0;i<N;i++){
+        int pipefd[2];
+        pipe(pipefd);
+
+        pid_t c=fork();
+        if(c<0){
+            log_error("fork failed!");
+            continue;
+        }
+        else if(c==0){
+            close(pipefd[1]);
+            /* child => read from pipefd[0] => STDIN => execl shell */
+            dup2(pipefd[0], STDIN_FILENO);
+            close(pipefd[0]);
+            execl("./shell-tp1-implementation","shell-tp1-implementation",(char*)NULL);
+            _exit(127);
+        }
+        else {
+            pids[i]=c;
+            close(pipefd[0]);
+            /* pass "sleep i+1" plus "exit" to shell's stdin */
+            char cmd[64];
+            snprintf(cmd,sizeof(cmd),"sleep %d\nexit\n", i+1);
+            write(pipefd[1], cmd, strlen(cmd));
+            close(pipefd[1]);
         }
     }
 
-    // finalize
-    *total  = g_tests_run_ext;
-    *passed = g_tests_run_ext - g_tests_failed_ext;
-
-    printf(CLR_BOLD CLR_YELLOW "╔══════════════════════════════════════════════╗\n");
-    printf("║   EXTERNAL TESTS RESULTS: %d / %d passed       ║\n", *passed, *total);
-    if(*passed < *total) {
-        printf("║    FAILURES => see logs above               ║\n");
+    /* Wait for them all. */
+    bool pass=true;
+    for(int i=0;i<N;i++){
+        int status=0;
+        waitpid(pids[i], &status, 0);
+        if(!WIFEXITED(status)){
+            pass=false;
+        }
     }
-    printf("╚══════════════════════════════════════════════╝\n" CLR_RESET);
+
+    if(pass){
+        log_info(CLR_BOLD CLR_GREEN "[Shell concurrency test] => PASS" CLR_RESET);
+        scoreboard_update_edge(1,1);
+        stats_inc_tests_passed(1);
+    } else {
+        log_info(CLR_BOLD CLR_RED "[Shell concurrency test] => FAIL" CLR_RESET);
+        scoreboard_update_edge(1,0);
+        stats_inc_tests_failed(1);
+    }
 }
+
+static void concurrency_test_basic(void){
+  process_t p[2];init_process(&p[0],3,5,0);init_process(&p[1],5,7,2);container_t c;container_init(&c,2,false,ALG_FIFO,ALG_NONE,p,2,NULL,0,50);container_t arr[1]={c};orchestrator_run(arr,1);
+  bool pass=true;if(p[0].remaining_time>0)pass=false;if(p[1].remaining_time>0)pass=false;
+  if(pass){printf(CLR_BOLD CLR_GREEN"Basic PASS\n"CLR_RESET);scoreboard_update_basic(1,1);stats_inc_tests_passed(1);}else{printf(CLR_BOLD CLR_RED"Basic FAIL\n"CLR_RESET);scoreboard_update_basic(1,0);stats_inc_tests_failed(1);}
+}
+static void concurrency_test_normal(void){
+  process_t p[2];init_process(&p[0],4,3,0);init_process(&p[1],2,2,1);container_t c;container_init(&c,2,false,ALG_RR,ALG_NONE,p,2,NULL,0,50);container_t arr[1]={c};orchestrator_run(arr,1);
+  bool pass=true;if(p[0].remaining_time>0)pass=false;if(p[1].remaining_time>0)pass=false;
+  if(pass){printf(CLR_BOLD CLR_GREEN"Normal PASS\n"CLR_RESET);scoreboard_update_normal(1,1);stats_inc_tests_passed(1);}else{printf(CLR_BOLD CLR_RED"Normal FAIL\n"CLR_RESET);scoreboard_update_normal(1,0);stats_inc_tests_failed(1);}
+}
+static void concurrency_test_edge_shell(void){
+  int N=3;pid_t pids[3];bool pass=true;for(int i=0;i<N;i++){int pipefd[2];pipe(pipefd);pid_t c=fork();if(c<0){pass=false;close(pipefd[0]);close(pipefd[1]);continue;}else if(c==0){close(pipefd[1]);dup2(pipefd[0],STDIN_FILENO);close(pipefd[0]);execl("./shell-tp1-implementation","shell-tp1-implementation",(char*)NULL);_exit(127);}else{pids[i]=c;close(pipefd[0]);char cmd[64];snprintf(cmd,sizeof(cmd),"sleep %d\nexit\n",i+1);write(pipefd[1],cmd,strlen(cmd));close(pipefd[1]);}}
+  for(int i=0;i<N;i++){int st=0;waitpid(pids[i],&st,0);if(!WIFEXITED(st))pass=false;}
+  if(pass){printf(CLR_BOLD CLR_GREEN"Edge Shell PASS\n"CLR_RESET);scoreboard_update_edge(1,1);stats_inc_tests_passed(1);}else{printf(CLR_BOLD CLR_RED"Edge Shell FAIL\n"CLR_RESET);scoreboard_update_edge(1,0);stats_inc_tests_failed(1);}
+}
+static void concurrency_test_hidden(void){
+  process_t p[1];init_process(&p[0],8,1,0);container_t c;container_init(&c,2,true,ALG_BFS,ALG_HPC,p,1,NULL,0,6);container_t arr[1]={c};orchestrator_run(arr,1);
+  bool pass=(p[0].remaining_time==0);if(pass){printf(CLR_BOLD CLR_GREEN"Hidden HPC PASS\n"CLR_RESET);scoreboard_update_hidden(1,1);stats_inc_tests_passed(1);}else{printf(CLR_BOLD CLR_RED"Hidden HPC FAIL\n"CLR_RESET);scoreboard_update_hidden(1,0);stats_inc_tests_failed(1);}
+}
+

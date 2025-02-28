@@ -8,6 +8,7 @@
   Recognized scheduling algorithms
 */
 typedef enum {
+    ALG_NONE = -1,
     ALG_CFS = 0,
     ALG_CFS_SRTF,
     ALG_FIFO,
@@ -20,8 +21,22 @@ typedef enum {
     ALG_PRIORITY,
     ALG_HPC_OVERSHADOW,
     ALG_MLFQ,
-    ALG_HPC_OVERLAY
+    ALG_HPC_OVERLAY,
+    ALG_HPC /* HPC placeholder */
 } scheduler_alg_t;
+
+/* Forward declaration for container pointer in the callback. */
+struct container_s;
+
+/* Callback signature for "process finished" notification. */
+typedef void (*finish_cb_t)(struct container_s*);
+
+/* "Run slice" => run partial CPU time on 'p' according to 'alg'.
+ * If p finishes => call done_cb(container) */
+void scheduler_run_slice(process_t* p, scheduler_alg_t alg,
+                         finish_cb_t done_cb,
+                         struct container_s* c);
+
 
 /*
    We store final results of scheduling in a schedule_stats_t.

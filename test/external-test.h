@@ -20,4 +20,7 @@ int  external_test_count(void);
 /* Runs exactly one external test with index i (0..11). pass_out=1 if pass, else 0. */
 void external_test_run_single(int i, int* pass_out);
 
+void concurrency_test_case1(void);
+void concurrency_test_case2(void);
+
 #endif

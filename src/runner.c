@@ -340,3 +340,32 @@ void run_shell_commands_concurrently(int count,
         }
     }
 }
+
+
+
+void run_concurrency_with_containers(void) {
+    /* Container #1 => 2 normal processes, no HPC, ALG_FIFO, 2 cores */
+    process_t list1[2];
+    init_process(&list1[0], 3, 5, 0);
+    init_process(&list1[1], 5, 6, 0);
+    container_t c1;
+    container_init(&c1, 2, false, ALG_FIFO, ALG_NONE,
+                   list1, 2,
+                   NULL, 0);
+
+    /* Container #2 => HPC enabled => HPC alg=ALG_HPC, main=ALG_RR, etc. */
+    process_t normal2[2];
+    init_process(&normal2[0], 4, 10, 0);
+    init_process(&normal2[1], 2, 5, 0);
+
+    process_t hpc2[1];
+    init_process(&hpc2[0], 5, 1, 0);
+
+    container_t c2;
+    container_init(&c2, 2, true, ALG_RR, ALG_HPC,
+                   normal2, 2,
+                   hpc2,    1);
+
+    container_t containers[2] = { c1, c2 };
+    orchestrator_run(containers, 2);
+}

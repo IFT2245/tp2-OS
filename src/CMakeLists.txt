@@ -33,6 +33,10 @@ add_executable(main
         scoreboard.h
         menu.c
         menu.h
+        container.c
+        container.h
+        logger.c
+        logger.h
 )
 
 target_link_libraries(main PRIVATE Threads::Threads m)

@@ -4,7 +4,6 @@
 #include <unistd.h>
 #include <signal.h>
 #include <stdlib.h>
-#include <sys/stat.h>
 #include <pthread.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -111,25 +110,22 @@ static void* overshadow_thread(void* arg) {
 }
 
 void os_run_hpc_overshadow(void) {
-    /* NEW/UPDATED: pick a random number of CPU-bound threads from 4..8. */
+    /* pick a random number of CPU-bound threads from 4..8. */
     srand((unsigned int)time(NULL));
     int n = 4 + (rand() % 5); /* range = [4..8]. */
 
     long* results = (long*)calloc(n, sizeof(long));
     pthread_t* th = (pthread_t*)malloc(n*sizeof(pthread_t));
 
-    if(stats_get_speed_mode()==0){
-        printf("\033[92m[HPC Overshadow] => spawning %d threads\n\033[0m", n);
-        usleep(200000);
-    }
+    printf("\033[92m[HPC Overshadow] => spawning %d threads\n\033[0m", n);
+    usleep(200000);
+
 
     for (int i=0; i<n; i++) {
         pthread_create(&th[i], NULL, overshadow_thread, &results[i]);
-        if(stats_get_speed_mode()==0){
-            printf("\033[92m   HPC Overshadow Thread #%d => time=%llu ms => started.\n\033[0m",
-                   i+1, (unsigned long long)os_time());
-            usleep(150000);
-        }
+        printf("\033[92m   HPC Overshadow Thread #%d => time=%llu ms => started.\n\033[0m",
+               i+1, (unsigned long long)os_time());
+        usleep(150000);
     }
     for (int i=0; i<n; i++) {
         pthread_join(th[i], NULL);
@@ -169,18 +165,14 @@ void os_run_hpc_overlay(void) {
     long* results = (long*)calloc(n, sizeof(long));
     pthread_t* th = (pthread_t*)malloc(n*sizeof(pthread_t));
 
-    if(stats_get_speed_mode()==0){
-        printf("\033[92m[HPC Overlay] => spawning %d threads\n\033[0m", n);
-        usleep(200000);
-    }
+    printf("\033[92m[HPC Overlay] => spawning %d threads\n\033[0m", n);
+    usleep(200000);
 
     for (int i=0; i<n; i++) {
         pthread_create(&th[i], NULL, overlay_thread, &results[i]);
-        if(stats_get_speed_mode()==0){
-            printf("\033[92m   HPC Overlay Thread #%d => time=%llu ms => started.\n\033[0m",
-                   i+1, (unsigned long long)os_time());
-            usleep(150000);
-        }
+        printf("\033[92m   HPC Overlay Thread #%d => time=%llu ms => started.\n\033[0m",
+               i+1, (unsigned long long)os_time());
+        usleep(150000);
     }
     for (int i=0; i<n; i++) {
         pthread_join(th[i], NULL);
@@ -193,10 +185,9 @@ void os_run_hpc_overlay(void) {
 
     free(th);
     free(results);
-    if (stats_get_speed_mode()==0) {
-        printf("\033[92m   HPC Overlay => time=%llu ms => END.\n\033[0m",
-               (unsigned long long)os_time());
-    }
+    printf("\033[92m   HPC Overlay => time=%llu ms => END.\n\033[0m",
+           (unsigned long long)os_time());
+
 }
 
 
@@ -232,8 +223,7 @@ void os_pipeline_example(void) {
         if(c2==0) {
             close(pipefd[1]);
             /* read data from stage1. */
-            char buf[128];
-            memset(buf,0,sizeof(buf));
+            char buf[128] = {0};
             read(pipefd[0], buf, sizeof(buf)-1);
             if(stats_get_speed_mode()==0){
                 printf("\033[92m   [Pipeline child2 => got data=\"%s\" => time=%llu ms]\033[0m\n",
@@ -262,19 +252,37 @@ void os_run_distributed_example(void) {
     for(int i=0; i<2; i++) {
         pid_t c = fork();
         if (c == 0) {
-            if(stats_get_speed_mode()==0){
-                printf("\033[92m   [Distributed child => HPC overshadow => time=%llu ms]\033[0m\n",
-                       (unsigned long long)os_time());
-                usleep(200000);
-            }
+            printf("\033[92m   [Distributed child => HPC overshadow => time=%llu ms]\033[0m\n",
+                   (unsigned long long)os_time());
+            usleep(200000);
             os_run_hpc_overshadow();
             _exit(0);
-        } else if (c > 0) {
-            /* parent just moves on to spawn the next or wait. */
+        } if (c > 0) {
+            NULL;
         }
     }
     /* Wait for them all. In real code we'd track pids, but let's do a simple approach. */
     for(int i=0; i<2; i++) {
         wait(NULL);
     }
+}
+
+
+void orchestrator_run(container_t* containers, const int count)
+{
+    if(count<=0 || !containers) return;
+    pthread_t* tids = (pthread_t*)calloc(count, sizeof(pthread_t));
+
+    /* spawn one thread per container */
+    for(int i=0; i<count; i++){
+        pthread_create(&tids[i], NULL, container_run, &containers[i]);
+    }
+
+    /* wait for them */
+    for(int i=0; i<count; i++){
+        pthread_join(tids[i], NULL);
+    }
+    free(tids);
+
+    printf("[orchestrator_run] => all containers finished.\n");
 }

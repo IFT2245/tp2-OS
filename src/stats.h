@@ -13,6 +13,7 @@
 #define CLR_GRAY    "\033[90m"
 #define CLR_YELLOW  "\033[93m"
 #define CLR_CYAN    "\033[96m"
+#define CLR_WHITE   "\033[37m"
 
 void test_set_fail_reason(const char* msg);
 const char* test_get_fail_reason(void);

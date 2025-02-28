@@ -1,21 +1,10 @@
 #include "ready_queue.h"
 #include "scheduler.h"
 #include "process.h"
-
-#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include <time.h>
 
-#define MLFQ_MAX_QUEUES 10
-#define MLFQ_AGING_MS  10
-
-typedef struct node_s {
-    process_t*       proc;
-    uint64_t         enqueued_sim_time;
-    struct node_s*   next;
-} node_t;
 
 /*
    The global queue structure with:
@@ -25,15 +14,6 @@ typedef struct node_s {
    - chosen alg
    - locks/conds
 */
-static struct {
-    node_t           sentinel;
-    size_t           size;
-    pthread_mutex_t  m;
-    pthread_cond_t   c;
-    scheduler_alg_t  alg;
-    /* The MLFQ queues (0=highest priority, MLFQ_MAX_QUEUES-1=lowest) */
-    node_t           ml_queues[MLFQ_MAX_QUEUES];
-} gQ;
 
 /* Helper for mutex/cond. */
 static pthread_mutex_t* pm(void) { return &gQ.m; }
@@ -115,9 +95,9 @@ static void push_sjf(process_t* p) {
 }
 
 /* Helper for HRRN ratio: (wait + remain). Higher => schedule first. */
-static uint64_t hrrn_val(process_t* p, uint64_t now) {
-    uint64_t wait   = (now > p->arrival_time) ? (now - p->arrival_time) : 0ULL;
-    uint64_t remain = (p->remaining_time > 0) ? p->remaining_time : 1ULL;
+static uint64_t hrrn_val(const process_t* p, const uint64_t now) {
+    const uint64_t wait   = (now > p->arrival_time) ? (now - p->arrival_time) : 0ULL;
+    const uint64_t remain = (p->remaining_time > 0) ? p->remaining_time : 1ULL;
     return (wait + remain);
 }
 
@@ -383,4 +363,27 @@ size_t ready_queue_size(void) {
     size_t s = gQ.size;
     pthread_mutex_unlock(pm());
     return s;
+}
+
+
+static process_t* pop_head2(struct gQ_s* rq){
+  node_t* h=rq->sentinel.next;if(!h)return NULL;rq->sentinel.next=h->next;rq->size--;process_t* p=h->proc;free(h);return p;
+}
+void ready_queue_init2(struct gQ_s* rq,scheduler_alg_t a){memset(rq,0,sizeof(*rq));pthread_mutex_init(&rq->m,NULL);pthread_cond_init(&rq->c,NULL);rq->alg=a;}
+void ready_queue_destroy2(struct gQ_s* rq){node_t* c=rq->sentinel.next;while(c){node_t* t=c;c=c->next;free(t);}pthread_mutex_destroy(&rq->m);pthread_cond_destroy(&rq->c);memset(rq,0,sizeof(*rq));}
+void push_fifo2(struct gQ_s* rq,process_t* p){node_t* n=(node_t*)malloc(sizeof(node_t));n->proc=p;n->next=NULL;node_t* c=&rq->sentinel;while(c->next)c=c->next;c->next=n;rq->size++;}
+void push_priority2(struct gQ_s* rq,process_t* p){node_t* n=(node_t*)malloc(sizeof(node_t));n->proc=p;n->next=NULL;node_t* c=&rq->sentinel;while(c->next){if(p->priority<c->next->proc->priority)break;c=c->next;}n->next=c->next;c->next=n;rq->size++;}
+void push_sjf2(struct gQ_s* rq,process_t* p){node_t* n=(node_t*)malloc(sizeof(node_t));n->proc=p;n->next=NULL;node_t* c=&rq->sentinel;while(c->next){if(p->burst_time<c->next->proc->burst_time)break;c=c->next;}n->next=c->next;c->next=n;rq->size++;}
+void push_hpc2(struct gQ_s* rq,process_t* p){node_t* n=(node_t*)malloc(sizeof(node_t));n->proc=p;n->next=rq->sentinel.next;rq->sentinel.next=n;rq->size++;}
+void ready_queue_push2(struct gQ_s* rq,process_t* proc){
+  pthread_mutex_lock(&rq->m);
+  if(!proc){node_t* s=(node_t*)malloc(sizeof(node_t));s->proc=NULL;s->next=NULL;node_t* c=&rq->sentinel;while(c->next)c=c->next;c->next=s;rq->size++;pthread_cond_broadcast(&rq->c);pthread_mutex_unlock(&rq->m);return;}
+  switch(rq->alg){
+    case ALG_FIFO:case ALG_RR:case ALG_BFS:case ALG_CFS:case ALG_CFS_SRTF:case ALG_STRF:case ALG_HRRN:case ALG_HRRN_RT:case ALG_MLFQ:push_fifo2(rq,proc);break;
+    case ALG_PRIORITY:push_priority2(rq,proc);break;case ALG_SJF:push_sjf2(rq,proc);break;case ALG_HPC:push_hpc2(rq,proc);break;default:push_fifo2(rq,proc);break;
+  }
+  pthread_cond_broadcast(&rq->c);pthread_mutex_unlock(&rq->m);
+}
+process_t* ready_queue_pop2(struct gQ_s* rq){
+  pthread_mutex_lock(&rq->m);while(1){if(rq->size>0){process_t* p=pop_head2(rq);pthread_mutex_unlock(&rq->m);return p;}pthread_cond_wait(&rq->c,&rq->m);}pthread_mutex_unlock(&rq->m);return NULL;
 }

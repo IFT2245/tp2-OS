@@ -497,8 +497,7 @@ void menu_main_loop(void) {
 
         printf(CLR_BOLD CLR_YELLOW " │ 5) Show Scoreboard                        │\n" CLR_RESET);
         printf(CLR_BOLD CLR_YELLOW " │ 6) Clear Scoreboard                       │\n" CLR_RESET);
-        printf(CLR_BOLD CLR_YELLOW " │ 7) Toggle Speed Mode                      │\n" CLR_RESET);
-        printf(CLR_BOLD CLR_YELLOW " │ 8) Run Single Test                        │\n" CLR_RESET);
+        printf(CLR_BOLD CLR_YELLOW " │ 7) Run Single Test                        │\n" CLR_RESET);
         printf(CLR_BOLD CLR_YELLOW " └───────────────────────────────────────────┘\n\n" CLR_RESET);
 
         printf(CLR_BOLD CLR_YELLOW"Choice: "CLR_RESET);
@@ -549,9 +548,6 @@ void menu_main_loop(void) {
             menu_clear_scoreboard();
             break;
         case 7:
-            menu_toggle_speed_mode();
-            break;
-        case 8:
             submenu_run_single_test();
             break;
         default:

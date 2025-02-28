@@ -438,3 +438,62 @@ void scheduler_fetch_report(sched_report_t* out) {
         out->total_procs    = g_stats.total_procs;
     }
 }
+
+
+/* Return the timeslice for a given preemptive scheduling algorithm. */
+static unsigned long get_quantum(scheduler_alg_t alg)
+{
+    switch(alg) {
+    case ALG_RR:    return 2;
+    case ALG_BFS:   return 4;
+    case ALG_CFS_SRTF:
+    case ALG_STRF:
+    case ALG_HRRN_RT:
+    case ALG_MLFQ:
+    case ALG_HPC:   /* HPC => we give a short timeslice as well. */
+        return 2;
+    default:
+        return 0; /* non-preemptive => run to completion. */
+    }
+}
+
+/* Naive real-time sleep to simulate CPU usage. Scale as needed. */
+static void do_cpu_work(unsigned long ms)
+{
+    usleep((useconds_t)(ms * 5000U));
+}
+
+void scheduler_run_slice(process_t* p, scheduler_alg_t alg,
+                         finish_cb_t done_cb,
+                         struct container_s* container)
+{
+    if(!p || p->remaining_time<=0) {
+        /* invalid or already finished. */
+        return;
+    }
+
+    unsigned long q = get_quantum(alg);
+    unsigned long remain = (unsigned long)p->remaining_time;
+    unsigned long slice  = (q>0) ? ((remain>q)? q: remain) : remain;
+
+    /* If first_response not set => set it. */
+    if(!p->responded){
+        p->responded      = 1;
+        p->first_response = 0; /* ignoring arrival for brevity. */
+    }
+
+    /* "Use CPU" for slice ms (scaled). */
+    do_cpu_work(slice);
+
+    p->remaining_time -= slice;
+    if(p->remaining_time <= 0){
+        /* finished => call done_cb if provided. */
+        p->end_time = p->first_response + p->burst_time;
+        if(done_cb) {
+            done_cb(container);
+        }
+    }
+    else {
+        /* not finished => container thread will re-push p. */
+    }
+}
