@@ -4,6 +4,15 @@
 #include <signal.h>
 #include <setjmp.h>
 
+#define CLR_RESET   "\033[0m"
+#define CLR_BOLD    "\033[1m"
+#define CLR_MAGENTA "\033[95m"
+#define CLR_RED     "\033[91m"
+#define CLR_GREEN   "\033[92m"
+#define CLR_GRAY    "\033[90m"
+#define CLR_YELLOW  "\033[93m"
+#define CLR_CYAN    "\033[96m"
+
 /**
  * If user hits SIGINT or SIGTERM => scoreboard saving, etc.
  */

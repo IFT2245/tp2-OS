@@ -4,7 +4,6 @@
 #include "../lib/library.h"
 #include "../test/basic-tests.h"  // Now includes our expanded tests
 
-
 static void show_scoreboard_submenu(void) {
     while(1) {
         printf("\n\033[1m\033[36m=== SCOREBOARD MENU ===\033[0m\n");
@@ -27,16 +26,34 @@ static void show_scoreboard_submenu(void) {
     }
 }
 
-/**
- * We run all refined tests, show the scoreboard, and exit with final score.
- */
-static void do_run_tests(void){
+
+static void do_one_run_test(void){
+    scoreboard_clear();
+    scoreboard_save();
     set_log_level(LOG_LEVEL_INFO);
     run_all_tests();       // The refined test suite (includes multi-tests)
     show_scoreboard();
     scoreboard_save();
     fflush(stdout);
     fflush(stderr);
+}
+
+/**
+ * We run all refined tests, show the scoreboard, and exit with final score.
+ * OFFICIAL SCORING FUNCTION
+ */
+static void do_run_tests(void){
+    scoreboard_clear();
+    scoreboard_save();
+    int i = 0;
+    while (i++<10) {
+        set_log_level(LOG_LEVEL_INFO);
+        run_all_tests();       // The refined test suite (includes multi-tests)
+        show_scoreboard();
+        scoreboard_save();
+        fflush(stdout);
+        fflush(stderr);
+    }
 }
 
 
@@ -48,7 +65,8 @@ static void show_main_menu(void){
     printf("2) Scoreboard\n");
     printf("3) Clear scoreboard\n");
     printf("4) Enable/Disable bonus test\n");
-    printf("5) Exit\n");
+    printf(CLR_BOLD"5) NON OFFICIAL GRADING\n"CLR_RESET);
+    printf("6) Exit\n");
     printf("Choice? ");
 }
 
@@ -71,9 +89,9 @@ int main(void){
         switch(choice[0]){
         case '1':
             init_preempt_timer();
-            do_run_tests();
-            // 2) Turn off timer + free altstack
-            disable_preempt_timer();            break;
+            do_one_run_test();
+            disable_preempt_timer();
+            break;
         case '2':
             show_scoreboard();
             show_scoreboard_submenu();
@@ -92,6 +110,11 @@ int main(void){
             }
             break;
         case '5':
+            init_preempt_timer();
+            do_run_tests();
+            disable_preempt_timer();
+            break;
+        case '6':
         case 'q':
         case 'Q':
             printf("Exiting...\n");

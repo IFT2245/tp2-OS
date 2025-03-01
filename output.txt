@@ -1,4 +1,3 @@
-#include "worker.h"
 #include "../lib/log.h"
 #include <stdlib.h>
 #include <string.h>
@@ -6,7 +5,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <dirent.h>
-
+#include "worker.h"
 /* =========== (A) ephemeral remove code =========== */
 #ifdef EPHEMERAL_RM_RECURSIVE
 static int remove_directory_recursive(const char* path){
@@ -271,6 +270,9 @@ void container_init(container_t* c,
         log_info("container_init => no main cores but main processes => enabling HPC steal");
         c->allow_hpc_steal = true;
     }
+
+    /* ADDED for concurrency consistency => track active cores */
+    c->active_cores   = 0;  // We'll increment/decrement in worker.c
 }
 
 void container_run(container_t* c){
@@ -298,7 +300,9 @@ void orchestrator_run(container_t* arr, int count){
 #include <stdbool.h>
 #include "../lib/scheduler_alg.h"
 #include "process.h"
-
+#include "ready_queue.h"
+struct core_thread_pack_s;
+typedef struct core_thread_pack_s core_thread_pack_t;
 /**
  * Timeline event struct
  */
@@ -339,6 +343,10 @@ typedef struct container_s {
 
     char* ephemeral_path;
     bool  allow_hpc_steal;
+
+    /* NEW FIELD: number of cores actively running a slice right now */
+    int   active_cores;
+
 } container_t;
 
 #ifdef __cplusplus
@@ -369,17 +377,12 @@ void container_run(container_t* c);
  */
 void orchestrator_run(container_t* arr, int count);
 
-#ifdef __cplusplus
-}
-#endif
-
 #endif // CONTAINER_H
 #include "worker.h"
 #include "../lib/log.h"
 #include "../lib/scoreboard.h"
 #include "../lib/library.h"
 #include "../test/basic-tests.h"  // Now includes our expanded tests
-
 
 static void show_scoreboard_submenu(void) {
     while(1) {
@@ -403,16 +406,34 @@ static void show_scoreboard_submenu(void) {
     }
 }
 
-/**
- * We run all refined tests, show the scoreboard, and exit with final score.
- */
-static void do_run_tests(void){
+
+static void do_one_run_test(void){
+    scoreboard_clear();
+    scoreboard_save();
     set_log_level(LOG_LEVEL_INFO);
     run_all_tests();       // The refined test suite (includes multi-tests)
     show_scoreboard();
     scoreboard_save();
     fflush(stdout);
     fflush(stderr);
+}
+
+/**
+ * We run all refined tests, show the scoreboard, and exit with final score.
+ * OFFICIAL SCORING FUNCTION
+ */
+static void do_run_tests(void){
+    scoreboard_clear();
+    scoreboard_save();
+    int i = 0;
+    while (i++<10) {
+        set_log_level(LOG_LEVEL_INFO);
+        run_all_tests();       // The refined test suite (includes multi-tests)
+        show_scoreboard();
+        scoreboard_save();
+        fflush(stdout);
+        fflush(stderr);
+    }
 }
 
 
@@ -424,7 +445,8 @@ static void show_main_menu(void){
     printf("2) Scoreboard\n");
     printf("3) Clear scoreboard\n");
     printf("4) Enable/Disable bonus test\n");
-    printf("5) Exit\n");
+    printf(CLR_BOLD"5) NON OFFICIAL GRADING\n"CLR_RESET);
+    printf("6) Exit\n");
     printf("Choice? ");
 }
 
@@ -447,9 +469,9 @@ int main(void){
         switch(choice[0]){
         case '1':
             init_preempt_timer();
-            do_run_tests();
-            // 2) Turn off timer + free altstack
-            disable_preempt_timer();            break;
+            do_one_run_test();
+            disable_preempt_timer();
+            break;
         case '2':
             show_scoreboard();
             show_scoreboard_submenu();
@@ -468,6 +490,11 @@ int main(void){
             }
             break;
         case '5':
+            init_preempt_timer();
+            do_run_tests();
+            disable_preempt_timer();
+            break;
+        case '6':
         case 'q':
         case 'Q':
             printf("Exiting...\n");
@@ -898,7 +925,8 @@ void do_cpu_work(unsigned long ms, int core_id, int proc_id)
 #include "../lib/scheduler_alg.h"
 #include "process.h"
 #include "container.h"
-
+struct container_s;         /* forward-decl for the struct */
+typedef struct container_s container_t;  /* shorter alias */
 /**
  * @brief Return the timeslice “quantum” for a given algorithm + process.
  */
@@ -993,24 +1021,35 @@ static void check_hpc_arrivals(container_t* c, ready_queue_t* rq){
 
 /* ------------------------------------------------------------------
    (4) INTERNAL UTILITY: "DISCRETE-EVENT" ADVANCE WHEN QUEUE IS EMPTY
-       If the ready queue is empty but we still have future arrivals,
-       we jump sim_time forward to the earliest (non-arrived) process
-       among main/hpc. Then we push any that arrive exactly at that time.
-       If absolutely no future arrivals => we push a termination marker.
+   but ONLY if no other core is actively running a process. This
+   helps avoid random differences if one core is busy but another
+   jumps time forward.
+
+   If absolutely no future arrivals => push termination marker.
+   Otherwise, jump to earliest arrival time.
    ------------------------------------------------------------------ */
 static void maybe_advance_time_if_idle(container_t* c, ready_queue_t* main_rq, ready_queue_t* hpc_rq){
-    /* We do not do anything if there's already something in main_rq. */
-    if(main_rq->size > 0) return;
+    pthread_mutex_lock(&c->finish_lock);
 
-    /* Same if HPC queue has processes and HPC can steal main tasks
-       (some advanced HPC logic). But if c->allow_hpc_steal is false
-       or HPC queue is also empty, we proceed. */
-    if(c->allow_hpc_steal == false && hpc_rq->size > 0) return;
+    /* If main queue not empty, do nothing. */
+    if(main_rq->size > 0){
+        pthread_mutex_unlock(&c->finish_lock);
+        return;
+    }
+    /* If HPC not allowed to steal and HPC queue not empty, do nothing. */
+    if(!c->allow_hpc_steal && hpc_rq->size > 0){
+        pthread_mutex_unlock(&c->finish_lock);
+        return;
+    }
+    /* If more than 1 core is active, do nothing:
+       ensures we don't jump time while another core is busy. */
+    if(c->active_cores > 1){
+        pthread_mutex_unlock(&c->finish_lock);
+        return;
+    }
 
-    /* Find earliest next arrival among all main/hpc procs that haven't arrived
-       (arrival_time > 0, remaining_time>0). */
+    /* Find earliest future arrival among main/hpc */
     unsigned long earliest = (unsigned long)(-1); /* big sentinel */
-
     for(int i=0; i<c->main_count; i++){
         process_t* p = &c->main_procs[i];
         if(p->remaining_time>0 && p->arrival_time>0 && p->arrival_time < earliest){
@@ -1025,28 +1064,26 @@ static void maybe_advance_time_if_idle(container_t* c, ready_queue_t* main_rq, r
     }
 
     if(earliest == (unsigned long)(-1)) {
-        /* No future arrivals => we have nothing left to do except push
-           termination so this core can exit. */
+        /* No future arrivals => push termination marker. */
         rq_push(main_rq, NULL);
+        pthread_mutex_unlock(&c->finish_lock);
         return;
     }
 
-    /* We do a "time jump": set sim_time to earliest. Then check arrivals. */
-    pthread_mutex_lock(&c->finish_lock);
+    /* Jump sim_time to earliest arrival. */
     c->sim_time = earliest;
     pthread_mutex_unlock(&c->finish_lock);
 
-    /* Now push any arrivals that match sim_time. */
+    /* Now that time has advanced, push arrivals if they match. */
     check_main_arrivals(c, main_rq);
     check_hpc_arrivals(c, hpc_rq);
 }
 
 /* ------------------------------------------------------------------
    (5) ACTUAL TIMESLICE RUN
-   We do up to 'quantum' ms of CPU time for process p (or less if it
-   finishes earlier). Meanwhile we update c->sim_time and so forth.
-   We also optionally incorporate partial WFQ logic by adding
-   (step / p->weight) to the WFQ's virtual time.
+   We do up to 'quantum' ms or until the process finishes. Meanwhile
+   we protect c->sim_time with c->finish_lock so we don't jump from
+   another thread mid-slice.  We also keep track of c->active_cores.
    ------------------------------------------------------------------ */
 static void run_slice(container_t* c,
                       ready_queue_t* main_rq,
@@ -1062,6 +1099,7 @@ static void run_slice(container_t* c,
     unsigned long quantum = get_quantum(alg, p);
 
     pthread_mutex_lock(&c->finish_lock);
+    c->active_cores++;  /* ADDED: mark this core as busy */
     unsigned long start_ms = c->sim_time;
     if(!p->responded){
         p->responded = true;
@@ -1100,7 +1138,7 @@ static void run_slice(container_t* c,
         }
         pthread_mutex_unlock(&c->finish_lock);
 
-        /* If preemptive priority, try to see if a new higher-prio arrived. */
+        /* Preemptive priority check: if new higher-prio arrived */
         if(alg == ALG_PRIO_PREEMPT){
             bool got_preempted = try_preempt_if_needed(main_rq, p);
             if(got_preempted){
@@ -1109,11 +1147,8 @@ static void run_slice(container_t* c,
             }
         }
 
-        /* If Weighted Fair Queueing, each ms we add step/weight
-           to the WFQ's virtual_time. Because we are only using
-           part of the process's time each slice. */
+        /* Weighted Fair Queueing => update wfq_virtual_time each step. */
         if(alg == ALG_WFQ && step > 0){
-            /* We hold the main_rq->lock to safely update wfq_virtual_time. */
             pthread_mutex_lock(&main_rq->lock);
             main_rq->wfq_virtual_time += ((double)step / p->weight);
             pthread_mutex_unlock(&main_rq->lock);
@@ -1122,24 +1157,30 @@ static void run_slice(container_t* c,
         if(c->time_exhausted) break;
     }
 
-    /* If MLFQ: if slice_used == quantum and not finished => drop process to next level. */
+    /* If MLFQ: if we used the entire quantum and not finished => next queue level. */
     if(alg == ALG_MLFQ && p->remaining_time>0 && slice_used == quantum){
         p->mlfq_level++;
     }
 
     *used_ms = slice_used;
     record_timeline(c, core_id, p->id, start_ms, slice_used, preempted_flag);
+
+    /* If preempted, log a message. */
     if(preempted_flag){
         fprintf(stderr, "\033[33m[CORE %d] PREEMPTED process P%d after %lu ms!\033[0m\n",
                 core_id, p->id, slice_used);
     }
+
+    /* ADDED: done with slice => mark this core as no longer active. */
+    pthread_mutex_lock(&c->finish_lock);
+    c->active_cores--;
+    pthread_mutex_unlock(&c->finish_lock);
 }
 
 /* ------------------------------------------------------------------
    (6) MAIN CORE THREAD
-   - Loops until time_exhausted or we pop a termination marker.
-   - If queue empty => try maybe_advance_time_if_idle.
-   - Then pop -> run slice -> re-insert if needed -> check arrivals.
+   - If queue empty => maybe_advance_time_if_idle
+   - Pop => run_slice => re-insert if needed => check arrivals
    ------------------------------------------------------------------ */
 void* main_core_thread(void* arg){
     core_thread_pack_t* pack = (core_thread_pack_t*)arg;
@@ -1163,7 +1204,7 @@ void* main_core_thread(void* arg){
                     core_id);
         }
 
-        /* If the queue is empty, we do a discrete-event jump to the next arrival. */
+        /* If queue is empty, try discrete-event jump. */
         maybe_advance_time_if_idle(c, main_rq, hpc_rq);
 
         bool term_marker=false;
@@ -1180,7 +1221,7 @@ void* main_core_thread(void* arg){
             rq_push(main_rq, p);
         }
 
-        /* Check arrivals now that sim_time advanced. */
+        /* Check arrivals after sim_time advanced. */
         check_main_arrivals(c, main_rq);
         check_hpc_arrivals(c, hpc_rq);
 
@@ -1194,16 +1235,15 @@ void* main_core_thread(void* arg){
 
 /* ------------------------------------------------------------------
    (7) HPC THREAD
-   Very similar to main_core_thread but for HPC queue.
-   - If HPC queue empty => same discrete-event jump if no main cores?
-     Only do that if allow_hpc_steal==false or no main tasks to steal.
+   Similar logic, except HPC queue can be empty while HPC might
+   or might not steal main tasks (allow_hpc_steal).
    ------------------------------------------------------------------ */
 void* hpc_thread(void* arg){
     core_thread_pack_t* pack = (core_thread_pack_t*)arg;
     container_t* c         = pack->container;
     ready_queue_t* main_rq = pack->qs.main_rq;
     ready_queue_t* hpc_rq  = pack->qs.hpc_rq;
-    int hpc_idx            = pack->core_id;  // HPC ID
+    int hpc_idx            = pack->core_id;
     int timeline_id        = -1 - hpc_idx;
     free(pack);
 
@@ -1220,7 +1260,7 @@ void* hpc_thread(void* arg){
             fprintf(stderr, "\033[35m[HPC %d] *** PREEMPT => jumped ***\033[0m\n", hpc_idx);
         }
 
-        /* If HPC queue is empty, do discrete-event jump only if not stealing. */
+        /* If HPC queue is empty => discrete-event jump only if we can't steal. */
         if(hpc_rq->size == 0 && !c->allow_hpc_steal){
             maybe_advance_time_if_idle(c, main_rq, hpc_rq);
         }
@@ -1239,7 +1279,7 @@ void* hpc_thread(void* arg){
             rq_push(hpc_rq, p);
         }
 
-        /* HPC thread also can check arrivals if time advanced. */
+        /* HPC thread can also check arrivals. */
         if(!c->allow_hpc_steal){
             check_main_arrivals(c, main_rq);
         }
@@ -1251,20 +1291,7 @@ void* hpc_thread(void* arg){
         }
     }
     return NULL;
-}
-
-/* ------------------------------------------------------------------
-   (8) Bonus HPC BFS test flag (unchanged)
-   ------------------------------------------------------------------ */
-static int g_bonus_test_flag = 0;
-
-void set_bonus_test(int onOff){
-    g_bonus_test_flag = (onOff != 0);
-}
-int is_bonus_test(void){
-    return g_bonus_test_flag;
-}
-#ifndef WORKER_H
+}#ifndef WORKER_H
 #define WORKER_H
 
 #include "container.h"
@@ -1276,11 +1303,12 @@ int is_bonus_test(void){
 #include <stdio.h>
 #include <unistd.h>
 #include <stdbool.h>
-
+struct container_s;         /* forward-decl for the struct */
+typedef struct container_s container_t;  /* shorter alias */
 /**
  * @brief A small struct to pass to each core/hpc thread.
  */
-typedef struct {
+typedef struct core_thread_pack_s {
     container_t* container;
     struct {
         ready_queue_t* main_rq;
@@ -1341,13 +1369,13 @@ void set_look_remaining_tests(const int val) {
 }
 
 /* Tracks slow-mode on/off globally: */
-static int g_slowMode = 0;
+static int bonus_test = 0;
 
-void set_slow_mode(const int onOff) {
-    g_slowMode = (onOff != 0);
+void set_bonus_test(const int onOff) {
+    bonus_test = (onOff != 0);
 }
-int is_slow_mode(void) {
-    return g_slowMode;
+int is_bonus_test(void) {
+    return bonus_test;
 }
 
 /**
@@ -1495,6 +1523,15 @@ void unblock_preempt_signal(void){
 #include <signal.h>
 #include <setjmp.h>
 
+#define CLR_RESET   "\033[0m"
+#define CLR_BOLD    "\033[1m"
+#define CLR_MAGENTA "\033[95m"
+#define CLR_RED     "\033[91m"
+#define CLR_GREEN   "\033[92m"
+#define CLR_GRAY    "\033[90m"
+#define CLR_YELLOW  "\033[93m"
+#define CLR_CYAN    "\033[96m"
+
 /**
  * If user hits SIGINT or SIGTERM => scoreboard saving, etc.
  */
@@ -1515,8 +1552,8 @@ void set_look_remaining_tests(const int val);
 /**
  * Return 1 if we want slow-mode concurrency.
  */
-int is_slow_mode(void);
-void set_slow_mode(const int onOff);
+int is_bonus_test(void);
+void set_bonus_test(const int onOff);
 
 /* Preemption with setitimer + altstack + siglongjmp */
 void init_preempt_timer(void);
