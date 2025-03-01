@@ -33,7 +33,7 @@ static void recompute(void){
 int scoreboard_get_final_score(void){
     recompute();
 
-    double wBasic   = gSB.basic_percent        * 0.20;  /* 20% => BASIC */
+    double wBasic   = gSB.basic_percent        * 0.25;  /* 20% => BASIC */
     double wNormal  = gSB.normal_percent       * 0.15;  /* 15% => NORMAL */
     double wBFS     = gSB.bfs_percent          * 0.15;  /* BFS => 15% */
     double wEdge    = gSB.edge_percent         * 0.10;  /* 10% => EDGE */

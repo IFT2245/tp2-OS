@@ -75,7 +75,7 @@ int main(void){
     signal(SIGTERM, handle_signal);
     scoreboard_load();
     scoreboard_set_sc_hpc(1);
-    set_bonus_test(0);   // default: bonus test ON
+    set_bonus_test(0);   // default: bonus test OFF
 
     while(1){
         if (fflush(stdout) == 0 && fflush(stderr) == 0) {
