@@ -374,37 +374,110 @@ void orchestrator_run(container_t* arr, int count);
 #endif
 
 #endif // CONTAINER_H
-#include <stdio.h>
-#include <stdlib.h>
-#include <signal.h>
+#include "worker.h"
 #include "../lib/log.h"
 #include "../lib/scoreboard.h"
 #include "../lib/library.h"
-#include "../test/basic-tests.h"
+#include "../test/basic-tests.h"  // Now includes our expanded tests
 
+
+static void show_scoreboard_submenu(void) {
+    while(1) {
+        printf("\n\033[1m\033[36m=== SCOREBOARD MENU ===\033[0m\n");
+        printf("1) Show scoreboard legend\n");
+        printf("2) Return to main menu\n");
+        printf("Choice? ");
+        fflush(stdout);
+        char choice[64];
+        if(!fgets(choice, sizeof(choice), stdin)) break;
+        switch(choice[0]) {
+        case '1':
+            show_legend();
+            break;
+        case '2':
+            return;
+        default:
+            printf("\033[33mUnknown option.\033[0m\n");
+            break;
+        }
+    }
+}
+
+/**
+ * We run all refined tests, show the scoreboard, and exit with final score.
+ */
 static void do_run_tests(void){
     set_log_level(LOG_LEVEL_INFO);
-    run_all_tests();       // The refined test suite
+    run_all_tests();       // The refined test suite (includes multi-tests)
     show_scoreboard();
     scoreboard_save();
     fflush(stdout);
     fflush(stderr);
 }
 
+
+static void show_main_menu(void){
+    fflush(stdout);
+    fflush(stderr);
+    printf("\n\033[1m\033[35m=== MAIN MENU ===\033[0m\n");
+    printf("1) Run all tests\n");
+    printf("2) Scoreboard\n");
+    printf("3) Clear scoreboard\n");
+    printf("4) Enable/Disable bonus test\n");
+    printf("5) Exit\n");
+    printf("Choice? ");
+}
+
 int main(void){
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
-
-    // 1) Install the advanced preempt timer
-    init_preempt_timer();
-
     scoreboard_load();
-    do_run_tests();
+    scoreboard_set_sc_hpc(1);
+    set_bonus_test(1);   // default: bonus test ON
 
-    // 2) Turn off timer + free altstack
-    disable_preempt_timer();
-
-    return scoreboard_get_final_score();
+    while(1){
+        if (fflush(stdout) == 0 && fflush(stderr) == 0) {
+            usleep(50000);
+            show_main_menu();
+        }
+        char choice[64];
+        if(!fgets(choice, sizeof(choice), stdin)){
+            break;
+        }
+        switch(choice[0]){
+        case '1':
+            init_preempt_timer();
+            do_run_tests();
+            // 2) Turn off timer + free altstack
+            disable_preempt_timer();            break;
+        case '2':
+            show_scoreboard();
+            show_scoreboard_submenu();
+            break;
+        case '3':
+            scoreboard_clear();
+            printf("\033[31mScoreboard cleared.\033[00m\n");
+            break;
+        case '4':
+            if (is_bonus_test()) {
+                set_bonus_test(0);
+                printf("\033[35mBonus test disabled.\033[0m\n");
+            } else {
+                set_bonus_test(1);
+                printf("\033[35mBonus test enabled.\033[0m\n");
+            }
+            break;
+        case '5':
+        case 'q':
+        case 'Q':
+            printf("Exiting...\n");
+            return scoreboard_get_final_score();
+        default:
+            printf("\033[33mUnknown option.\033[0m\n");
+            break;
+        }
+    }
+    return -1;
 }
 #include "process.h"
 #include "../lib/log.h"
@@ -502,7 +575,7 @@ static void rq_insert_sorted(ready_queue_t* rq, process_t* p, proc_cmp_fn cmp){
         return;
     }
     if(!cmp){
-        /* Insert at tail => FIFO. */
+        /* Insert at tail => FIFO */
         rq_node_t* c = rq->head;
         while(c->next) c = c->next;
         c->next = n;
@@ -552,7 +625,7 @@ void rq_push(ready_queue_t* rq, process_t* p){
     pthread_mutex_lock(&rq->lock);
 
     if(!p){
-        /* termination marker => push front always. */
+        /* termination marker => push front always */
         rq_node_t* n = (rq_node_t*)malloc(sizeof(rq_node_t));
         n->proc = NULL;
         n->next = rq->head;
@@ -583,8 +656,8 @@ void rq_push(ready_queue_t* rq, process_t* p){
         n->proc = p;
         n->next = rq->head;
         rq->head = n;
-        break;
     }
+        break;
     default:
         /* default => FIFO for RR, BFS, MLFQ, WFQ, etc. */
         rq_insert_sorted(rq, p, NULL);
@@ -605,8 +678,11 @@ process_t* rq_pop(ready_queue_t* rq, bool* got_term){
         pthread_cond_wait(&rq->cond, &rq->lock);
     }
 
-    /* Weighted Fair Queueing special pop => earliest finish time. */
     if(rq->alg == ALG_WFQ){
+        /* Weighted Fair Queueing => pick process with earliest
+           "finish_time" = (current wfq_virtual_time + remaining / weight).
+           But we no longer do a big jump of 'wfq_virtual_time += entire_burst'
+           here. Instead, that is done partially in run_slice. */
         rq_node_t* prev = NULL;
         rq_node_t* best_prev = NULL;
         rq_node_t* best_node = NULL;
@@ -619,8 +695,8 @@ process_t* rq_pop(ready_queue_t* rq, bool* got_term){
                 best_node = cur;
                 break;
             }
-            double finish_time = rq->wfq_virtual_time
-                              + ((double)cur->proc->remaining_time / cur->proc->weight);
+            double finish_time =
+                rq->wfq_virtual_time + ((double)cur->proc->remaining_time / cur->proc->weight);
             if(finish_time < best_val){
                 best_val = finish_time;
                 best_node = cur;
@@ -635,7 +711,7 @@ process_t* rq_pop(ready_queue_t* rq, bool* got_term){
         }
         if(!best_node->proc){
             *got_term = true;
-            /* Remove best_node from list. */
+            /* remove best_node from list */
             if(best_node == rq->head){
                 rq->head = best_node->next;
             } else if(best_prev){
@@ -654,9 +730,6 @@ process_t* rq_pop(ready_queue_t* rq, bool* got_term){
         }
         free(best_node);
         rq->size--;
-
-        rq->wfq_virtual_time += ((double)ret->remaining_time / ret->weight);
-
         pthread_mutex_unlock(&rq->lock);
         return ret;
     }
@@ -676,6 +749,7 @@ process_t* rq_pop(ready_queue_t* rq, bool* got_term){
     }
 }
 
+/* Attempt to see if new highest-priority arrival can preempt. */
 bool try_preempt_if_needed(ready_queue_t* rq, process_t* p){
     if(rq->alg != ALG_PRIO_PREEMPT || !p) return false;
 
@@ -685,8 +759,10 @@ bool try_preempt_if_needed(ready_queue_t* rq, process_t* p){
         return false;
     }
     process_t* front = rq->head->proc;
+    /* If the *front* of the queue has strictly lower priority number
+       => that means it's higher priority (since smaller prio # is "higher"). */
     if(front->priority < p->priority){
-        /* Preempt => put p back, pop the new highest prio. */
+        /* We do a forced preempt => put p back, pop the new highest prio. */
         p->was_preempted = true;
         rq_insert_sorted(rq, p, prio_asc_cmp);
         rq->size++;
@@ -855,14 +931,20 @@ void record_timeline(container_t* c,
 #include <stdio.h>
 #include <stdlib.h>
 
-/* Forward helpers. */
+/* ------------------------------------------------------------------
+   (1) INTERNAL UTILITY: Check if container has exceeded max time
+   ------------------------------------------------------------------ */
 static bool is_time_exhausted(container_t* c){
     pthread_mutex_lock(&c->finish_lock);
-    bool r = c->time_exhausted || (c->accumulated_cpu >= c->max_cpu_time_ms);
+    bool r = (c->time_exhausted || (c->accumulated_cpu >= c->max_cpu_time_ms));
     pthread_mutex_unlock(&c->finish_lock);
     return r;
 }
 
+/* ------------------------------------------------------------------
+   (2) INTERNAL UTILITY: Forcibly push a termination marker into
+       both main & HPC RQs so all threads can break out.
+   ------------------------------------------------------------------ */
 static void force_stop(const container_t* c, ready_queue_t* rq_main, ready_queue_t* rq_hpc){
     for(int i=0; i<c->nb_cores; i++){
         rq_push(rq_main, NULL);
@@ -872,6 +954,11 @@ static void force_stop(const container_t* c, ready_queue_t* rq_main, ready_queue
     }
 }
 
+/* ------------------------------------------------------------------
+   (3) INTERNAL UTILITY: Check arrivals for any processes whose
+       arrival_time <= current sim_time, push them, and set their
+       arrival_time=0 so we don't re-push.
+   ------------------------------------------------------------------ */
 static void check_main_arrivals(container_t* c, ready_queue_t* rq){
     pthread_mutex_lock(&c->finish_lock);
     unsigned long now = c->sim_time;
@@ -882,8 +969,8 @@ static void check_main_arrivals(container_t* c, ready_queue_t* rq){
         if(p->remaining_time>0 && p->arrival_time>0 && p->arrival_time <= now){
             fprintf(stderr, "\033[94m[MAIN ARRIVE] P%d arrives at t=%lu => push mainRQ\033[0m\n",
                     p->id, now);
+            p->arrival_time = 0;  // mark as arrived
             rq_push(rq, p);
-            p->arrival_time = 0;
         }
     }
 }
@@ -898,15 +985,76 @@ static void check_hpc_arrivals(container_t* c, ready_queue_t* rq){
         if(p->remaining_time>0 && p->arrival_time>0 && p->arrival_time <= now){
             fprintf(stderr, "\033[95m[HPC ARRIVE]  P%d arrives at t=%lu => push hpcRQ\033[0m\n",
                     p->id, now);
+            p->arrival_time = 0; // mark as arrived
             rq_push(rq, p);
-            p->arrival_time = 0;
         }
     }
 }
 
-static void run_slice(container_t* c, ready_queue_t* main_rq, ready_queue_t* hpc_rq,
-                      process_t* p, scheduler_alg_t alg,
-                      int core_id, unsigned long* used_ms)
+/* ------------------------------------------------------------------
+   (4) INTERNAL UTILITY: "DISCRETE-EVENT" ADVANCE WHEN QUEUE IS EMPTY
+       If the ready queue is empty but we still have future arrivals,
+       we jump sim_time forward to the earliest (non-arrived) process
+       among main/hpc. Then we push any that arrive exactly at that time.
+       If absolutely no future arrivals => we push a termination marker.
+   ------------------------------------------------------------------ */
+static void maybe_advance_time_if_idle(container_t* c, ready_queue_t* main_rq, ready_queue_t* hpc_rq){
+    /* We do not do anything if there's already something in main_rq. */
+    if(main_rq->size > 0) return;
+
+    /* Same if HPC queue has processes and HPC can steal main tasks
+       (some advanced HPC logic). But if c->allow_hpc_steal is false
+       or HPC queue is also empty, we proceed. */
+    if(c->allow_hpc_steal == false && hpc_rq->size > 0) return;
+
+    /* Find earliest next arrival among all main/hpc procs that haven't arrived
+       (arrival_time > 0, remaining_time>0). */
+    unsigned long earliest = (unsigned long)(-1); /* big sentinel */
+
+    for(int i=0; i<c->main_count; i++){
+        process_t* p = &c->main_procs[i];
+        if(p->remaining_time>0 && p->arrival_time>0 && p->arrival_time < earliest){
+            earliest = p->arrival_time;
+        }
+    }
+    for(int i=0; i<c->hpc_count; i++){
+        process_t* p = &c->hpc_procs[i];
+        if(p->remaining_time>0 && p->arrival_time>0 && p->arrival_time < earliest){
+            earliest = p->arrival_time;
+        }
+    }
+
+    if(earliest == (unsigned long)(-1)) {
+        /* No future arrivals => we have nothing left to do except push
+           termination so this core can exit. */
+        rq_push(main_rq, NULL);
+        return;
+    }
+
+    /* We do a "time jump": set sim_time to earliest. Then check arrivals. */
+    pthread_mutex_lock(&c->finish_lock);
+    c->sim_time = earliest;
+    pthread_mutex_unlock(&c->finish_lock);
+
+    /* Now push any arrivals that match sim_time. */
+    check_main_arrivals(c, main_rq);
+    check_hpc_arrivals(c, hpc_rq);
+}
+
+/* ------------------------------------------------------------------
+   (5) ACTUAL TIMESLICE RUN
+   We do up to 'quantum' ms of CPU time for process p (or less if it
+   finishes earlier). Meanwhile we update c->sim_time and so forth.
+   We also optionally incorporate partial WFQ logic by adding
+   (step / p->weight) to the WFQ's virtual time.
+   ------------------------------------------------------------------ */
+static void run_slice(container_t* c,
+                      ready_queue_t* main_rq,
+                      ready_queue_t* hpc_rq,
+                      process_t* p,
+                      scheduler_alg_t alg,
+                      int core_id,
+                      unsigned long* used_ms)
 {
     *used_ms = 0;
     if(!p || p->remaining_time == 0) return;
@@ -925,12 +1073,12 @@ static void run_slice(container_t* c, ready_queue_t* main_rq, ready_queue_t* hpc
     unsigned long slice_used = 0;
     unsigned long slice_remaining = quantum;
 
-    while(slice_remaining>0 && !c->time_exhausted && p->remaining_time>0){
+    while(slice_remaining > 0 && !c->time_exhausted && p->remaining_time > 0){
         unsigned long step = (p->remaining_time < slice_remaining)
                            ? p->remaining_time
                            : slice_remaining;
 
-        do_cpu_work(step, core_id, p->id);
+        do_cpu_work(step, core_id, p->id);  // Real 1ms steps
 
         pthread_mutex_lock(&c->finish_lock);
         p->remaining_time -= step;
@@ -952,6 +1100,7 @@ static void run_slice(container_t* c, ready_queue_t* main_rq, ready_queue_t* hpc
         }
         pthread_mutex_unlock(&c->finish_lock);
 
+        /* If preemptive priority, try to see if a new higher-prio arrived. */
         if(alg == ALG_PRIO_PREEMPT){
             bool got_preempted = try_preempt_if_needed(main_rq, p);
             if(got_preempted){
@@ -959,10 +1108,22 @@ static void run_slice(container_t* c, ready_queue_t* main_rq, ready_queue_t* hpc
                 break;
             }
         }
+
+        /* If Weighted Fair Queueing, each ms we add step/weight
+           to the WFQ's virtual_time. Because we are only using
+           part of the process's time each slice. */
+        if(alg == ALG_WFQ && step > 0){
+            /* We hold the main_rq->lock to safely update wfq_virtual_time. */
+            pthread_mutex_lock(&main_rq->lock);
+            main_rq->wfq_virtual_time += ((double)step / p->weight);
+            pthread_mutex_unlock(&main_rq->lock);
+        }
+
         if(c->time_exhausted) break;
     }
 
-    if(alg == ALG_MLFQ && p->remaining_time>0 && slice_used==quantum){
+    /* If MLFQ: if slice_used == quantum and not finished => drop process to next level. */
+    if(alg == ALG_MLFQ && p->remaining_time>0 && slice_used == quantum){
         p->mlfq_level++;
     }
 
@@ -974,9 +1135,12 @@ static void run_slice(container_t* c, ready_queue_t* main_rq, ready_queue_t* hpc
     }
 }
 
-/*
- * The main core thread.
- */
+/* ------------------------------------------------------------------
+   (6) MAIN CORE THREAD
+   - Loops until time_exhausted or we pop a termination marker.
+   - If queue empty => try maybe_advance_time_if_idle.
+   - Then pop -> run slice -> re-insert if needed -> check arrivals.
+   ------------------------------------------------------------------ */
 void* main_core_thread(void* arg){
     core_thread_pack_t* pack = (core_thread_pack_t*)arg;
     container_t* c         = pack->container;
@@ -999,7 +1163,10 @@ void* main_core_thread(void* arg){
                     core_id);
         }
 
-        bool term_marker = false;
+        /* If the queue is empty, we do a discrete-event jump to the next arrival. */
+        maybe_advance_time_if_idle(c, main_rq, hpc_rq);
+
+        bool term_marker=false;
         process_t* p = rq_pop(main_rq, &term_marker);
         if(term_marker || !p){
             fprintf(stderr, "\033[32m[CORE %d] Termination => done.\033[0m\n", core_id);
@@ -1013,6 +1180,7 @@ void* main_core_thread(void* arg){
             rq_push(main_rq, p);
         }
 
+        /* Check arrivals now that sim_time advanced. */
         check_main_arrivals(c, main_rq);
         check_hpc_arrivals(c, hpc_rq);
 
@@ -1024,6 +1192,12 @@ void* main_core_thread(void* arg){
     return NULL;
 }
 
+/* ------------------------------------------------------------------
+   (7) HPC THREAD
+   Very similar to main_core_thread but for HPC queue.
+   - If HPC queue empty => same discrete-event jump if no main cores?
+     Only do that if allow_hpc_steal==false or no main tasks to steal.
+   ------------------------------------------------------------------ */
 void* hpc_thread(void* arg){
     core_thread_pack_t* pack = (core_thread_pack_t*)arg;
     container_t* c         = pack->container;
@@ -1046,6 +1220,11 @@ void* hpc_thread(void* arg){
             fprintf(stderr, "\033[35m[HPC %d] *** PREEMPT => jumped ***\033[0m\n", hpc_idx);
         }
 
+        /* If HPC queue is empty, do discrete-event jump only if not stealing. */
+        if(hpc_rq->size == 0 && !c->allow_hpc_steal){
+            maybe_advance_time_if_idle(c, main_rq, hpc_rq);
+        }
+
         bool term_marker=false;
         process_t* p = rq_pop(hpc_rq, &term_marker);
         if(term_marker || !p){
@@ -1060,6 +1239,12 @@ void* hpc_thread(void* arg){
             rq_push(hpc_rq, p);
         }
 
+        /* HPC thread also can check arrivals if time advanced. */
+        if(!c->allow_hpc_steal){
+            check_main_arrivals(c, main_rq);
+        }
+        check_hpc_arrivals(c, hpc_rq);
+
         if(is_time_exhausted(c)){
             force_stop(c, main_rq, hpc_rq);
             break;
@@ -1068,6 +1253,9 @@ void* hpc_thread(void* arg){
     return NULL;
 }
 
+/* ------------------------------------------------------------------
+   (8) Bonus HPC BFS test flag (unchanged)
+   ------------------------------------------------------------------ */
 static int g_bonus_test_flag = 0;
 
 void set_bonus_test(int onOff){
@@ -1441,6 +1629,7 @@ typedef enum {
 #include "scoreboard.h"
 #include "log.h"
 #include "../libExtern/cJSON.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1448,13 +1637,13 @@ typedef enum {
 /* The global scoreboard struct */
 static scoreboard_t gSB;
 
-/* A small helper: percentage from pass/total */
+/* A small helper: compute percentage from pass/total */
 static double calc_percent(int total, int pass){
     if(total <= 0) return 0.0;
     return 100.0 * ((double)pass / (double)total);
 }
 
-/* Recompute cached % fields from pass & total */
+/* Recompute cached percent fields from pass & total */
 static void recompute(void){
     gSB.basic_percent        = calc_percent(gSB.basic_total,       gSB.basic_pass);
     gSB.normal_percent       = calc_percent(gSB.normal_total,      gSB.normal_pass);
@@ -1468,7 +1657,7 @@ static void recompute(void){
     gSB.hpc_bfs_percent      = calc_percent(gSB.hpc_bfs_total,     gSB.hpc_bfs_pass);
 }
 
-/* Weighted final score => we up-weight simpler suites more. */
+/* Weighted final score => simpler suites have bigger impact, advanced ones smaller. */
 int scoreboard_get_final_score(void){
     recompute();
 
@@ -1481,14 +1670,14 @@ int scoreboard_get_final_score(void){
     double wMulti   = gSB.multi_hpc_percent    * 0.05;  /*  5% => MULTI_HPC */
     double wMLFQ    = gSB.mlfq_percent         * 0.05;  /*  5% => MLFQ */
     double wPrio    = gSB.prio_preempt_percent * 0.05;  /*  5% => PRIO_PREEMPT */
-    double wHpcBFS  = gSB.hpc_bfs_percent      * 0.05;  /*  5% => HPC_BFS (bonus test) */
+    double wHpcBFS  = gSB.hpc_bfs_percent      * 0.05;  /*  5% => HPC_BFS (bonus) */
 
-    /* HPC bonus => +5% if sc_hpc=1. */
-    double HPC = (gSB.sc_hpc ? 5.0 : 0.0);
+    double HPC = (gSB.sc_hpc ? 5.0 : 0.0);  // HPC bonus => +5% if sc_hpc=1
 
     double total = wBasic + wNormal + wBFS + wEdge + wHidden
                  + wWFQ + wMulti + wMLFQ + wPrio + wHpcBFS
                  + HPC;
+
     if(total > 100.0) total = 100.0;
     return (int)(total + 0.5);
 }
@@ -1508,7 +1697,7 @@ void scoreboard_load(void){
     }
     fseek(f,0,SEEK_END);
     long sz = ftell(f);
-    if(sz<0){
+    if(sz < 0){
         fclose(f);
         return;
     }
@@ -1615,6 +1804,7 @@ void scoreboard_clear(void){
     scoreboard_save();
 }
 
+/* The scoreboard update functions: simply accumulate total/pass. */
 void scoreboard_update_basic(int t,int p){
     gSB.basic_total += t;
     gSB.basic_pass  += p;
@@ -1660,7 +1850,7 @@ void scoreboard_set_sc_hpc(int v){
     gSB.sc_hpc = (v ? 1 : 0);
 }
 
-/* Gate logic if you want to "unlock" certain suites after passing threshold: */
+/* If suite is locked behind threshold, return 0, else 1. */
 int scoreboard_is_unlocked(scoreboard_suite_t s){
     recompute();
     double T = gSB.pass_threshold;
@@ -1694,6 +1884,7 @@ void get_scoreboard(scoreboard_t* out){
     if(out) *out = gSB;
 }
 
+/* Pretty print the scoreboard. */
 static void print_suite_line(const char* name, int pass, int total, double percent){
     if(total == 0){
         printf("\033[33m%-26s => %d/%d => %.1f%% (no tests?)\033[0m\n",
@@ -1736,7 +1927,6 @@ void show_legend(void){
     printf("  BASIC => 20%%, NORMAL => 15%%, BFS => 15%%, EDGE => 10%%,\n");
     printf("  HIDDEN => 10%%, WFQ => 10%%, MULTI_HPC => 5%%, MLFQ => 5%%,\n");
     printf("  PRIO_PREEMPT => 5%%, HPC_BFS => 5%%, HPC bonus => +5%%\n");
-    printf("  (Clamped to a maximum of 100%% total)\n");
     printf("  pass_threshold => 60%% gates unlocking advanced suites.\n");
     printf("----------------------------------------------\n");
 }
@@ -1758,6 +1948,19 @@ typedef enum {
 
 /**
  * @brief The scoreboard structure with refined weighting.
+ * We rely on a 60% threshold to unlock advanced suites.
+ * Weighted breakdown (up to 100%):
+ *   BASIC => 20%
+ *   NORMAL => 15%
+ *   BFS => 15%
+ *   EDGE => 10%
+ *   HIDDEN => 10%
+ *   WFQ => 10%
+ *   MULTI_HPC => 5%
+ *   MLFQ => 5%
+ *   PRIO_PREEMPT => 5%
+ *   HPC_BFS => 5%
+ * + HPC bonus => +5% if sc_hpc=1
  */
 typedef struct {
     int basic_total,      basic_pass;
@@ -1782,8 +1985,8 @@ typedef struct {
            prio_preempt_percent,
            hpc_bfs_percent;
 
-    double pass_threshold;
-    int    sc_hpc;         /* HPC bonus toggle => +5% if set */
+    double pass_threshold;  // 60.0
+    int    sc_hpc;          // HPC bonus toggle => +5% if set
 } scoreboard_t;
 
 /* Load/save scoreboard from scoreboard.json */
@@ -1818,6 +2021,9 @@ void show_scoreboard(void);
 void show_legend(void);
 
 #endif
+// File: basic-tests.c
+// Refined test suite with clearer naming, multi-level gating, concurrency & preemption coverage.
+
 #include "basic-tests.h"
 #include "../src/worker.h"
 #include "../lib/library.h"
@@ -1832,21 +2038,21 @@ void show_legend(void);
 ------------------------------------------------------------------------ */
 static bool do_wait_with_timeout(pid_t pid, int timeout_sec, int *exit_code){
     int status;
-    for(int i=0; i < timeout_sec*10; i++){
+    for(int i=0; i < timeout_sec*10; i++){  // Check 10 times/sec
         pid_t w = waitpid(pid, &status, WNOHANG);
         if(w == pid){
             if(WIFEXITED(status)){
                 *exit_code = WEXITSTATUS(status);
                 return true;
             } else {
-                /* e.g., killed by signal */
-                *exit_code = 1; /* fail */
+                // e.g., killed by signal
+                *exit_code = 1; // Fail
                 return true;
             }
         }
-        usleep(100000); /* 0.1s */
+        usleep(100000); // 0.1s
     }
-    /* Timed out => kill child => test fail */
+    // Timed out => kill child => test fails
     kill(pid, SIGKILL);
     waitpid(pid, &status, 0);
     *exit_code = 1;
@@ -1855,6 +2061,7 @@ static bool do_wait_with_timeout(pid_t pid, int timeout_sec, int *exit_code){
 
 /* ------------------------------------------------------------------------
    Subprocess test runner
+   - Fork + run in child, wait with timeout, record scoreboard on success/fail
 ------------------------------------------------------------------------ */
 static bool run_test_in_subproc(
     const char* test_name,
@@ -1863,15 +2070,21 @@ static bool run_test_in_subproc(
     int timeout_sec)
 {
     if(skip_remaining_tests_requested()){
+        return false; // user signaled skip
+    }
+    // Gate behind suite unlock threshold:
+    if(!scoreboard_is_unlocked(suite)){
+        log_warn("Skipping %s => suite locked (below threshold).", test_name);
         return false;
     }
+
     pid_t pid = fork();
     if(pid < 0){
         log_error("fork() failed => cannot run test %s", test_name);
         return false;
     }
     if(pid == 0){
-        /* Child: just run the test function. */
+        // Child: run the test function directly
         bool pass = test_func();
         _exit(pass ? 0 : 1);
     }
@@ -1891,7 +2104,7 @@ static bool run_test_in_subproc(
         }
     }
 
-    /* Update scoreboard for this suite => (t=1, p=(pass?1:0)) */
+    // Update scoreboard for the suite => (t=1, p=(pass?1:0))
     int t = 1, p = (pass ? 1 : 0);
     switch(suite){
         case SUITE_BASIC:        scoreboard_update_basic(t,p);         break;
@@ -1909,21 +2122,24 @@ static bool run_test_in_subproc(
     return pass;
 }
 
-/* Helper: check if all given processes are done. */
+/* ------------------------------------------------------------------------
+   Helper: check if all processes in an array are fully done (remaining_time=0).
+------------------------------------------------------------------------ */
 static bool all_done(const process_t* arr, int count){
-    for(int i=0;i<count;i++){
-        if(arr[i].remaining_time>0) return false;
+    for(int i=0; i<count; i++){
+        if(arr[i].remaining_time > 0) return false;
     }
     return true;
 }
 
 /* ------------------------------------------------------------------------
-   Actual test functions (child side).
+   (A) BASIC TESTS (ALG_FIFO)
+   Weighted heavily to encourage passing early (20% in scoreboard).
 ------------------------------------------------------------------------ */
 
-/* 1) BASIC: FIFO test. */
-static bool test_BASIC_fifo(void){
-    log_info("Running test_BASIC_fifo");
+/* BASIC_1: Simple FIFO with 2 processes. */
+static bool test_BASIC_1_fifoTwoProcs(void){
+    log_info("Running test_BASIC_1_fifoTwoProcs");
     process_t p[2];
     init_process(&p[0], 3, 5, 0, 1.0);
     init_process(&p[1], 5, 7, 2, 1.0);
@@ -1935,9 +2151,28 @@ static bool test_BASIC_fifo(void){
     return all_done(p, 2);
 }
 
-/* 2) NORMAL: Round Robin. */
-static bool test_NORMAL_rr(void){
-    log_info("Running test_NORMAL_rr");
+/* BASIC_2: FIFO with 3 processes, staggered arrival. */
+static bool test_BASIC_2_fifoThreeProcsStaggered(void){
+    log_info("Running test_BASIC_2_fifoThreeProcsStaggered");
+    process_t p[3];
+    init_process(&p[0], 2, 1, 0, 1.0);  // arrives at 0
+    init_process(&p[1], 4, 2, 3, 1.0);  // arrives at time=3
+    init_process(&p[2], 3, 1, 5, 1.0);  // arrives at time=5
+
+    container_t c;
+    container_init(&c, 1, 0, ALG_FIFO, ALG_NONE, p, 3, NULL, 0, 30);
+
+    orchestrator_run(&c, 1);
+    return all_done(p,3);
+}
+
+/* ------------------------------------------------------------------------
+   (B) NORMAL TESTS (Round Robin, etc.) => 15% weight
+------------------------------------------------------------------------ */
+
+/* NORMAL_1: Simple Round Robin with 2 processes. */
+static bool test_NORMAL_1_rr2Procs(void){
+    log_info("Running test_NORMAL_1_rr2Procs");
     process_t p[2];
     init_process(&p[0], 4, 3, 0, 1.0);
     init_process(&p[1], 2, 2, 1, 1.0);
@@ -1949,9 +2184,28 @@ static bool test_NORMAL_rr(void){
     return all_done(p,2);
 }
 
-/* 3) EDGE: non-preemptive priority. */
-static bool test_EDGE_priority(void){
-    log_info("Running test_EDGE_priority");
+/* NORMAL_2: Round Robin with 3 processes, arrivals. */
+static bool test_NORMAL_2_rr3ProcsStaggered(void){
+    log_info("Running test_NORMAL_2_rr3ProcsStaggered");
+    process_t p[3];
+    init_process(&p[0], 5, 1, 0, 1.0);
+    init_process(&p[1], 2, 1, 1, 1.0);
+    init_process(&p[2], 3, 1, 3, 1.0);
+
+    container_t c;
+    container_init(&c, 2, 0, ALG_RR, ALG_NONE, p, 3, NULL, 0, 40);
+
+    orchestrator_run(&c, 1);
+    return all_done(p,3);
+}
+
+/* ------------------------------------------------------------------------
+   (C) EDGE TESTS (non-preemptive Priority) => 10% weight
+------------------------------------------------------------------------ */
+
+/* EDGE_1: Priority non-preemptive, 3 procs same arrival. */
+static bool test_EDGE_1_priorityNonPreemptive(void){
+    log_info("Running test_EDGE_1_priorityNonPreemptive");
     process_t p[3];
     init_process(&p[0], 2, 1, 0, 1.0);
     init_process(&p[1], 4, 5, 0, 1.0);
@@ -1964,9 +2218,28 @@ static bool test_EDGE_priority(void){
     return all_done(p,3);
 }
 
-/* 4) HIDDEN: HPC example => main= SJF, HPC= HPC. */
-static bool test_HIDDEN_sjf_hpc(void){
-    log_info("Running test_HIDDEN_sjf_hpc");
+/* EDGE_2: Priority non-preemptive, staggered arrivals. */
+static bool test_EDGE_2_priorityNonPreemptiveStaggered(void){
+    log_info("Running test_EDGE_2_priorityNonPreemptiveStaggered");
+    process_t p[3];
+    init_process(&p[0], 3, 1, 0, 1.0);  // arrives=0
+    init_process(&p[1], 2,10, 2, 1.0);  // arrives=2
+    init_process(&p[2], 5, 2, 4, 1.0);  // arrives=4
+
+    container_t c;
+    container_init(&c, 1, 0, ALG_PRIORITY, ALG_NONE, p, 3, NULL, 0, 40);
+
+    orchestrator_run(&c, 1);
+    return all_done(p,3);
+}
+
+/* ------------------------------------------------------------------------
+   (D) HIDDEN TESTS => 10% weight (often HPC scenario with SJF or HPC)
+------------------------------------------------------------------------ */
+
+/* HIDDEN_1: HPC example => main=SJF, HPC=HPC. */
+static bool test_HIDDEN_1_sjfPlusHPC(void){
+    log_info("Running test_HIDDEN_1_sjfPlusHPC");
     process_t mp[2];
     init_process(&mp[0], 5, 2, 0, 1.0);
     init_process(&mp[1], 5, 1, 2, 1.0);
@@ -1981,9 +2254,31 @@ static bool test_HIDDEN_sjf_hpc(void){
     return (all_done(mp,2) && all_done(hp,1));
 }
 
-/* 5) WFQ (Weighted Fair Queueing). */
-static bool test_WFQ_weighted(void){
-    log_info("Running test_WFQ_weighted");
+/* HIDDEN_2: HPC + SJF with more arrivals. */
+static bool test_HIDDEN_2_sjfPlusHPCStaggered(void){
+    log_info("Running test_HIDDEN_2_sjfPlusHPCStaggered");
+    process_t mp[2];
+    init_process(&mp[0], 3, 1, 0, 1.0);
+    init_process(&mp[1], 7, 1, 4, 1.0);
+
+    process_t hp[2];
+    init_process(&hp[0], 4, 1, 2, 1.0);
+    init_process(&hp[1], 2, 1, 2, 1.0);
+
+    container_t c;
+    container_init(&c, 1, 1, ALG_SJF, ALG_HPC, mp, 2, hp, 2, 40);
+
+    orchestrator_run(&c, 1);
+    return (all_done(mp,2) && all_done(hp,2));
+}
+
+/* ------------------------------------------------------------------------
+   (E) WFQ (Weighted Fair Queueing) => 10% weight
+------------------------------------------------------------------------ */
+
+/* WFQ_1: Weighted, 3 processes. */
+static bool test_WFQ_1_weightedThree(void){
+    log_info("Running test_WFQ_1_weightedThree");
     process_t p[3];
     init_process(&p[0], 6, 0, 0, 2.0);
     init_process(&p[1], 4, 0, 0, 1.0);
@@ -1996,9 +2291,29 @@ static bool test_WFQ_weighted(void){
     return all_done(p,3);
 }
 
-/* 6) MULTI_HPC: multiple HPC threads. */
-static bool test_MULTI_HPC_parallel(void){
-    log_info("Running test_MULTI_HPC_parallel");
+/* WFQ_2: Weighted, 4 processes staggered. */
+static bool test_WFQ_2_weightedFourStaggered(void){
+    log_info("Running test_WFQ_2_weightedFourStaggered");
+    process_t p[4];
+    init_process(&p[0], 3, 0, 0, 2.0);
+    init_process(&p[1], 5, 0, 2, 1.0);
+    init_process(&p[2], 4, 0, 2, 3.0);
+    init_process(&p[3], 2, 0, 4, 2.0);
+
+    container_t c;
+    container_init(&c, 2, 0, ALG_WFQ, ALG_NONE, p, 4, NULL, 0, 50);
+
+    orchestrator_run(&c, 1);
+    return all_done(p,4);
+}
+
+/* ------------------------------------------------------------------------
+   (F) MULTI_HPC: multiple HPC threads => 5% weight
+------------------------------------------------------------------------ */
+
+/* MULTI_HPC_1: HPC concurrency with 2 main, 2 HPC. */
+static bool test_MULTI_HPC_1_parallel(void){
+    log_info("Running test_MULTI_HPC_1_parallel");
     process_t mp[2];
     init_process(&mp[0], 5, 2, 0, 1.0);
     init_process(&mp[1], 5, 1, 0, 1.0);
@@ -2015,13 +2330,35 @@ static bool test_MULTI_HPC_parallel(void){
     return (all_done(mp,2) && all_done(hp,3));
 }
 
-/* 7) BFS scheduling. */
-static bool test_BFS_scheduling(void){
-    log_info("Running test_BFS_scheduling");
+/* MULTI_HPC_2: HPC concurrency, arrivals. */
+static bool test_MULTI_HPC_2_parallelStaggered(void){
+    log_info("Running test_MULTI_HPC_2_parallelStaggered");
+    process_t mp[2];
+    init_process(&mp[0], 4, 1, 0, 1.0);
+    init_process(&mp[1], 6, 2, 3, 1.0);
+
+    process_t hp[2];
+    init_process(&hp[0], 4, 1, 1, 1.0);
+    init_process(&hp[1], 6, 1, 2, 1.0);
+
+    container_t c;
+    container_init(&c, 2, 2, ALG_RR, ALG_HPC, mp, 2, hp, 2, 60);
+
+    orchestrator_run(&c, 1);
+    return (all_done(mp,2) && all_done(hp,2));
+}
+
+/* ------------------------------------------------------------------------
+   (G) BFS scheduling => 15% weight
+------------------------------------------------------------------------ */
+
+/* BFS_1: BFS scheduling, single core. */
+static bool test_BFS_1_scheduling(void){
+    log_info("Running test_BFS_1_scheduling");
     process_t p[3];
     init_process(&p[0], 3, 0, 0, 1.0);
     init_process(&p[1], 8, 0, 0, 1.0);
-    init_process(&p[2], 6, 0, 2, 1.0);
+    init_process(&p[2], 6, 0, 3, 1.0);
 
     container_t c;
     container_init(&c, 1, 0, ALG_BFS, ALG_NONE, p, 3, NULL, 0, 50);
@@ -2030,13 +2367,32 @@ static bool test_BFS_scheduling(void){
     return all_done(p,3);
 }
 
-/* 8) MLFQ scheduling. */
-static bool test_MLFQ_scheduling(void){
-    log_info("Running test_MLFQ_scheduling");
+/* BFS_2: BFS scheduling, 2 CPU cores, arrivals. */
+static bool test_BFS_2_schedulingMultiCore(void){
+    log_info("Running test_BFS_2_schedulingMultiCore");
+    process_t p[3];
+    init_process(&p[0], 4, 0, 0, 1.0);
+    init_process(&p[1], 5, 0, 2, 1.0);
+    init_process(&p[2], 3, 0, 3, 1.0);
+
+    container_t c;
+    container_init(&c, 2, 0, ALG_BFS, ALG_NONE, p, 3, NULL, 0, 50);
+
+    orchestrator_run(&c, 1);
+    return all_done(p,3);
+}
+
+/* ------------------------------------------------------------------------
+   (H) MLFQ scheduling => 5% weight
+------------------------------------------------------------------------ */
+
+/* MLFQ_1: 2 cores, processes w/ arrival offsets. */
+static bool test_MLFQ_1_scheduling(void){
+    log_info("Running test_MLFQ_1_scheduling");
     process_t p[3];
     init_process(&p[0], 10, 0, 0, 1.0);
-    init_process(&p[1], 5, 0, 0, 1.0);
-    init_process(&p[2], 7, 0, 3, 1.0);
+    init_process(&p[1], 5,  0, 0, 1.0);
+    init_process(&p[2], 7,  0, 3, 1.0);
 
     container_t c;
     container_init(&c, 2, 0, ALG_MLFQ, ALG_NONE, p, 3, NULL, 0, 80);
@@ -2045,9 +2401,28 @@ static bool test_MLFQ_scheduling(void){
     return all_done(p,3);
 }
 
-/* 9) PRIO_PREEMPT: Preemptive Priority scheduling. */
-static bool test_PRIO_PREEMPT_scheduling(void){
-    log_info("Running test_PRIO_PREEMPT_scheduling");
+/* MLFQ_2: Single core MLFQ. */
+static bool test_MLFQ_2_schedulingStaggered(void){
+    log_info("Running test_MLFQ_2_schedulingStaggered");
+    process_t p[3];
+    init_process(&p[0], 6, 0, 0, 1.0);
+    init_process(&p[1], 6, 0, 2, 1.0);
+    init_process(&p[2], 4, 0, 4, 1.0);
+
+    container_t c;
+    container_init(&c, 1, 0, ALG_MLFQ, ALG_NONE, p, 3, NULL, 0, 50);
+
+    orchestrator_run(&c, 1);
+    return all_done(p,3);
+}
+
+/* ------------------------------------------------------------------------
+   (I) PRIO_PREEMPT scheduling => 5% weight
+------------------------------------------------------------------------ */
+
+/* PRIO_PREEMPT_1: Preemptive Priority. */
+static bool test_PRIO_PREEMPT_1_preemptive(void){
+    log_info("Running test_PRIO_PREEMPT_1_preemptive");
     process_t p[3];
     init_process(&p[0], 8, 5, 0, 1.0);
     init_process(&p[1], 3, 1, 3, 1.0);
@@ -2060,10 +2435,31 @@ static bool test_PRIO_PREEMPT_scheduling(void){
     return all_done(p,3);
 }
 
-/* 10) BONUS HPC_BFS => HPC BFS test if user toggles bonus.
-      0 main cores, BFS on HPC side => HPC can steal main processes. */
-static bool test_BONUS_hpc_bfs(void){
-    log_info("Running test_BONUS_hpc_bfs");
+/* PRIO_PREEMPT_2: Preemptive Priority with arrivals. */
+static bool test_PRIO_PREEMPT_2_preemptiveStaggered(void){
+    log_info("Running test_PRIO_PREEMPT_2_preemptiveStaggered");
+    process_t p[3];
+    // arrives=0, priority=8
+    init_process(&p[0], 5, 8, 0, 1.0);
+    // arrives=2, priority=2
+    init_process(&p[1], 3, 2, 2, 1.0);
+    // arrives=4, priority=1 => highest
+    init_process(&p[2], 4, 1, 4, 1.0);
+
+    container_t c;
+    container_init(&c, 1, 0, ALG_PRIO_PREEMPT, ALG_NONE, p, 3, NULL, 0, 50);
+
+    orchestrator_run(&c, 1);
+    return all_done(p,3);
+}
+
+/* ------------------------------------------------------------------------
+   (J) BONUS HPC_BFS tests => 5% weight + HPC bonus if scoreboard_set_sc_hpc(1)
+------------------------------------------------------------------------ */
+
+/* HPC_BFS_1: HPC BFS test, 0 main cores => HPC can steal main procs. */
+static bool test_BONUS_1_hpc_bfs(void){
+    log_info("Running test_BONUS_1_hpc_bfs");
     process_t mainP[1];
     init_process(&mainP[0], 4, 0, 0, 1.0);
 
@@ -2078,62 +2474,116 @@ static bool test_BONUS_hpc_bfs(void){
     return (all_done(mainP,1) && all_done(hpcP,2));
 }
 
+/* HPC_BFS_2: HPC BFS test with 2 HPC threads. */
+static bool test_BONUS_2_hpc_bfsStaggered(void){
+    log_info("Running test_BONUS_2_hpc_bfsStaggered");
+    process_t mainP[2];
+    init_process(&mainP[0], 5, 0, 0, 1.0);
+    init_process(&mainP[1], 2, 0, 2, 1.0);
+
+    process_t hpcP[1];
+    init_process(&hpcP[0], 4, 0, 3, 1.0);
+
+    container_t c;
+    container_init(&c, 0, 2, ALG_NONE, ALG_BFS, mainP, 2, hpcP, 1, 40);
+
+    orchestrator_run(&c, 1);
+    return (all_done(mainP,2) && all_done(hpcP,1));
+}
+
 /* ------------------------------------------------------------------------
-   run_all_tests()
-   Launch each test in a subproc with a default 5s timeout
+   run_all_tests():
+   - We call each test in order, each locked behind scoreboard gating
+     so we only “unlock” the next suite at 60% pass in the previous.
+   - HPC_BFS bonus tests run only if set_bonus_test(1) was called.
 ------------------------------------------------------------------------ */
 #define DEFAULT_TEST_TIMEOUT_SEC 5
 
-// Single test-case structure
 typedef struct {
-    const char* name;
-    bool (*impl)(void);
+    const char*       name;
+    bool            (*impl)(void);
     scoreboard_suite_t suite;
 } TestCase;
 
 static bool execute_single_test(const TestCase* test, int timeout_sec){
-    if(skip_remaining_tests_requested()){
-        return false;
-    }
     return run_test_in_subproc(test->name, test->impl, test->suite, timeout_sec);
 }
 
-void run_all_tests(void){
+void run_all_tests(void)
+{
+    // We set 'look_remaining_tests' so SIGTERM can skip concurrency tests if needed
     set_look_remaining_tests(1);
-    bool was_bonus_enabled = (is_bonus_test() == 1);
-    set_bonus_test(0);  // Temporarily disable bonus tests
 
-    // Define the core suite of tests
+    // Check if HPC_BFS was originally enabled (bonus test)
+    bool bonus_enabled = (is_bonus_test() == 1);
+    // Temporarily disable if needed, then restore
+    set_bonus_test(0);
+
+    // Here are all the standard tests in order (grouped by suite):
     const TestCase test_cases[] = {
-        {"test_BASIC_fifo",              test_BASIC_fifo,              SUITE_BASIC},
-        {"test_NORMAL_rr",               test_NORMAL_rr,               SUITE_NORMAL},
-        {"test_EDGE_priority",           test_EDGE_priority,           SUITE_EDGE},
-        {"test_HIDDEN_sjf_hpc",          test_HIDDEN_sjf_hpc,          SUITE_HIDDEN},
-        {"test_WFQ_weighted",            test_WFQ_weighted,            SUITE_WFQ},
-        {"test_MULTI_HPC_parallel",      test_MULTI_HPC_parallel,      SUITE_MULTI_HPC},
-        {"test_BFS_scheduling",          test_BFS_scheduling,          SUITE_BFS},
-        {"test_MLFQ_scheduling",         test_MLFQ_scheduling,         SUITE_MLFQ},
-        {"test_PRIO_PREEMPT_scheduling", test_PRIO_PREEMPT_scheduling, SUITE_PRIO_PREEMPT}
+        // (A) BASIC
+        {"test_BASIC_1_fifoTwoProcs",            test_BASIC_1_fifoTwoProcs,            SUITE_BASIC},
+        {"test_BASIC_2_fifoThreeProcsStaggered", test_BASIC_2_fifoThreeProcsStaggered, SUITE_BASIC},
+
+        // (B) NORMAL
+        {"test_NORMAL_1_rr2Procs",        test_NORMAL_1_rr2Procs,        SUITE_NORMAL},
+        {"test_NORMAL_2_rr3ProcsStaggered", test_NORMAL_2_rr3ProcsStaggered, SUITE_NORMAL},
+
+        // (C) EDGE
+        {"test_EDGE_1_priorityNonPreemptive",           test_EDGE_1_priorityNonPreemptive,           SUITE_EDGE},
+        {"test_EDGE_2_priorityNonPreemptiveStaggered",  test_EDGE_2_priorityNonPreemptiveStaggered,  SUITE_EDGE},
+
+        // (D) HIDDEN
+        {"test_HIDDEN_1_sjfPlusHPC",          test_HIDDEN_1_sjfPlusHPC,          SUITE_HIDDEN},
+        {"test_HIDDEN_2_sjfPlusHPCStaggered", test_HIDDEN_2_sjfPlusHPCStaggered, SUITE_HIDDEN},
+
+        // (E) WFQ
+        {"test_WFQ_1_weightedThree",     test_WFQ_1_weightedThree,     SUITE_WFQ},
+        {"test_WFQ_2_weightedFourStaggered", test_WFQ_2_weightedFourStaggered, SUITE_WFQ},
+
+        // (F) MULTI_HPC
+        {"test_MULTI_HPC_1_parallel",       test_MULTI_HPC_1_parallel,       SUITE_MULTI_HPC},
+        {"test_MULTI_HPC_2_parallelStaggered", test_MULTI_HPC_2_parallelStaggered, SUITE_MULTI_HPC},
+
+        // (G) BFS
+        {"test_BFS_1_scheduling",        test_BFS_1_scheduling,        SUITE_BFS},
+        {"test_BFS_2_schedulingMultiCore", test_BFS_2_schedulingMultiCore, SUITE_BFS},
+
+        // (H) MLFQ
+        {"test_MLFQ_1_scheduling",              test_MLFQ_1_scheduling,              SUITE_MLFQ},
+        {"test_MLFQ_2_schedulingStaggered",     test_MLFQ_2_schedulingStaggered,     SUITE_MLFQ},
+
+        // (I) PRIO_PREEMPT
+        {"test_PRIO_PREEMPT_1_preemptive",           test_PRIO_PREEMPT_1_preemptive,           SUITE_PRIO_PREEMPT},
+        {"test_PRIO_PREEMPT_2_preemptiveStaggered",  test_PRIO_PREEMPT_2_preemptiveStaggered,  SUITE_PRIO_PREEMPT},
     };
 
-    // Run the 9 standard tests
-    for(size_t i=0; i<sizeof(test_cases)/sizeof(test_cases[0]); i++){
+    // Run each standard test in turn
+    for(size_t i=0; i < sizeof(test_cases)/sizeof(test_cases[0]); i++){
         if(!execute_single_test(&test_cases[i], DEFAULT_TEST_TIMEOUT_SEC)){
-            return; // Stop if user triggered skip
+            if(skip_remaining_tests_requested()) {
+                // user signaled skip => break out
+                return;
+            }
         }
     }
 
-    // Possibly restore bonus HPC BFS test
-    if(was_bonus_enabled){
-        set_bonus_test(1);
-        const TestCase bonus_test = {
-            "test_BONUS_hpc_bfs",
-            test_BONUS_hpc_bfs,
-            SUITE_HPC_BFS
+    // Possibly restore HPC_BFS bonus tests if originally enabled
+    if(bonus_enabled){
+        set_bonus_test(1); // re-enable user’s bonus HPC BFS
+        const TestCase bonus_tests[] = {
+            {"test_BONUS_1_hpc_bfs",           test_BONUS_1_hpc_bfs,           SUITE_HPC_BFS},
+            {"test_BONUS_2_hpc_bfsStaggered",  test_BONUS_2_hpc_bfsStaggered,  SUITE_HPC_BFS}
         };
-        execute_single_test(&bonus_test, DEFAULT_TEST_TIMEOUT_SEC);
+        for(size_t i=0; i<2; i++){
+            execute_single_test(&bonus_tests[i], DEFAULT_TEST_TIMEOUT_SEC);
+        }
     }
+
+    set_look_remaining_tests(0);
+
 }
+
 #ifndef TESTS_H
 #define TESTS_H
 

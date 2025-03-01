@@ -24,8 +24,8 @@ void set_look_remaining_tests(const int val);
 /**
  * Return 1 if we want slow-mode concurrency.
  */
-int is_slow_mode(void);
-void set_slow_mode(const int onOff);
+int is_bonus_test(void);
+void set_bonus_test(const int onOff);
 
 /* Preemption with setitimer + altstack + siglongjmp */
 void init_preempt_timer(void);

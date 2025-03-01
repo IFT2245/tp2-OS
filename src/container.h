@@ -5,7 +5,9 @@
 #include <stdbool.h>
 #include "../lib/scheduler_alg.h"
 #include "process.h"
-
+#include "ready_queue.h"
+struct core_thread_pack_s;
+typedef struct core_thread_pack_s core_thread_pack_t;
 /**
  * Timeline event struct
  */
@@ -46,6 +48,10 @@ typedef struct container_s {
 
     char* ephemeral_path;
     bool  allow_hpc_steal;
+
+    /* NEW FIELD: number of cores actively running a slice right now */
+    int   active_cores;
+
 } container_t;
 
 #ifdef __cplusplus
@@ -75,9 +81,5 @@ void container_run(container_t* c);
  * @brief Orchestrator that runs multiple containers in parallel.
  */
 void orchestrator_run(container_t* arr, int count);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif // CONTAINER_H

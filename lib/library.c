@@ -33,13 +33,13 @@ void set_look_remaining_tests(const int val) {
 }
 
 /* Tracks slow-mode on/off globally: */
-static int g_slowMode = 0;
+static int bonus_test = 0;
 
-void set_slow_mode(const int onOff) {
-    g_slowMode = (onOff != 0);
+void set_bonus_test(const int onOff) {
+    bonus_test = (onOff != 0);
 }
-int is_slow_mode(void) {
-    return g_slowMode;
+int is_bonus_test(void) {
+    return bonus_test;
 }
 
 /**

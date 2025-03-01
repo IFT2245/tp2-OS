@@ -1,5 +1,4 @@
-#include "ready_queue.h"
-#include "worker.h"
+#include "container.h"
 #include "../lib/log.h"
 #include <stdlib.h>
 #include <string.h>
@@ -7,7 +6,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <dirent.h>
-
+#include "worker.h"
 /* =========== (A) ephemeral remove code =========== */
 #ifdef EPHEMERAL_RM_RECURSIVE
 static int remove_directory_recursive(const char* path){
@@ -272,6 +271,9 @@ void container_init(container_t* c,
         log_info("container_init => no main cores but main processes => enabling HPC steal");
         c->allow_hpc_steal = true;
     }
+
+    /* ADDED for concurrency consistency => track active cores */
+    c->active_cores   = 0;  // We'll increment/decrement in worker.c
 }
 
 void container_run(container_t* c){

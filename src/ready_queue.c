@@ -29,7 +29,7 @@ static void rq_insert_sorted(ready_queue_t* rq, process_t* p, proc_cmp_fn cmp){
         return;
     }
     if(!cmp){
-        /* Insert at tail => FIFO. */
+        /* Insert at tail => FIFO */
         rq_node_t* c = rq->head;
         while(c->next) c = c->next;
         c->next = n;
@@ -79,7 +79,7 @@ void rq_push(ready_queue_t* rq, process_t* p){
     pthread_mutex_lock(&rq->lock);
 
     if(!p){
-        /* termination marker => push front always. */
+        /* termination marker => push front always */
         rq_node_t* n = (rq_node_t*)malloc(sizeof(rq_node_t));
         n->proc = NULL;
         n->next = rq->head;
@@ -110,8 +110,8 @@ void rq_push(ready_queue_t* rq, process_t* p){
         n->proc = p;
         n->next = rq->head;
         rq->head = n;
-        break;
     }
+        break;
     default:
         /* default => FIFO for RR, BFS, MLFQ, WFQ, etc. */
         rq_insert_sorted(rq, p, NULL);
@@ -132,8 +132,11 @@ process_t* rq_pop(ready_queue_t* rq, bool* got_term){
         pthread_cond_wait(&rq->cond, &rq->lock);
     }
 
-    /* Weighted Fair Queueing special pop => earliest finish time. */
     if(rq->alg == ALG_WFQ){
+        /* Weighted Fair Queueing => pick process with earliest
+           "finish_time" = (current wfq_virtual_time + remaining / weight).
+           But we no longer do a big jump of 'wfq_virtual_time += entire_burst'
+           here. Instead, that is done partially in run_slice. */
         rq_node_t* prev = NULL;
         rq_node_t* best_prev = NULL;
         rq_node_t* best_node = NULL;
@@ -146,8 +149,8 @@ process_t* rq_pop(ready_queue_t* rq, bool* got_term){
                 best_node = cur;
                 break;
             }
-            double finish_time = rq->wfq_virtual_time
-                              + ((double)cur->proc->remaining_time / cur->proc->weight);
+            double finish_time =
+                rq->wfq_virtual_time + ((double)cur->proc->remaining_time / cur->proc->weight);
             if(finish_time < best_val){
                 best_val = finish_time;
                 best_node = cur;
@@ -162,7 +165,7 @@ process_t* rq_pop(ready_queue_t* rq, bool* got_term){
         }
         if(!best_node->proc){
             *got_term = true;
-            /* Remove best_node from list. */
+            /* remove best_node from list */
             if(best_node == rq->head){
                 rq->head = best_node->next;
             } else if(best_prev){
@@ -181,9 +184,6 @@ process_t* rq_pop(ready_queue_t* rq, bool* got_term){
         }
         free(best_node);
         rq->size--;
-
-        rq->wfq_virtual_time += ((double)ret->remaining_time / ret->weight);
-
         pthread_mutex_unlock(&rq->lock);
         return ret;
     }
@@ -203,6 +203,7 @@ process_t* rq_pop(ready_queue_t* rq, bool* got_term){
     }
 }
 
+/* Attempt to see if new highest-priority arrival can preempt. */
 bool try_preempt_if_needed(ready_queue_t* rq, process_t* p){
     if(rq->alg != ALG_PRIO_PREEMPT || !p) return false;
 
@@ -212,8 +213,10 @@ bool try_preempt_if_needed(ready_queue_t* rq, process_t* p){
         return false;
     }
     process_t* front = rq->head->proc;
+    /* If the *front* of the queue has strictly lower priority number
+       => that means it's higher priority (since smaller prio # is "higher"). */
     if(front->priority < p->priority){
-        /* Preempt => put p back, pop the new highest prio. */
+        /* We do a forced preempt => put p back, pop the new highest prio. */
         p->was_preempted = true;
         rq_insert_sorted(rq, p, prio_asc_cmp);
         rq->size++;

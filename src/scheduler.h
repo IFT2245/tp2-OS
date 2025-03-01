@@ -4,7 +4,8 @@
 #include "../lib/scheduler_alg.h"
 #include "process.h"
 #include "container.h"
-
+struct container_s;         /* forward-decl for the struct */
+typedef struct container_s container_t;  /* shorter alias */
 /**
  * @brief Return the timeslice “quantum” for a given algorithm + process.
  */

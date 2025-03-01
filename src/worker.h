@@ -10,11 +10,12 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <stdbool.h>
-
+struct container_s;         /* forward-decl for the struct */
+typedef struct container_s container_t;  /* shorter alias */
 /**
  * @brief A small struct to pass to each core/hpc thread.
  */
-typedef struct {
+typedef struct core_thread_pack_s {
     container_t* container;
     struct {
         ready_queue_t* main_rq;
