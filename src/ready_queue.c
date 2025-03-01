@@ -92,15 +92,12 @@ void rq_push(ready_queue_t* rq, process_t* p){
 
     switch(rq->alg){
     case ALG_PRIORITY:
-        /* Non-preemptive priority => ascending prio. */
         rq_insert_sorted(rq, p, prio_asc_cmp);
         break;
     case ALG_PRIO_PREEMPT:
-        /* Preemptive => also ascending prio. */
         rq_insert_sorted(rq, p, prio_asc_cmp);
         break;
     case ALG_SJF:
-        /* Insert by burst ascending. */
         rq_insert_sorted(rq, p, burst_asc_cmp);
         break;
     case ALG_HPC:
@@ -134,9 +131,8 @@ process_t* rq_pop(ready_queue_t* rq, bool* got_term){
 
     if(rq->alg == ALG_WFQ){
         /* Weighted Fair Queueing => pick process with earliest
-           "finish_time" = (current wfq_virtual_time + remaining / weight).
-           But we no longer do a big jump of 'wfq_virtual_time += entire_burst'
-           here. Instead, that is done partially in run_slice. */
+           "finish_time" = (wfq_virtual_time + remaining_time/weight).
+           We do partial updates in run_slice, so we basically pick the minimal finish_time at pop. */
         rq_node_t* prev = NULL;
         rq_node_t* best_prev = NULL;
         rq_node_t* best_node = NULL;
@@ -145,14 +141,13 @@ process_t* rq_pop(ready_queue_t* rq, bool* got_term){
         rq_node_t* cur = rq->head;
         while(cur){
             if(!cur->proc){
-                /* termination marker => pick that immediately. */
+                /* termination => pick that immediately. */
                 best_node = cur;
                 break;
             }
-            double finish_time =
-                rq->wfq_virtual_time + ((double)cur->proc->remaining_time / cur->proc->weight);
-            if(finish_time < best_val){
-                best_val = finish_time;
+            double fin = rq->wfq_virtual_time + (cur->proc->remaining_time / cur->proc->weight);
+            if(fin < best_val){
+                best_val = fin;
                 best_node = cur;
                 best_prev = prev;
             }
@@ -164,8 +159,8 @@ process_t* rq_pop(ready_queue_t* rq, bool* got_term){
             return NULL;
         }
         if(!best_node->proc){
+            /* got termination marker */
             *got_term = true;
-            /* remove best_node from list */
             if(best_node == rq->head){
                 rq->head = best_node->next;
             } else if(best_prev){
@@ -203,7 +198,6 @@ process_t* rq_pop(ready_queue_t* rq, bool* got_term){
     }
 }
 
-/* Attempt to see if new highest-priority arrival can preempt. */
 bool try_preempt_if_needed(ready_queue_t* rq, process_t* p){
     if(rq->alg != ALG_PRIO_PREEMPT || !p) return false;
 
@@ -213,10 +207,8 @@ bool try_preempt_if_needed(ready_queue_t* rq, process_t* p){
         return false;
     }
     process_t* front = rq->head->proc;
-    /* If the *front* of the queue has strictly lower priority number
-       => that means it's higher priority (since smaller prio # is "higher"). */
+    // smaller priority => higher priority
     if(front->priority < p->priority){
-        /* We do a forced preempt => put p back, pop the new highest prio. */
         p->was_preempted = true;
         rq_insert_sorted(rq, p, prio_asc_cmp);
         rq->size++;

@@ -12,11 +12,12 @@ unsigned long get_quantum(scheduler_alg_t alg, const process_t* p){
     switch(alg){
     case ALG_RR:           return 2;
     case ALG_BFS:          return 4;
-    case ALG_WFQ:          return 3;
+    case ALG_WFQ:          return 3;  // [REFINED NOTE]: small timeslice helps partial fairness
     case ALG_MLFQ:         return (2 + p->mlfq_level * 2);
     case ALG_PRIO_PREEMPT: return 2;
     default:
-        return 2;  // fallback
+        // FIFO, priority => effectively run to completion, but we will break if needed
+        return 2;
     }
 }
 
@@ -45,22 +46,19 @@ void record_timeline(container_t* c, int core_id, int proc_id,
 }
 
 /**
- * @brief CPU work with “maximum immediacy” preemption. We
- *        - unblock SIGALRM so we can be interrupted,
- *        - do the requested ms of CPU time,
- *        - block SIGALRM again before returning.
+ * Perform actual CPU-bound "work" for ms milliseconds
+ * with optional immediate preemption.
  */
 void do_cpu_work(unsigned long ms, int core_id, int proc_id)
 {
     if(ms == 0) return;
 
-    unblock_preempt_signal();  // allow preemption now
+    unblock_preempt_signal();
 
-    // A simple approach: loop ms times, each iteration => ~1ms real-time
+    // simple loop
     for (unsigned long i=0; i<ms; i++){
         usleep(1000);
     }
 
-    // If we made it here, we were never preempted. Re-block:
     block_preempt_signal();
 }

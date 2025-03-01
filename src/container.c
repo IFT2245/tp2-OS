@@ -1,4 +1,3 @@
-#include "container.h"
 #include "../lib/log.h"
 #include <stdlib.h>
 #include <string.h>
@@ -7,6 +6,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include "worker.h"
+
 /* =========== (A) ephemeral remove code =========== */
 #ifdef EPHEMERAL_RM_RECURSIVE
 static int remove_directory_recursive(const char* path){
@@ -273,7 +273,7 @@ void container_init(container_t* c,
     }
 
     /* ADDED for concurrency consistency => track active cores */
-    c->active_cores   = 0;  // We'll increment/decrement in worker.c
+    c->active_cores   = 0;
 }
 
 void container_run(container_t* c){
