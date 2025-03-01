@@ -1,0 +1,33 @@
+==136283== Memcheck, a memory error detector
+==136283== Copyright (C) 2002-2024, and GNU GPL'd, by Julian Seward et al.
+==136283== Using Valgrind-3.23.0 and LibVEX; rerun with -h for copyright info
+==136283== Command: ./main 2
+==136283== 
+[32m[INFO]  [0mScoreboard loaded[0m
+[32m[INFO]  [0mScoreboard saved[0m
+
+[1m[35m=== MAIN MENU ===[0m
+1) Run all tests
+2) Scoreboard
+3) Clear scoreboard
+4) Enable/Disable bonus test
+[1m5) NON OFFICIAL GRADING
+[0m6) Exit
+Choice? [31mScoreboard cleared.[00m
+
+[1m[35m=== MAIN MENU ===[0m
+1) Run all tests
+2) Scoreboard
+3) Clear scoreboard
+4) Enable/Disable bonus test
+[1m5) NON OFFICIAL GRADING
+[0m6) Exit
+Choice? ==136283== 
+==136283== HEAP SUMMARY:
+==136283==     in use at exit: 0 bytes in 0 blocks
+==136283==   total heap usage: 100 allocs, 100 frees, 22,466 bytes allocated
+==136283== 
+==136283== All heap blocks were freed -- no leaks are possible
+==136283== 
+==136283== For lists of detected and suppressed errors, rerun with: -s
+==136283== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)

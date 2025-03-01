@@ -1,12 +1,21 @@
+// ============================================================================
+// container.c -- refined to handle HPC_BFS for main processes when nb_cores=0
+// ============================================================================
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <dirent.h>
-#include "worker.h"
 
-/* =========== (A) ephemeral remove code =========== */
+#include "worker.h"
+#include "../lib/log.h"
+#include "../lib/library.h"
+#include "../lib/scoreboard.h"
+
+/* Forward declarations */
+static int remove_directory_recursive(const char* path);
+
 #ifdef EPHEMERAL_RM_RECURSIVE
 static int remove_directory_recursive(const char* path){
     DIR* dir = opendir(path);
@@ -36,6 +45,9 @@ static int remove_directory_recursive(const char* path){
 }
 #endif
 
+/**
+ * Create an ephemeral directory under /tmp/container_XXXXXX
+ */
 static char* ephemeral_create_container(void){
     char tmpl[] = "/tmp/container_XXXXXX";
     char* p = (char*)malloc(256);
@@ -53,6 +65,9 @@ static char* ephemeral_create_container(void){
     return p;
 }
 
+/**
+ * Remove ephemeral container directory.
+ */
 static void ephemeral_remove_container(const char* path){
     if(!path) return;
 #ifdef EPHEMERAL_RM_RECURSIVE
@@ -67,7 +82,9 @@ static void ephemeral_remove_container(const char* path){
     }
 }
 
-/* =========== (B) timeline printing =========== */
+/**
+ * Compare timeline items by core_id, then by start_ms
+ */
 static int compare_timeline(const void* a, const void* b){
     const timeline_item_t* A = (const timeline_item_t*)a;
     const timeline_item_t* B = (const timeline_item_t*)b;
@@ -78,6 +95,9 @@ static int compare_timeline(const void* a, const void* b){
     return 0;
 }
 
+/**
+ * Pretty-print the container timeline after completion.
+ */
 static void print_container_timeline(const container_t* c){
     if(c->timeline_count == 0){
         printf("\n\033[1m\033[33mNo timeline for container.\033[0m\n");
@@ -86,7 +106,7 @@ static void print_container_timeline(const container_t* c){
     qsort(c->timeline, c->timeline_count, sizeof(c->timeline[0]), compare_timeline);
 
     printf("\033[1m\033[36m\n--- Container Timeline ---\n\033[0m");
-    int current_core=9999999;
+    int current_core = 9999999;
     for(int i=0; i<c->timeline_count; i++){
         int cid = c->timeline[i].core_id;
         if(cid != current_core){
@@ -96,11 +116,11 @@ static void print_container_timeline(const container_t* c){
                 int hpc_idx = (-1 - cid);
                 printf("\033[1m\033[35m\nHPC Thread %d:\n\033[0m", hpc_idx);
             }
-            current_core=cid;
+            current_core = cid;
         }
-        unsigned long st=c->timeline[i].start_ms;
-        unsigned long ln=c->timeline[i].length_ms;
-        bool pre=c->timeline[i].preempted_slice;
+        unsigned long st = c->timeline[i].start_ms;
+        unsigned long ln = c->timeline[i].length_ms;
+        bool pre = c->timeline[i].preempted_slice;
         if(pre){
             printf("  T[%lu..%lu] => P%d \033[1m\033[33m[PREEMPT]\033[0m\n",
                    st, st+ln, c->timeline[i].proc_id);
@@ -110,7 +130,10 @@ static void print_container_timeline(const container_t* c){
     }
 }
 
-/* =========== (C) container_run =========== */
+/**
+ * The main runner in its own thread, launching HPC/main threads inside
+ * and orchestrating ephemeral container creation/removal, timeline, etc.
+ */
 static void* container_thread_runner(void* arg){
     container_t* c=(container_t*)arg;
     if(!c){
@@ -123,7 +146,7 @@ static void* container_thread_runner(void* arg){
         log_error("container_run => ephemeral creation failed => ignoring");
     }
 
-    /* HPC procs offset 1000. */
+    // Assign IDs: main procs get 0.., HPC get 1000..
     for(int i=0; i<c->main_count; i++){
         c->main_procs[i].id = i;
     }
@@ -131,57 +154,65 @@ static void* container_thread_runner(void* arg){
         c->hpc_procs[i].id = 1000 + i;
     }
 
+    // Create the ready queues
     ready_queue_t main_q, hpc_q;
     rq_init(&main_q, c->main_alg);
     rq_init(&hpc_q, c->hpc_alg);
 
-    /* Push immediate arrivals from MAIN. */
+    // --------------------------------------------------------------------
+    // PUSH IMMEDIATE ARRIVALS: main processes
+    // --------------------------------------------------------------------
     for(int i=0; i<c->main_count; i++){
-        process_t* p=&c->main_procs[i];
-        if(p->remaining_time>0 && p->arrival_time==0){
-            rq_push(&main_q, p);
+        process_t* p = &c->main_procs[i];
+        if(p->remaining_time > 0 && p->arrival_time == 0){
+            // *** FIX for HPC-BFS with 0 main cores:
+            // If there are zero main cores AND HPC BFS => push main procs to HPC queue
+            if((c->nb_cores == 0) && (c->hpc_alg == ALG_BFS)){
+                rq_push(&hpc_q, p);
+            } else {
+                // Normal case => push to main queue
+                rq_push(&main_q, p);
+            }
         }
     }
 
-    /*
-       If we have main cores > 0 and HPC alg = BFS => unify HPC procs in main queue
-       Otherwise if nb_cores=0 and HPC alg = BFS => unify HPC procs in hpc queue (they do BFS there).
-       Else normal HPC push => hpc_q.
-    */
+    // --------------------------------------------------------------------
+    // PUSH IMMEDIATE ARRIVALS: HPC processes
+    //   HPC BFS => unify HPC procs in main queue if nb_cores>0
+    //   HPC BFS => unify HPC procs in HPC queue if nb_cores=0
+    //   Otherwise => normal HPC queue usage
+    // --------------------------------------------------------------------
     for(int i=0; i<c->hpc_count; i++){
         process_t* p = &c->hpc_procs[i];
-        if(p->remaining_time>0 && p->arrival_time==0){
+        if(p->remaining_time > 0 && p->arrival_time == 0){
             if(c->hpc_alg == ALG_BFS){
                 if(c->nb_cores == 0){
-                    /* HPC BFS but no main cores => BFS in HPC queue. */
                     rq_push(&hpc_q, p);
                 } else {
-                    /* HPC BFS with main cores => unify HPC in main queue. */
                     rq_push(&main_q, p);
                 }
             } else {
-                /* Normal HPC push. */
                 rq_push(&hpc_q, p);
             }
         }
     }
 
-    /* Create main threads. */
+    // Create main threads
     pthread_t* main_threads = calloc(c->nb_cores, sizeof(pthread_t));
     if(!main_threads){
         log_error("container_run => no memory for main_threads");
-        return NULL;
+        goto cleanup;
     }
     for(int i=0; i<c->nb_cores; i++){
-        core_thread_pack_t* pack = malloc(sizeof(core_thread_pack_t));
+        core_thread_pack_t* pack = (core_thread_pack_t*)malloc(sizeof(core_thread_pack_t));
         pack->container = c;
         pack->qs.main_rq = &main_q;
         pack->qs.hpc_rq  = &hpc_q;
-        pack->core_id = i;
+        pack->core_id    = i;
         pthread_create(&main_threads[i], NULL, main_core_thread, pack);
     }
 
-    /* HPC threads. */
+    // Create HPC threads
     pthread_t* hpc_threads = NULL;
     if(c->nb_hpc_threads > 0){
         hpc_threads = calloc(c->nb_hpc_threads, sizeof(pthread_t));
@@ -189,23 +220,23 @@ static void* container_thread_runner(void* arg){
             log_error("container_run => no memory for hpc_threads");
         } else {
             for(int i=0; i<c->nb_hpc_threads; i++){
-                core_thread_pack_t* pack = malloc(sizeof(core_thread_pack_t));
+                core_thread_pack_t* pack = (core_thread_pack_t*)malloc(sizeof(core_thread_pack_t));
                 pack->container = c;
                 pack->qs.main_rq = &main_q;
                 pack->qs.hpc_rq  = &hpc_q;
-                pack->core_id = i;
+                pack->core_id    = i;
                 pthread_create(&hpc_threads[i], NULL, hpc_thread, pack);
             }
         }
     }
 
-    /* Join main cores. */
+    // Join main threads
     for(int i=0; i<c->nb_cores; i++){
         pthread_join(main_threads[i], NULL);
     }
     free(main_threads);
 
-    /* Join HPC threads. */
+    // Join HPC threads
     if(c->nb_hpc_threads>0 && hpc_threads){
         for(int i=0; i<c->nb_hpc_threads; i++){
             pthread_join(hpc_threads[i], NULL);
@@ -213,6 +244,7 @@ static void* container_thread_runner(void* arg){
         free(hpc_threads);
     }
 
+cleanup:
     rq_destroy(&main_q);
     rq_destroy(&hpc_q);
 
@@ -234,6 +266,9 @@ static void* container_thread_runner(void* arg){
     return NULL;
 }
 
+/* ------------------------------------------------------------------------
+   container_init
+------------------------------------------------------------------------ */
 void container_init(container_t* c,
                     int nb_cores,
                     int nb_hpc_threads,
@@ -279,6 +314,7 @@ void container_init(container_t* c,
     c->accumulated_cpu= 0;
     c->sim_time       = 0;
 
+    // If we have main processes but no main cores, we enable HPC steal
     if(nb_cores==0 && main_count>0){
         log_info("container_init => no main cores but main processes => enabling HPC steal");
         c->allow_hpc_steal = true;
@@ -286,10 +322,16 @@ void container_init(container_t* c,
     c->active_cores   = 0;
 }
 
+/* ------------------------------------------------------------------------
+   container_run
+------------------------------------------------------------------------ */
 void container_run(container_t* c){
     container_thread_runner((void*)c);
 }
 
+/* ------------------------------------------------------------------------
+   orchestrator_run: run multiple containers in parallel
+------------------------------------------------------------------------ */
 void orchestrator_run(container_t* arr, int count){
     pthread_t* tids = calloc(count, sizeof(pthread_t));
     if(!tids){
