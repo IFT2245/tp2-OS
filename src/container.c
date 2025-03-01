@@ -1,4 +1,3 @@
-#include "../lib/log.h"
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -50,7 +49,6 @@ static char* ephemeral_create_container(void){
         free(p);
         return NULL;
     }
-    /* Make ephemeral container logs purple: */
     log_info("\033[35mephemeral created => %s\033[0m", p);
     return p;
 }
@@ -133,22 +131,38 @@ static void* container_thread_runner(void* arg){
         c->hpc_procs[i].id = 1000 + i;
     }
 
-    /* Build local RQs. */
     ready_queue_t main_q, hpc_q;
     rq_init(&main_q, c->main_alg);
     rq_init(&hpc_q, c->hpc_alg);
 
-    /* Push immediate arrivals. */
+    /* Push immediate arrivals from MAIN. */
     for(int i=0; i<c->main_count; i++){
         process_t* p=&c->main_procs[i];
         if(p->remaining_time>0 && p->arrival_time==0){
             rq_push(&main_q, p);
         }
     }
+
+    /*
+       If we have main cores > 0 and HPC alg = BFS => unify HPC procs in main queue
+       Otherwise if nb_cores=0 and HPC alg = BFS => unify HPC procs in hpc queue (they do BFS there).
+       Else normal HPC push => hpc_q.
+    */
     for(int i=0; i<c->hpc_count; i++){
-        process_t* p=&c->hpc_procs[i];
+        process_t* p = &c->hpc_procs[i];
         if(p->remaining_time>0 && p->arrival_time==0){
-            rq_push(&hpc_q, p);
+            if(c->hpc_alg == ALG_BFS){
+                if(c->nb_cores == 0){
+                    /* HPC BFS but no main cores => BFS in HPC queue. */
+                    rq_push(&hpc_q, p);
+                } else {
+                    /* HPC BFS with main cores => unify HPC in main queue. */
+                    rq_push(&main_q, p);
+                }
+            } else {
+                /* Normal HPC push. */
+                rq_push(&hpc_q, p);
+            }
         }
     }
 
@@ -202,7 +216,6 @@ static void* container_thread_runner(void* arg){
     rq_destroy(&main_q);
     rq_destroy(&hpc_q);
 
-    /* ephemeral remove */
     if(c->ephemeral_path){
         ephemeral_remove_container(c->ephemeral_path);
         free(c->ephemeral_path);
@@ -266,13 +279,10 @@ void container_init(container_t* c,
     c->accumulated_cpu= 0;
     c->sim_time       = 0;
 
-    /* HPC steal if 0 main cores but have main processes. */
-    if(nb_cores == 0 && main_count>0){
+    if(nb_cores==0 && main_count>0){
         log_info("container_init => no main cores but main processes => enabling HPC steal");
         c->allow_hpc_steal = true;
     }
-
-    /* ADDED for concurrency consistency => track active cores */
     c->active_cores   = 0;
 }
 
