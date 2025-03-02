@@ -7,7 +7,7 @@ echo "3\n1\n6\n" | valgrind --leak-check=full --show-leak-kinds=all --track-orig
 ```
             READY_QUEUE SCHEMAS
             ─────────────────────
-
+```rust
 F   I   F   O
 ┌────────────────┐
 │   [ head ]     │
@@ -73,6 +73,7 @@ H   P   C   BFS
 │ main procs + HPC procs  │
 └─────────────────────────┘
    HPC peut "voler" process si allow_hpc_steal=true.
+```
 
 WORKER THREADS LOGIC
 ────────────────────
