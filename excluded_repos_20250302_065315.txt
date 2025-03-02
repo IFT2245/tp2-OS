@@ -1,4 +1,0 @@
-# Excluded Repositories
-# Generated: 2025-03-02T06:53:15.275993
-# Format: full_name,created_at,updated_at,parent_name
-

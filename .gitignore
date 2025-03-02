@@ -2,3 +2,6 @@ scheduler
 cmake-build-debug/*
 cmake-build-debug
 .idea*
+included*
+excluded*
+github_classroom_*

@@ -1,9 +1,0 @@
-2025-03-02 05:44:25,090 - INFO - 🔍 DEBUG: Starting...
-2025-03-02 05:44:25,090 - INFO - Fetching repositories...
-2025-03-02 05:44:41,305 - INFO - Found 1 staff test repo
-2025-03-02 05:44:41,305 - INFO - Filtering repos based on parent name...
-2025-03-02 05:44:41,658 - INFO - 
-Kept 1 repos after filtering.
-2025-03-02 05:44:41,659 - INFO - Excluded 0 repos after filtering.
-2025-03-02 05:44:41,659 - INFO - 
-Repository lists have been written to 'included_repos_20250302_054441.txt' and 'excluded_repos_20250302_054441.txt'
