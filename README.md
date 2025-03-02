@@ -73,7 +73,7 @@ H   P   C   BFS
 │ main procs + HPC procs  │
 └─────────────────────────┘
    HPC peut "voler" process si allow_hpc_steal=true.
-```
+
 
 WORKER THREADS LOGIC
 ────────────────────
@@ -100,8 +100,6 @@ TESTS (OPTION 5, X10)
 ## Librairie
 Le timeline est discret, et la préemption possible après les courses partielles, 
 
-
-```rust
   START
     |
     |
